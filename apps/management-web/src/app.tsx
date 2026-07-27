@@ -1,7 +1,5 @@
 import { Alert, App as AntApp, Card, Typography } from "antd";
 
-import "./styles.css";
-
 const { Title } = Typography;
 
 export function App() {
