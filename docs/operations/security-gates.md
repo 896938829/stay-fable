@@ -7,10 +7,12 @@
 | 状态           | 已配置，等待 GitHub 首次执行                             |
 | Owner          | Engineering Owner                                        |
 | Security Owner | Security Owner                                           |
-| 发布 Owner     | Platform Owner                                           |
+| 发布 Owner     | Security Owner and Platform Owner                        |
 | 证据位置       | GitHub Actions 对应提交的运行记录、PR 检查与发布审批记录 |
 
 本仓库已完成门禁配置和本地静态验证，但尚未在 GitHub Actions 实际运行。首次推送后，Engineering Owner 必须确认各任务在托管 Runner 上通过，才能把状态改为“已验证”。
+
+Security Owner and Platform Owner jointly approve production release and security exceptions.
 
 ## 阻断规则
 
@@ -48,7 +50,7 @@ SLA 从 CI 首次报告或人工发现的较早时间开始计算。超过 SLA �
 - 可验证的补偿措施、修复计划和关联工单；
 - 到期前的复审日期，以及撤销例外的判定条件。
 
-Security Owner 与 Platform Owner 必须共同批准例外。已泄露秘密、可被利用的 CRITICAL 漏洞以及 lint/typecheck/test/build 失败不得获得发布例外。例外到期后自动失效；未完成复审或修复时继续阻断发布。
+Security Owner 与 Platform Owner 必须共同批准例外和生产发布。已泄露秘密、可被利用的 CRITICAL 漏洞以及 lint/typecheck/test/build 失败不得获得发布例外。例外到期后自动失效；未完成复审或修复时继续阻断发布。
 
 ## 运行与证据保留
 

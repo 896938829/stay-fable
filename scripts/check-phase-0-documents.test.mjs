@@ -149,6 +149,74 @@ function canonicalMarkdown(markdown) {
     .join("\n");
 }
 
+function assertDependencyAuditEvidenceBlocked(evidenceIndex, dependencyAudit) {
+  const nonZeroSeverity = [...dependencyAudit.matchAll(/(\d+)\s+(?:CRITICAL|HIGH)/gi)].some(
+    (match) => Number(match[1]) > 0,
+  );
+  const blockingAuditResult =
+    /\bpnpm audit\b[\s\S]*(?:non-zero|非零状态退出|门禁保持阻断|release gate remains non-zero)/i.test(
+      dependencyAudit,
+    );
+  if (!nonZeroSeverity && !blockingAuditResult) return;
+
+  const lines = evidenceIndex.split(/\r?\n/);
+  const dependencyRows = [];
+  for (let index = 0; index < lines.length - 2; index += 1) {
+    const headerLine = lines[index].trim();
+    const separatorLine = lines[index + 1].trim();
+    if (
+      !headerLine.startsWith("|") ||
+      !headerLine.endsWith("|") ||
+      !separatorLine.startsWith("|") ||
+      !separatorLine.endsWith("|")
+    ) {
+      continue;
+    }
+
+    const headers = headerLine
+      .slice(1, -1)
+      .split("|")
+      .map((cell) => cell.trim());
+    const separators = separatorLine
+      .slice(1, -1)
+      .split("|")
+      .map((cell) => cell.trim());
+    if (
+      headers.length !== separators.length ||
+      !separators.every((cell) => /^:?-{3,}:?$/.test(cell))
+    ) {
+      continue;
+    }
+
+    const itemIndex = headers.indexOf("Evidence item");
+    const statusIndex = headers.indexOf("Status");
+    if (itemIndex === -1 || statusIndex === -1) continue;
+
+    for (let row = index + 2; row < lines.length && lines[row].trim().startsWith("|"); row += 1) {
+      const trimmed = lines[row].trim();
+      const cells = trimmed
+        .slice(1, -1)
+        .split("|")
+        .map((cell) => cell.trim());
+      if (cells.length !== headers.length) {
+        throw new Error("malformed launch evidence table");
+      }
+      if (/^Dependency audit:/i.test(cells[itemIndex])) {
+        dependencyRows.push({ cells, statusIndex });
+      }
+    }
+  }
+
+  if (dependencyRows.length !== 1) {
+    throw new Error("dependency audit evidence row must be present exactly once");
+  }
+  const [{ cells, statusIndex }] = dependencyRows;
+  const status = cells[statusIndex];
+  if (status !== "Blocked") {
+    throw new Error("dependency audit evidence must remain Blocked while audit blockers exist");
+  }
+}
+
 test("status parser validates every status-bearing table column", () => {
   const markdown = [
     "| Provider | Agreement status | Security review |",
@@ -248,6 +316,26 @@ test("launch evidence does not claim unfinished external gates are accepted", as
   }
 });
 
+test("dependency audit evidence remains blocked while audit evidence reports blockers", async () => {
+  const audit = await readFile(path.join(root, "docs/operations/dependency-audit.md"), "utf8");
+  const evidence = await readFile(
+    path.join(root, "docs/compliance/launch-evidence-index.md"),
+    "utf8",
+  );
+
+  assert.doesNotThrow(() => assertDependencyAuditEvidenceBlocked(evidence, audit));
+
+  const accepted = evidence.replace(
+    /(\|\s*Dependency audit:[^\r\n]*\|)\s*Blocked\s*\|/i,
+    "$1 Accepted |",
+  );
+  assert.notEqual(accepted, evidence, "adversarial fixture must alter the dependency audit row");
+  assert.throws(
+    () => assertDependencyAuditEvidenceBlocked(accepted, audit),
+    /dependency audit evidence must remain Blocked/i,
+  );
+});
+
 test("runbooks preserve evidence and make destructive actions auditable", async () => {
   const incident = await readFile(
     path.join(root, "infrastructure/runbooks/security-incident.md"),
@@ -339,5 +427,22 @@ test("security gates use the canonical operating owner roles", async () => {
   );
   for (const owner of ["Platform Owner", "Security Owner", "Engineering Owner"]) {
     assert.ok(gates.includes(owner), `security gates must assign ${owner}`);
+  }
+});
+
+test("release and security exception approvals use the same two owners", async () => {
+  const approval = "Security Owner and Platform Owner jointly approve";
+  for (const relativePath of [
+    "docs/operations/security-gates.md",
+    "docs/operations/ownership.md",
+    "infrastructure/cloud/provisioning-checklist.md",
+  ]) {
+    const markdown = await readFile(path.join(root, relativePath), "utf8");
+    assert.ok(markdown.includes(approval), `${relativePath} must use the joint approval contract`);
+    assert.doesNotMatch(
+      markdown,
+      /\brelease approver\b/i,
+      `${relativePath} uses an undefined role`,
+    );
   }
 });

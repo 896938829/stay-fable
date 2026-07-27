@@ -6,8 +6,7 @@ Review cadence: Before each environment launch and quarterly after launch
 
 This checklist is an execution record, not proof that a control exists. The Platform Owner links
 provider exports or screenshots from the access-controlled evidence store before changing a status.
-Production approval requires every required control to be verified and any exception to be signed by
-the Security Owner.
+Every required control must be verified before approval. Security Owner and Platform Owner jointly approve production release and security exceptions.
 
 | Control                    | Required state                                                                                                                                                                        | Evidence                                                         | Status      |
 | -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------- | ----------- |
@@ -27,6 +26,6 @@ the Security Owner.
 
 ## Approval record
 
-The Platform Owner records the immutable deployment identifier and signs the environment record only
-after the Engineering Owner and Security Owner have reviewed the linked evidence. An approval cannot be inferred from
-this document's presence in the repository.
+The Platform Owner records the immutable deployment identifier. The Security Owner and Platform Owner
+jointly sign the environment record only after the Engineering Owner has reviewed the linked
+evidence. An approval cannot be inferred from this document's presence in the repository.
