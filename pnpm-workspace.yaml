@@ -8,7 +8,7 @@ allowBuilds:
   "@scarf/scarf": true
   "@swc/core": true
   "@tarojs/binding": true
-  "@tarojs/cli": true
+  "@tarojs/cli": false
   core-js: true
   core-js-pure: true
   esbuild: true
@@ -21,9 +21,6 @@ injectWorkspacePackages: true
 strictPeerDependencies: true
 
 peerDependencyRules:
-  allowedVersions:
-    "@types/react": "19"
-    react: "19"
   ignoreMissing:
     - react
     - react-dom
