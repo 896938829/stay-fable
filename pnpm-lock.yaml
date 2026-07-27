@@ -21,6 +21,9 @@ importers:
       typescript:
         specifier: 7.0.2
         version: 7.0.2
+      yaml:
+        specifier: 2.8.1
+        version: 2.8.1
 
   apps/api-server:
     dependencies:
@@ -108,7 +111,7 @@ importers:
         version: 6.0.3
       vitest:
         specifier: 4.1.10
-        version: 4.1.10(@types/node@26.1.1)(esbuild@0.28.1)(jiti@2.7.0)(jsdom@29.1.1(@noble/hashes@1.8.0))(less@4.4.2)(sass@1.102.0)(stylus@0.64.0)(terser@5.49.0)(tsx@4.23.1)
+        version: 4.1.10(@types/node@26.1.1)(esbuild@0.28.1)(jiti@2.7.0)(jsdom@29.1.1(@noble/hashes@1.8.0))(less@4.4.2)(sass@1.102.0)(stylus@0.64.0)(terser@5.49.0)(tsx@4.23.1)(yaml@2.8.1)
 
   apps/consumer-miniapp:
     dependencies:
@@ -181,7 +184,7 @@ importers:
         version: 0.64.0
       vitest:
         specifier: 4.1.10
-        version: 4.1.10(@types/node@26.1.1)(esbuild@0.28.1)(jiti@2.7.0)(jsdom@29.1.1(@noble/hashes@1.8.0))(less@4.4.2)(sass@1.102.0)(stylus@0.64.0)(terser@5.49.0)(tsx@4.23.1)
+        version: 4.1.10(@types/node@26.1.1)(esbuild@0.28.1)(jiti@2.7.0)(jsdom@29.1.1(@noble/hashes@1.8.0))(less@4.4.2)(sass@1.102.0)(stylus@0.64.0)(terser@5.49.0)(tsx@4.23.1)(yaml@2.8.1)
       webpack:
         specifier: 5.91.0
         version: 5.91.0(esbuild@0.28.1)(postcss@8.5.23)
@@ -206,7 +209,7 @@ importers:
         version: 4.23.1
       vitest:
         specifier: 4.1.10
-        version: 4.1.10(@types/node@26.1.1)(esbuild@0.28.1)(jiti@2.7.0)(jsdom@29.1.1(@noble/hashes@1.8.0))(less@4.4.2)(sass@1.102.0)(stylus@0.64.0)(terser@5.49.0)(tsx@4.23.1)
+        version: 4.1.10(@types/node@26.1.1)(esbuild@0.28.1)(jiti@2.7.0)(jsdom@29.1.1(@noble/hashes@1.8.0))(less@4.4.2)(sass@1.102.0)(stylus@0.64.0)(terser@5.49.0)(tsx@4.23.1)(yaml@2.8.1)
 
   apps/management-web:
     dependencies:
@@ -246,16 +249,16 @@ importers:
         version: 19.2.3(@types/react@19.2.17)
       '@vitejs/plugin-react':
         specifier: 6.0.4
-        version: 6.0.4(vite@8.1.5(@types/node@26.1.1)(esbuild@0.28.1)(jiti@2.7.0)(less@4.4.2)(sass@1.102.0)(stylus@0.64.0)(terser@5.49.0)(tsx@4.23.1))
+        version: 6.0.4(vite@8.1.5(@types/node@26.1.1)(esbuild@0.28.1)(jiti@2.7.0)(less@4.4.2)(sass@1.102.0)(stylus@0.64.0)(terser@5.49.0)(tsx@4.23.1)(yaml@2.8.1))
       jsdom:
         specifier: 29.1.1
         version: 29.1.1(@noble/hashes@1.8.0)
       vite:
         specifier: 8.1.5
-        version: 8.1.5(@types/node@26.1.1)(esbuild@0.28.1)(jiti@2.7.0)(less@4.4.2)(sass@1.102.0)(stylus@0.64.0)(terser@5.49.0)(tsx@4.23.1)
+        version: 8.1.5(@types/node@26.1.1)(esbuild@0.28.1)(jiti@2.7.0)(less@4.4.2)(sass@1.102.0)(stylus@0.64.0)(terser@5.49.0)(tsx@4.23.1)(yaml@2.8.1)
       vitest:
         specifier: 4.1.10
-        version: 4.1.10(@types/node@26.1.1)(esbuild@0.28.1)(jiti@2.7.0)(jsdom@29.1.1(@noble/hashes@1.8.0))(less@4.4.2)(sass@1.102.0)(stylus@0.64.0)(terser@5.49.0)(tsx@4.23.1)
+        version: 4.1.10(@types/node@26.1.1)(esbuild@0.28.1)(jiti@2.7.0)(jsdom@29.1.1(@noble/hashes@1.8.0))(less@4.4.2)(sass@1.102.0)(stylus@0.64.0)(terser@5.49.0)(tsx@4.23.1)(yaml@2.8.1)
 
   packages/api-contracts:
     dependencies:
@@ -265,7 +268,7 @@ importers:
     devDependencies:
       vitest:
         specifier: 4.1.10
-        version: 4.1.10(@types/node@26.1.1)(esbuild@0.28.1)(jiti@2.7.0)(jsdom@29.1.1(@noble/hashes@1.8.0))(less@4.4.2)(sass@1.102.0)(stylus@0.64.0)(terser@5.49.0)(tsx@4.23.1)
+        version: 4.1.10(@types/node@26.1.1)(esbuild@0.28.1)(jiti@2.7.0)(jsdom@29.1.1(@noble/hashes@1.8.0))(less@4.4.2)(sass@1.102.0)(stylus@0.64.0)(terser@5.49.0)(tsx@4.23.1)(yaml@2.8.1)
 
   packages/eslint-config:
     dependencies:
@@ -292,7 +295,7 @@ importers:
     devDependencies:
       vitest:
         specifier: 4.1.10
-        version: 4.1.10(@types/node@26.1.1)(esbuild@0.28.1)(jiti@2.7.0)(jsdom@29.1.1(@noble/hashes@1.8.0))(less@4.4.2)(sass@1.102.0)(stylus@0.64.0)(terser@5.49.0)(tsx@4.23.1)
+        version: 4.1.10(@types/node@26.1.1)(esbuild@0.28.1)(jiti@2.7.0)(jsdom@29.1.1(@noble/hashes@1.8.0))(less@4.4.2)(sass@1.102.0)(stylus@0.64.0)(terser@5.49.0)(tsx@4.23.1)(yaml@2.8.1)
 
 packages:
 
@@ -8027,6 +8030,11 @@ packages:
   yallist@3.1.1:
     resolution: {integrity: sha512-a4UGQaWPH59mOXUYnAG2ewncQS4i4F43Tv3JoAM+s2VDAmS9NsK8GpDMLrCHPksFT7h3K6TOoUNn2pb7RoXx4g==}
 
+  yaml@2.8.1:
+    resolution: {integrity: sha512-lcYcMxX2PO9XMGvAJkJ3OsNMw+/7FKes7/hgerGUYWIoWu5j/+YQqcZr5JnPZWzOsEBgMbSbiSTn/dv/69Mkpw==}
+    engines: {node: '>= 14.6'}
+    hasBin: true
+
   yargs-parser@20.2.9:
     resolution: {integrity: sha512-y11nGElTIV+CT3Zv9t7VKl+Q3hTQoT9a1Qzezhhl6Rp21gJ/IVTW7Z3y9EWXhuUBC2Shnf+DX0antecpAwSP8w==}
     engines: {node: '>=10'}
@@ -11264,10 +11272,10 @@ snapshots:
       d3-time-format: 4.1.0
       internmap: 2.0.3
 
-  '@vitejs/plugin-react@6.0.4(vite@8.1.5(@types/node@26.1.1)(esbuild@0.28.1)(jiti@2.7.0)(less@4.4.2)(sass@1.102.0)(stylus@0.64.0)(terser@5.49.0)(tsx@4.23.1))':
+  '@vitejs/plugin-react@6.0.4(vite@8.1.5(@types/node@26.1.1)(esbuild@0.28.1)(jiti@2.7.0)(less@4.4.2)(sass@1.102.0)(stylus@0.64.0)(terser@5.49.0)(tsx@4.23.1)(yaml@2.8.1))':
     dependencies:
       '@rolldown/pluginutils': 1.0.1
-      vite: 8.1.5(@types/node@26.1.1)(esbuild@0.28.1)(jiti@2.7.0)(less@4.4.2)(sass@1.102.0)(stylus@0.64.0)(terser@5.49.0)(tsx@4.23.1)
+      vite: 8.1.5(@types/node@26.1.1)(esbuild@0.28.1)(jiti@2.7.0)(less@4.4.2)(sass@1.102.0)(stylus@0.64.0)(terser@5.49.0)(tsx@4.23.1)(yaml@2.8.1)
 
   '@vitest/expect@4.1.10':
     dependencies:
@@ -11278,13 +11286,13 @@ snapshots:
       chai: 6.2.2
       tinyrainbow: 3.1.0
 
-  '@vitest/mocker@4.1.10(vite@8.1.5(@types/node@26.1.1)(esbuild@0.28.1)(jiti@2.7.0)(less@4.4.2)(sass@1.102.0)(stylus@0.64.0)(terser@5.49.0)(tsx@4.23.1))':
+  '@vitest/mocker@4.1.10(vite@8.1.5(@types/node@26.1.1)(esbuild@0.28.1)(jiti@2.7.0)(less@4.4.2)(sass@1.102.0)(stylus@0.64.0)(terser@5.49.0)(tsx@4.23.1)(yaml@2.8.1))':
     dependencies:
       '@vitest/spy': 4.1.10
       estree-walker: 3.0.3
       magic-string: 0.30.21
     optionalDependencies:
-      vite: 8.1.5(@types/node@26.1.1)(esbuild@0.28.1)(jiti@2.7.0)(less@4.4.2)(sass@1.102.0)(stylus@0.64.0)(terser@5.49.0)(tsx@4.23.1)
+      vite: 8.1.5(@types/node@26.1.1)(esbuild@0.28.1)(jiti@2.7.0)(less@4.4.2)(sass@1.102.0)(stylus@0.64.0)(terser@5.49.0)(tsx@4.23.1)(yaml@2.8.1)
 
   '@vitest/pretty-format@4.1.10':
     dependencies:
@@ -16000,7 +16008,7 @@ snapshots:
 
   vary@1.1.2: {}
 
-  vite@8.1.5(@types/node@26.1.1)(esbuild@0.28.1)(jiti@2.7.0)(less@4.4.2)(sass@1.102.0)(stylus@0.64.0)(terser@5.49.0)(tsx@4.23.1):
+  vite@8.1.5(@types/node@26.1.1)(esbuild@0.28.1)(jiti@2.7.0)(less@4.4.2)(sass@1.102.0)(stylus@0.64.0)(terser@5.49.0)(tsx@4.23.1)(yaml@2.8.1):
     dependencies:
       lightningcss: 1.33.0
       picomatch: 4.0.5
@@ -16017,11 +16025,12 @@ snapshots:
       stylus: 0.64.0
       terser: 5.49.0
       tsx: 4.23.1
+      yaml: 2.8.1
 
-  vitest@4.1.10(@types/node@26.1.1)(esbuild@0.28.1)(jiti@2.7.0)(jsdom@29.1.1(@noble/hashes@1.8.0))(less@4.4.2)(sass@1.102.0)(stylus@0.64.0)(terser@5.49.0)(tsx@4.23.1):
+  vitest@4.1.10(@types/node@26.1.1)(esbuild@0.28.1)(jiti@2.7.0)(jsdom@29.1.1(@noble/hashes@1.8.0))(less@4.4.2)(sass@1.102.0)(stylus@0.64.0)(terser@5.49.0)(tsx@4.23.1)(yaml@2.8.1):
     dependencies:
       '@vitest/expect': 4.1.10
-      '@vitest/mocker': 4.1.10(vite@8.1.5(@types/node@26.1.1)(esbuild@0.28.1)(jiti@2.7.0)(less@4.4.2)(sass@1.102.0)(stylus@0.64.0)(terser@5.49.0)(tsx@4.23.1))
+      '@vitest/mocker': 4.1.10(vite@8.1.5(@types/node@26.1.1)(esbuild@0.28.1)(jiti@2.7.0)(less@4.4.2)(sass@1.102.0)(stylus@0.64.0)(terser@5.49.0)(tsx@4.23.1)(yaml@2.8.1))
       '@vitest/pretty-format': 4.1.10
       '@vitest/runner': 4.1.10
       '@vitest/snapshot': 4.1.10
@@ -16038,7 +16047,7 @@ snapshots:
       tinyexec: 1.2.4
       tinyglobby: 0.2.17
       tinyrainbow: 3.1.0
-      vite: 8.1.5(@types/node@26.1.1)(esbuild@0.28.1)(jiti@2.7.0)(less@4.4.2)(sass@1.102.0)(stylus@0.64.0)(terser@5.49.0)(tsx@4.23.1)
+      vite: 8.1.5(@types/node@26.1.1)(esbuild@0.28.1)(jiti@2.7.0)(less@4.4.2)(sass@1.102.0)(stylus@0.64.0)(terser@5.49.0)(tsx@4.23.1)(yaml@2.8.1)
       why-is-node-running: 2.3.0
     optionalDependencies:
       '@types/node': 26.1.1
@@ -16327,6 +16336,8 @@ snapshots:
   y18n@5.0.8: {}
 
   yallist@3.1.1: {}
+
+  yaml@2.8.1: {}
 
   yargs-parser@20.2.9: {}
 
