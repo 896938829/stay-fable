@@ -14,7 +14,7 @@ From the repository root:
 ```powershell
 Copy-Item .env.example .env
 pnpm install
-docker compose -f infrastructure/compose.yaml up -d
+docker compose -f infrastructure/compose.yaml up -d --wait --wait-timeout 120
 node scripts/check-local-infrastructure.mjs
 pnpm dev
 ```
