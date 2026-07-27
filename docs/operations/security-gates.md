@@ -52,6 +52,8 @@ Security Champion 与 Release Manager 必须共同批准例外。已泄露秘密
 
 ## 运行与证据保留
 
-每次 PR 和 `main` 推送执行质量、秘密与 API 容器门禁。Release Manager 在发布清单中记录提交 SHA、三个 CI 运行链接、审批人和例外记录。GitHub Actions 日志及相关报告至少保留 180 天；若平台默认保留期更短，应将报告复制到受访问控制的发布证据库。
+每次 PR 和 `main` 推送执行质量、秘密与 API/Worker 容器门禁。Release Manager 在发布清单中记录提交 SHA、三个 CI 运行链接、审批人和例外记录。GitHub Actions 日志及相关报告至少保留 180 天；若平台默认保留期更短，应将报告复制到受访问控制的发布证据库。
 
 Dependabot 每周检查 npm 依赖、每月检查 GitHub Actions。第三方 Action 固定到完整 commit SHA，Dependabot PR 经上述全部门禁后才能合并。
+
+Dependabot 不会追踪工作流 `run` 命令中内嵌的 Gitleaks 容器。当前可读版本证据为 `v8.30.1`。Security Owner 至少每月核验 Gitleaks 上游最新稳定 tag，通过 GHCR Registry API 核验对应 manifest digest，更新可读版本证据和工作流 digest，并在安全维护记录中留证；更新 PR 必须通过完整历史秘密扫描和全部发布门禁。

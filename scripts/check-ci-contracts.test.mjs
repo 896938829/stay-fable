@@ -41,25 +41,24 @@ test("CI workflow enforces verification, secret scanning, and container scanning
     workflowText,
     /ghcr\.io\/gitleaks\/gitleaks@sha256:[0-9a-f]{64}.*detect.*--exit-code 1/,
   );
+  assert.match(workflow.jobs.secrets.steps[1].run, /--user "\$\(id -u\):\$\(id -g\)"/);
 
   const containers = workflow.jobs.containers;
-  assert.match(
-    JSON.stringify(containers.steps),
-    /docker build --file apps\/api\/Dockerfile --tag stay-fable-api:ci \./,
-  );
+  const containerText = JSON.stringify(containers.steps);
+  assert.match(containerText, /apps\/api\/Dockerfile --tag stay-fable-api:ci/);
+  assert.match(containerText, /apps\/job-worker\/Dockerfile --tag stay-fable-worker:ci/);
   assert.match(workflowText, /aquasecurity\/trivy-action@[0-9a-f]{40}/);
-  assert.equal(
-    containers.steps.find((step) => step.name === "Scan API image").with["exit-code"],
-    "1",
-  );
-  assert.equal(
-    containers.steps.find((step) => step.name === "Scan API image").with.severity,
-    "HIGH,CRITICAL",
-  );
-  assert.equal(
-    containers.steps.find((step) => step.name === "Scan API image").with["ignore-unfixed"],
-    true,
-  );
+  for (const [name, image] of [
+    ["Scan API image", "stay-fable-api:ci"],
+    ["Scan Worker image", "stay-fable-worker:ci"],
+  ]) {
+    const scan = containers.steps.find((step) => step.name === name);
+    assert.equal(scan.with["image-ref"], image);
+    assert.equal(scan.with["exit-code"], "1");
+    assert.equal(scan.with.severity, "HIGH,CRITICAL");
+    assert.equal(scan.with["ignore-unfixed"], true);
+  }
+  assert.doesNotMatch(source, /Audit production dependencies/);
 
   for (const use of source.matchAll(/uses:\s*([^@\s]+)@([^\s#]+)/g)) {
     assert.match(use[2], /^[0-9a-f]{40}$/, `${use[1]} must be pinned to a full commit SHA`);
@@ -148,5 +147,14 @@ test("dependency audit evidence records the unresolved blocking advisories", asy
     assert.match(source, new RegExp(advisory));
   }
   assert.match(source, /无兼容修复/);
+  assert.match(source, /34.*16.*18/);
   assert.match(source, /pnpm audit --audit-level high/);
+});
+
+test("security docs assign monthly Gitleaks image updates", async () => {
+  const source = await read("docs/operations/security-gates.md");
+
+  assert.match(source, /Dependabot.*不会追踪.*Gitleaks/s);
+  assert.match(source, /Security Owner.*至少每月/s);
+  assert.match(source, /稳定 tag.*Registry.*digest.*留证/s);
 });

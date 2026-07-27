@@ -60,7 +60,7 @@ jobs:
         run: pnpm --filter @stay-fable/api-server prisma:generate
       - name: Run quality checks
         run: pnpm check
-      - name: Audit production dependencies
+      - name: Audit all workspace dependencies
         run: pnpm audit --audit-level high
 
   secrets:
@@ -75,13 +75,16 @@ jobs:
       - name: Run Gitleaks
         run: >-
           docker run --rm
+          --user "$(id -u):$(id -g)"
+          --env HOME=/tmp
+          --tmpfs /tmp:rw,noexec,nosuid,size=16m
           --volume "$PWD:/repo:ro"
-          ghcr.io/gitleaks/gitleaks@sha256:cdbb7c955abce02001a9f6c9f602fb195b7fadc1e812065883f695d1eeaba854
+          ghcr.io/gitleaks/gitleaks@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f
           detect --source /repo --config /repo/.gitleaks.toml
           --no-banner --redact --exit-code 1
 
   containers:
-    name: Build and scan API container
+    name: Build and scan production containers
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
@@ -93,6 +96,16 @@ jobs:
         uses: aquasecurity/trivy-action@b6643a29fecd7f34b3597bc6acb0a98b03d33ff8 # v0.33.1
         with:
           image-ref: stay-fable-api:ci
+          format: table
+          exit-code: "1"
+          ignore-unfixed: true
+          severity: HIGH,CRITICAL
+      - name: Build Worker image
+        run: docker build --file apps/job-worker/Dockerfile --tag stay-fable-worker:ci .
+      - name: Scan Worker image
+        uses: aquasecurity/trivy-action@b6643a29fecd7f34b3597bc6acb0a98b03d33ff8 # v0.33.1
+        with:
+          image-ref: stay-fable-worker:ci
           format: table
           exit-code: "1"
           ignore-unfixed: true
