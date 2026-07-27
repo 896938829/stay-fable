@@ -7,5 +7,5 @@
     "noEmit": true,
     "types": ["@tarojs/taro", "vitest/globals"]
   },
-  "include": ["config", "src"]
+  "include": ["config/**/*.ts", "src/**/*.ts", "src/**/*.tsx"]
 }

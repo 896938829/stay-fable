@@ -2,7 +2,7 @@ import { Text, View } from "@tarojs/components";
 
 import "./index.scss";
 
-export default function Index() {
+export default function IndexPage() {
   return (
     <View className="page">
       <Text className="title">Stay Fable</Text>
