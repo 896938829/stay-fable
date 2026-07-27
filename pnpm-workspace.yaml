@@ -2,7 +2,17 @@ packages:
   - "apps/*"
   - "packages/*"
 
+allowBuilds:
+  "@prisma/engines": true
+  "@scarf/scarf": true
+  prisma: true
+
 autoInstallPeers: false
 engineStrict: true
 injectWorkspacePackages: true
 strictPeerDependencies: true
+
+peerDependencyRules:
+  ignoreMissing:
+    - react
+    - react-dom
