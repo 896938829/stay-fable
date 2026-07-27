@@ -16,7 +16,12 @@ import { HealthService } from "./health/health.service.js";
     LoggerModule.forRoot({
       pinoHttp: {
         redact: {
-          paths: ["req.headers.authorization", "req.headers.cookie", "password", "idCardNumber"],
+          paths: [
+            "req.headers.authorization",
+            "req.headers.cookie",
+            "req.body.password",
+            "req.body.idCardNumber",
+          ],
           censor: "[REDACTED]",
         },
       },

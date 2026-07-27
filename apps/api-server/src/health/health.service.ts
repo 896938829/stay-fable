@@ -51,6 +51,8 @@ export class HealthService implements OnModuleDestroy {
   }
 
   async onModuleDestroy(): Promise<void> {
-    await this.redis.quit();
+    if (this.redis.status !== "end") {
+      await this.redis.quit();
+    }
   }
 }
