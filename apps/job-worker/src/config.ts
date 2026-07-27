@@ -13,6 +13,10 @@ const workerEnvironmentSchema = z.object({
 export const parseWorkerConfig = (environment: Record<string, unknown>) => {
   const parsed = workerEnvironmentSchema.parse(environment);
 
+  if (parsed.NODE_ENV === "production" && new URL(parsed.REDIS_URL).protocol !== "rediss:") {
+    throw new Error("Production REDIS_URL must use rediss: protocol");
+  }
+
   return {
     nodeEnv: parsed.NODE_ENV,
     redisUrl: parsed.REDIS_URL,

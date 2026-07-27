@@ -11,7 +11,7 @@ export function App() {
           <Alert
             type="success"
             showIcon
-            message="基础环境已就绪"
+            title="基础环境已就绪"
             description="商家和运营功能将在后续阶段按权限逐步开放。"
           />
         </Card>

@@ -34,11 +34,38 @@ describe("parseWorkerConfig", () => {
   );
 
   it("rejects a non-Redis URL with a clear message", () => {
-    expect(() =>
+    let thrown: unknown;
+
+    try {
       parseWorkerConfig({
         NODE_ENV: "test",
-        REDIS_URL: "https://redis.example.test",
+        REDIS_URL: "https://user:secret@redis.example.test",
+      });
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toBeInstanceOf(Error);
+    expect((thrown as Error).message).toContain("REDIS_URL must use redis: or rediss: protocol");
+    expect((thrown as Error).message).not.toContain("user");
+    expect((thrown as Error).message).not.toContain("secret");
+  });
+
+  it("rejects redis: in production", () => {
+    expect(() =>
+      parseWorkerConfig({
+        NODE_ENV: "production",
+        REDIS_URL: "redis://redis.example.test:6379",
       }),
-    ).toThrow("REDIS_URL must use redis: or rediss: protocol");
+    ).toThrow("Production REDIS_URL must use rediss: protocol");
+  });
+
+  it("accepts rediss: in production", () => {
+    expect(
+      parseWorkerConfig({
+        NODE_ENV: "production",
+        REDIS_URL: "rediss://redis.example.test:6380",
+      }).redisUrl,
+    ).toBe("rediss://redis.example.test:6380");
   });
 });

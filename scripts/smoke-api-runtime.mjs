@@ -57,7 +57,7 @@ const child = spawn(process.execPath, ["scripts/api-runtime-child.mjs"], {
       "postgresql://phase0_probe:local_placeholder@127.0.0.1:1/stay_fable?uselibpqcompat=true&sslmode=require",
     NODE_ENV: "production",
     PORT: String(port),
-    REDIS_URL: "redis://127.0.0.1:1",
+    REDIS_URL: "rediss://127.0.0.1:1",
   },
   stdio: ["ignore", "pipe", "pipe", "ipc"],
   windowsHide: true,

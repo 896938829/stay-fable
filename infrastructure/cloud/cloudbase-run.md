@@ -17,17 +17,17 @@ API 就绪探针只有在 PostgreSQL/PostGIS 与 Redis 均可用时才通过。�
 或腾讯云密钥管理服务注入。每个环境使用自己的值，禁止跨 `dev`、`staging`、`prod`
 复制 Secret。
 
-| 名称                | 类型     | 使用方      | 说明                                |
-| ------------------- | -------- | ----------- | ----------------------------------- |
-| `DATABASE_URL`      | Secret   | API、worker | PostgreSQL 连接串；生产要求加密连接 |
-| `REDIS_URL`         | Secret   | API、worker | Redis 连接串；生产要求 `rediss://`  |
-| `JWT_SECRET`        | Secret   | API         | 高熵签名密钥，支持轮换              |
-| `WECHAT_APP_ID`     | 环境变量 | API         | 当前环境对应的微信应用标识          |
-| `WECHAT_APP_SECRET` | Secret   | API         | 微信应用密钥                        |
-| `COS_SECRET_ID`     | Secret   | API、worker | 优先使用最小权限临时凭证或服务身份  |
-| `COS_SECRET_KEY`    | Secret   | API、worker | 不写入镜像、日志或普通环境文件      |
-| `COS_BUCKET`        | 环境变量 | API、worker | 当前环境独占的对象存储桶            |
-| `COS_REGION`        | 环境变量 | API、worker | 对象存储地域                        |
+| 名称                | 类型     | 使用方      | 说明                                                                                   |
+| ------------------- | -------- | ----------- | -------------------------------------------------------------------------------------- |
+| `DATABASE_URL`      | Secret   | API、worker | `postgresql://` 或 `postgres://` 连接串；生产必须且只能包含一个 `sslmode=require` 参数 |
+| `REDIS_URL`         | Secret   | API、worker | Redis 连接串；生产要求 `rediss://`                                                     |
+| `JWT_SECRET`        | Secret   | API         | 高熵签名密钥，支持轮换                                                                 |
+| `WECHAT_APP_ID`     | 环境变量 | API         | 当前环境对应的微信应用标识                                                             |
+| `WECHAT_APP_SECRET` | Secret   | API         | 微信应用密钥                                                                           |
+| `COS_SECRET_ID`     | Secret   | API、worker | 优先使用最小权限临时凭证或服务身份                                                     |
+| `COS_SECRET_KEY`    | Secret   | API、worker | 不写入镜像、日志或普通环境文件                                                         |
+| `COS_BUCKET`        | 环境变量 | API、worker | 当前环境独占的对象存储桶                                                               |
+| `COS_REGION`        | 环境变量 | API、worker | 对象存储地域                                                                           |
 
 部署前应校验全部必需变量存在，但错误信息不得输出变量值。日志应对连接串、令牌和微信、
 COS 凭证做脱敏。

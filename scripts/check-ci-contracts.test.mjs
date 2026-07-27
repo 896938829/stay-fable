@@ -26,6 +26,18 @@ test("CI workflow enforces verification, secret scanning, and container scanning
   assert.match(verify.env.DATABASE_URL, /^postgresql:\/\/[^:]+:[^@]+@localhost:/);
   assert.match(verify.env.REDIS_URL, /^redis:\/\/localhost:/);
 
+  const nodeSetup = verify.steps.find((step) => step.name === "Set up Node.js");
+  assert.equal(nodeSetup.with["node-version-file"], ".nvmrc");
+  assert.equal(nodeSetup.with["node-version"], undefined);
+  const nodeVersion = (await read(".nvmrc")).trim();
+  assert.equal(nodeVersion, "24.14.1");
+  for (const dockerfile of ["apps/api/Dockerfile", "apps/worker/Dockerfile"]) {
+    assert.match(
+      await read(dockerfile),
+      new RegExp(`^FROM node:${nodeVersion}-bookworm-slim@`, "m"),
+    );
+  }
+
   const workflowText = JSON.stringify(workflow);
   for (const command of [
     "pnpm install --frozen-lockfile",
