@@ -1,21 +1,24 @@
 import { spawn } from "node:child_process";
-import { resolve } from "node:path";
+import { Buffer } from "node:buffer";
+import { dirname, resolve } from "node:path";
 import process from "node:process";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-function pnpmCommand(label, ...arguments_) {
-  if (process.platform === "win32") {
-    return {
-      label,
-      executable: process.env.ComSpec ?? "C:\\Windows\\System32\\cmd.exe",
-      arguments: ["/d", "/s", "/c", ["pnpm", ...arguments_].join(" ")],
-    };
-  }
+const corepackCli = resolve(dirname(process.execPath), "node_modules/corepack/dist/corepack.js");
 
-  return { label, executable: "pnpm", arguments: arguments_ };
+function pnpmCommand(label, ...arguments_) {
+  return {
+    label,
+    executable: process.execPath,
+    arguments: [corepackCli, "pnpm", ...arguments_],
+  };
 }
 
 export const automatedRepositoryCommands = Object.freeze([
+  {
+    ...pnpmCommand("Corepack pnpm version", "--version"),
+    expectedOutput: "11.17.0",
+  },
   {
     label: "Workspace contract",
     executable: process.execPath,
@@ -51,6 +54,23 @@ export const automatedRepositoryCommands = Object.freeze([
   pnpmCommand("Typecheck", "typecheck"),
   pnpmCommand("Tests", "test"),
   pnpmCommand("Build", "build"),
+  pnpmCommand(
+    "Build Alipay mini-program",
+    "--filter",
+    "@stay-fable/consumer-miniapp",
+    "build:alipay",
+  ),
+  pnpmCommand("Build Douyin mini-program", "--filter", "@stay-fable/consumer-miniapp", "build:tt"),
+  {
+    label: "Built API runtime smoke",
+    executable: process.execPath,
+    arguments: ["scripts/smoke-api-runtime.mjs"],
+  },
+  {
+    label: "Built frontend artifact smoke",
+    executable: process.execPath,
+    arguments: ["scripts/smoke-frontend-artifacts.mjs"],
+  },
   pnpmCommand("Dependency audit", "audit", "--audit-level", "high"),
 ]);
 
@@ -91,19 +111,45 @@ function formatCommand(command) {
   return [command.executable, ...command.arguments].join(" ");
 }
 
+export function validateExpectedOutput(command, actualOutput) {
+  if (command.expectedOutput !== undefined && actualOutput.trim() !== command.expectedOutput) {
+    throw new Error(
+      `${command.label} expected ${command.expectedOutput}, received ${actualOutput.trim() || "<empty>"}`,
+    );
+  }
+}
+
 export function runCommand(command) {
   return new Promise((resolve, reject) => {
+    const capturedOutput = [];
+    const capturesOutput = command.expectedOutput !== undefined;
     const child = spawn(command.executable, command.arguments, {
       cwd: fileURLToPath(new URL("../", import.meta.url)),
-      stdio: "inherit",
+      stdio: capturesOutput ? ["ignore", "pipe", "pipe"] : "inherit",
       windowsHide: true,
     });
 
     child.once("error", reject);
-    child.once("exit", (code, signal) => {
+    child.stdout?.on("data", (chunk) => {
+      capturedOutput.push(chunk);
+      process.stdout.write(chunk);
+    });
+    child.stderr?.on("data", (chunk) => {
+      process.stderr.write(chunk);
+    });
+    child.once("close", (code, signal) => {
       if (signal) {
         reject(new Error(`${command.label} terminated by signal ${signal}`));
         return;
+      }
+      if (code === 0 && capturesOutput) {
+        const actualOutput = Buffer.concat(capturedOutput).toString("utf8").trim();
+        try {
+          validateExpectedOutput(command, actualOutput);
+        } catch (error) {
+          reject(error);
+          return;
+        }
       }
       resolve(code ?? 1);
     });

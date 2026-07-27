@@ -6,12 +6,14 @@ import {
   automatedRepositoryCommands,
   externalRuntimeChecks,
   runPhaseZeroVerification,
+  validateExpectedOutput,
 } from "./verify-phase-0.mjs";
 
 test("runs the deterministic repository checks in the required order with audit last", async () => {
   assert.deepEqual(
     automatedRepositoryCommands.map(({ label }) => label),
     [
+      "Corepack pnpm version",
       "Workspace contract",
       "Workspace contract tests",
       "Local infrastructure static contracts",
@@ -23,6 +25,10 @@ test("runs the deterministic repository checks in the required order with audit 
       "Typecheck",
       "Tests",
       "Build",
+      "Build Alipay mini-program",
+      "Build Douyin mini-program",
+      "Built API runtime smoke",
+      "Built frontend artifact smoke",
       "Dependency audit",
     ],
   );
@@ -43,17 +49,36 @@ test("runs the deterministic repository checks in the required order with audit 
   assert.equal(observed.at(-1), "Dependency audit");
 });
 
-test("uses the Windows command processor for pnpm scripts without enabling spawn shell mode", () => {
-  if (process.platform !== "win32") return;
-
+test("runs every pnpm command through Corepack and verifies the exact pnpm version first", () => {
   const pnpmCommands = automatedRepositoryCommands.filter(({ label }) =>
-    ["Formatting", "Lint", "Typecheck", "Tests", "Build", "Dependency audit"].includes(label),
+    [
+      "Corepack pnpm version",
+      "Formatting",
+      "Lint",
+      "Typecheck",
+      "Tests",
+      "Build",
+      "Build Alipay mini-program",
+      "Build Douyin mini-program",
+      "Dependency audit",
+    ].includes(label),
   );
   for (const command of pnpmCommands) {
-    assert.equal(command.executable.toLowerCase(), process.env.ComSpec?.toLowerCase());
-    assert.deepEqual(command.arguments.slice(0, 3), ["/d", "/s", "/c"]);
-    assert.match(command.arguments[3], /^pnpm /);
+    assert.equal(command.executable, process.execPath);
+    assert.match(command.arguments[0], /corepack[\\/]dist[\\/]corepack\.js$/);
+    assert.equal(command.arguments[1], "pnpm");
   }
+  assert.deepEqual(pnpmCommands[0].arguments.slice(1), ["pnpm", "--version"]);
+  assert.equal(pnpmCommands[0].expectedOutput, "11.17.0");
+});
+
+test("rejects an unexpected Corepack pnpm version with both versions in the message", () => {
+  const command = automatedRepositoryCommands[0];
+
+  assert.throws(
+    () => validateExpectedOutput(command, "11.9.0"),
+    /Corepack pnpm version expected 11\.17\.0, received 11\.9\.0/,
+  );
 });
 
 test("stops immediately and rejects when any repository command fails", async () => {
@@ -72,6 +97,7 @@ test("stops immediately and rejects when any repository command fails", async ()
   );
 
   assert.deepEqual(observed, [
+    "Corepack pnpm version",
     "Workspace contract",
     "Workspace contract tests",
     "Local infrastructure static contracts",

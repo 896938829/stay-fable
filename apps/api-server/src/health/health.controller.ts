@@ -1,4 +1,4 @@
-import { Controller, Get } from "@nestjs/common";
+import { Controller, Get, ServiceUnavailableException } from "@nestjs/common";
 import type { HealthResponse } from "@stay-fable/api-contracts/health";
 
 import { HealthService } from "./health.service.js";
@@ -13,7 +13,11 @@ export class HealthController {
   }
 
   @Get("ready")
-  ready(): Promise<HealthResponse> {
-    return this.healthService.ready();
+  async ready(): Promise<HealthResponse> {
+    const response = await this.healthService.ready();
+    if (response.status === "unavailable") {
+      throw new ServiceUnavailableException(response);
+    }
+    return response;
   }
 }

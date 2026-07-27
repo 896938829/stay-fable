@@ -19,7 +19,7 @@ export class DatabaseService extends PrismaClient implements OnModuleDestroy {
     super({
       adapter: new PrismaPg({
         connectionString: requireDatabaseUrl(),
-        connectionTimeoutMillis: 5_000,
+        connectionTimeoutMillis: 1_000,
         idleTimeoutMillis: 10_000,
         max: 10,
       }),

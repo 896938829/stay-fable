@@ -15,4 +15,17 @@ describe("healthResponseSchema", () => {
 
     expect(healthResponseSchema.parse(response)).toEqual(response);
   });
+
+  it("accepts a structured unavailable response without error details", () => {
+    const response = {
+      status: "unavailable",
+      service: "api-server",
+      checks: {
+        database: "down",
+        redis: "up",
+      },
+    } as const;
+
+    expect(healthResponseSchema.parse(response)).toEqual(response);
+  });
 });

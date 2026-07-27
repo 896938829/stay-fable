@@ -34,4 +34,41 @@ describe("HealthController", () => {
       .expect(200)
       .expect({ status: "ok", service: "api-server" });
   });
+
+  it("returns 503 with normalized dependency checks and remains live", async () => {
+    const module = await Test.createTestingModule({
+      controllers: [HealthController],
+      providers: [
+        {
+          provide: HealthService,
+          useValue: {
+            live: () => ({ status: "ok", service: "api-server" }),
+            ready: () =>
+              Promise.resolve({
+                status: "unavailable",
+                service: "api-server",
+                checks: { database: "down", redis: "down" },
+              }),
+          },
+        },
+      ],
+    }).compile();
+
+    app = module.createNestApplication();
+    await app.init();
+    const server = app.getHttpServer() as Parameters<typeof request>[0];
+
+    await request(server)
+      .get("/health/ready")
+      .expect(503)
+      .expect({
+        status: "unavailable",
+        service: "api-server",
+        checks: { database: "down", redis: "down" },
+      });
+    await request(server)
+      .get("/health/live")
+      .expect(200)
+      .expect({ status: "ok", service: "api-server" });
+  });
 });

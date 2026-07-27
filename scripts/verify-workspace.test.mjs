@@ -23,6 +23,9 @@ test("includes phase zero verification entry points and evidence in the workspac
   for (const path of [
     "scripts/verify-phase-0.mjs",
     "scripts/verify-phase-0.test.mjs",
+    "scripts/api-runtime-child.mjs",
+    "scripts/smoke-api-runtime.mjs",
+    "scripts/smoke-frontend-artifacts.mjs",
     "docs/operations/phase-0-verification.md",
     "infrastructure/cloud/cloudbase-run.md",
     "infrastructure/runbooks/backup-restore.md",

@@ -1,4 +1,4 @@
-import { Injectable, type OnModuleDestroy } from "@nestjs/common";
+import { Injectable } from "@nestjs/common";
 import type { HealthResponse } from "@stay-fable/api-contracts/health";
 import { Redis } from "ioredis";
 
@@ -15,13 +15,7 @@ const requireRedisUrl = (): string => {
 };
 
 @Injectable()
-export class HealthService implements OnModuleDestroy {
-  private readonly redis = new Redis(requireRedisUrl(), {
-    lazyConnect: true,
-    maxRetriesPerRequest: 1,
-    connectTimeout: 5_000,
-  });
-
+export class HealthService {
   constructor(private readonly database: DatabaseService) {}
 
   live(): HealthResponse {
@@ -32,27 +26,42 @@ export class HealthService implements OnModuleDestroy {
   }
 
   async ready(): Promise<HealthResponse> {
-    await this.database.check();
+    const checks: Record<"database" | "redis", "up" | "down"> = {
+      database: "down",
+      redis: "down",
+    };
 
-    if (this.redis.status === "wait") {
-      await this.redis.connect();
+    try {
+      await this.database.check();
+      checks.database = "up";
+    } catch {
+      checks.database = "down";
     }
 
-    await this.redis.ping();
+    let redis: Redis | undefined;
+    try {
+      redis = new Redis(requireRedisUrl(), {
+        commandTimeout: 1_000,
+        connectTimeout: 1_000,
+        enableOfflineQueue: false,
+        lazyConnect: true,
+        maxRetriesPerRequest: 0,
+        retryStrategy: () => null,
+      });
+      redis.on("error", () => undefined);
+      await redis.connect();
+      await redis.ping();
+      checks.redis = "up";
+    } catch {
+      checks.redis = "down";
+    } finally {
+      redis?.disconnect();
+    }
 
     return {
-      status: "ok",
+      status: checks.database === "up" && checks.redis === "up" ? "ok" : "unavailable",
       service: "api-server",
-      checks: {
-        database: "up",
-        redis: "up",
-      },
+      checks,
     };
-  }
-
-  async onModuleDestroy(): Promise<void> {
-    if (this.redis.status !== "end") {
-      await this.redis.quit();
-    }
   }
 }
