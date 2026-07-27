@@ -14,15 +14,20 @@
 
 ## 阻断规则
 
-| 门禁     | 阻断条件                                                   | Owner             | 必须保存的证据                    |
-| -------- | ---------------------------------------------------------- | ----------------- | --------------------------------- |
-| 代码质量 | lint、typecheck、test 或 build 任一失败                    | 变更作者          | `Verify workspace` 日志及测试报告 |
-| 依赖安全 | `pnpm audit --audit-level high` 发现 HIGH 或 CRITICAL 漏洞 | Dependency Owner  | 审计日志、升级或缓解说明          |
-| 秘密检测 | Gitleaks 命中任何未明确批准的秘密                          | Security Champion | Gitleaks 日志、秘密轮换记录       |
-| 镜像安全 | Trivy 发现可修复或未修复的 HIGH 或 CRITICAL 漏洞           | Service Owner     | 镜像摘要、扫描日志、修复 PR       |
-| 分支保护 | 必需检查未通过、未完成审查或绕过保护规则                   | Release Manager   | PR 审批与分支保护审计日志         |
+| 门禁         | 阻断条件                                                   | Owner             | 必须保存的证据                    |
+| ------------ | ---------------------------------------------------------- | ----------------- | --------------------------------- |
+| 代码质量     | lint、typecheck、test 或 build 任一失败                    | 变更作者          | `Verify workspace` 日志及测试报告 |
+| 依赖安全     | `pnpm audit --audit-level high` 发现 HIGH 或 CRITICAL 漏洞 | Dependency Owner  | 审计日志、升级或缓解说明          |
+| 秘密检测     | Gitleaks 命中任何未明确批准的秘密                          | Security Champion | Gitleaks 日志、秘密轮换记录       |
+| 镜像安全     | Trivy 发现 HIGH 或 CRITICAL 且已有修复版本的镜像漏洞       | Service Owner     | 镜像摘要、扫描日志、修复 PR       |
+| 分支保护     | 必需检查未通过、未完成审查或绕过保护规则                   | Release Manager   | PR 审批与分支保护审计日志         |
+| 数据库迁移   | 数据库迁移未经数据 Owner 与 Reviewer 审查                  | Data Owner        | 迁移脚本、回滚方案和审查记录      |
+| API contract | API contract 变更未附兼容性说明或破坏性变更方案            | API Owner         | 契约 diff、兼容性说明和版本计划   |
+| 高风险业务   | 支付、授权或敏感数据变更缺少专项测试及 Security Review     | Security Champion | 专项测试报告、威胁评审和审批记录  |
 
 所有门禁均为发布阻断项。合并到 `main` 前应在 GitHub 分支保护中把三个 CI jobs 设为必需检查，并要求至少一名非作者审查者批准；生产发布只允许从通过这些检查的不可变提交创建。
+
+Trivy 当前使用 `ignore-unfixed: true`：未修复项不会由镜像扫描 job 直接阻断，但必须由 Service Owner 建立有时限的例外/跟踪记录，说明影响、补偿措施、上游修复状态与复审日期；缺少该记录时发布仍被人工门禁阻断。
 
 ## 修复 SLA
 

@@ -19,8 +19,8 @@ test("CI workflow enforces verification, secret scanning, and container scanning
   const verify = workflow.jobs.verify;
   assert.equal(verify["runs-on"], "ubuntu-24.04");
   assert.equal(verify["timeout-minutes"], 30);
-  assert.equal(verify.services.postgres.image, "postgis/postgis:17-3.5");
-  assert.equal(verify.services.redis.image, "redis:7.4-alpine");
+  assert.match(verify.services.postgres.image, /^postgis\/postgis:17-3\.5@sha256:[0-9a-f]{64}$/);
+  assert.match(verify.services.redis.image, /^redis:7\.4-alpine@sha256:[0-9a-f]{64}$/);
   assert.match(verify.services.postgres.options, /pg_isready/);
   assert.match(verify.services.redis.options, /redis-cli ping/);
   assert.match(verify.env.DATABASE_URL, /^postgresql:\/\/[^:]+:[^@]+@localhost:/);
@@ -83,6 +83,12 @@ test("Dependabot covers npm and GitHub Actions with bounded schedules", async ()
   assert.equal(actions.schedule.interval, "monthly");
 });
 
+test("direct CI tooling dependencies use patched versions", async () => {
+  const rootPackage = JSON.parse(await read("package.json"));
+
+  assert.equal(rootPackage.devDependencies.yaml, "2.8.3");
+});
+
 test("Gitleaks configuration only allows explicit fake fixture paths", async () => {
   const source = await read(".gitleaks.toml");
 
@@ -110,8 +116,37 @@ test("security gate documentation names owners, evidence, SLAs, and exceptions",
     "到期",
     "补偿措施",
     "复审",
+    "数据库迁移",
+    "API contract",
+    "兼容性说明",
+    "支付",
+    "授权",
+    "敏感数据",
+    "专项测试",
   ]) {
     assert.match(source, new RegExp(phrase, "i"), `missing ${phrase}`);
   }
+  assert.match(source, /已有修复版本/);
+  assert.match(source, /未修复项.*(?:跟踪|例外)/s);
   assert.match(source, /尚未在 GitHub Actions 实际运行/);
+});
+
+test("dependency audit evidence records the unresolved blocking advisories", async () => {
+  const source = await read("docs/operations/dependency-audit.md");
+
+  assert.match(source, /基线.*30.*2 CRITICAL.*11 HIGH/s);
+  assert.match(source, /当前.*29.*2 CRITICAL.*11 HIGH/s);
+  assert.match(source, /直接依赖.*webpack/s);
+  assert.match(source, /传递依赖.*GHSA-hmx5-qpq5-p643/s);
+  for (const advisory of [
+    "GHSA-mp2f-45pm-3cg9",
+    "GHSA-8jmw-wjr8-2x66",
+    "GHSA-c96f-x56v-gq3h",
+    "GHSA-pm4m-ph32-ghv5",
+    "GHSA-mh99-v99m-4gvg",
+  ]) {
+    assert.match(source, new RegExp(advisory));
+  }
+  assert.match(source, /无兼容修复/);
+  assert.match(source, /pnpm audit --audit-level high/);
 });
