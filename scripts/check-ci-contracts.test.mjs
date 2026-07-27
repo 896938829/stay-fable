@@ -46,7 +46,7 @@ test("CI workflow enforces verification, secret scanning, and container scanning
   const containers = workflow.jobs.containers;
   const containerText = JSON.stringify(containers.steps);
   assert.match(containerText, /apps\/api\/Dockerfile --tag stay-fable-api:ci/);
-  assert.match(containerText, /apps\/job-worker\/Dockerfile --tag stay-fable-worker:ci/);
+  assert.match(containerText, /apps\/worker\/Dockerfile --tag stay-fable-worker:ci/);
   assert.match(workflowText, /aquasecurity\/trivy-action@[0-9a-f]{40}/);
   for (const [name, image] of [
     ["Scan API image", "stay-fable-api:ci"],

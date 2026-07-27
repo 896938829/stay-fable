@@ -101,7 +101,7 @@ jobs:
           ignore-unfixed: true
           severity: HIGH,CRITICAL
       - name: Build Worker image
-        run: docker build --file apps/job-worker/Dockerfile --tag stay-fable-worker:ci .
+        run: docker build --file apps/worker/Dockerfile --tag stay-fable-worker:ci .
       - name: Scan Worker image
         uses: aquasecurity/trivy-action@b6643a29fecd7f34b3597bc6acb0a98b03d33ff8 # v0.33.1
         with:
