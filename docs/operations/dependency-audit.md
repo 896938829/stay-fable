@@ -2,6 +2,9 @@
 
 审计日期：2026-07-27。执行命令：
 
+Current audit summary: 2 CRITICAL, 11 HIGH
+Current release conclusion: Blocked
+
 ```text
 pnpm audit --json
 pnpm audit --audit-level high

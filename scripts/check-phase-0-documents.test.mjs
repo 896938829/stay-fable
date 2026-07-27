@@ -149,15 +149,23 @@ function canonicalMarkdown(markdown) {
     .join("\n");
 }
 
-function assertDependencyAuditEvidenceBlocked(evidenceIndex, dependencyAudit) {
-  const nonZeroSeverity = [...dependencyAudit.matchAll(/(\d+)\s+(?:CRITICAL|HIGH)/gi)].some(
-    (match) => Number(match[1]) > 0,
-  );
-  const blockingAuditResult =
-    /\bpnpm audit\b[\s\S]*(?:non-zero|非零状态退出|门禁保持阻断|release gate remains non-zero)/i.test(
-      dependencyAudit,
-    );
-  if (!nonZeroSeverity && !blockingAuditResult) return;
+function assertDependencyAuditEvidenceConsistent(evidenceIndex, dependencyAudit) {
+  const summaries = [
+    ...dependencyAudit.matchAll(/^Current audit summary: (\d+) CRITICAL, (\d+) HIGH$/gm),
+  ];
+  const conclusions = [
+    ...dependencyAudit.matchAll(/^Current release conclusion: (Blocked|In review|Accepted)$/gm),
+  ];
+  if (summaries.length !== 1 || conclusions.length !== 1) {
+    throw new Error("dependency audit must contain one unique current summary and conclusion");
+  }
+
+  const critical = Number(summaries[0][1]);
+  const high = Number(summaries[0][2]);
+  const conclusion = conclusions[0][1];
+  if ((critical > 0 || high > 0) && conclusion !== "Blocked") {
+    throw new Error("current dependency severities require a Blocked release conclusion");
+  }
 
   const lines = evidenceIndex.split(/\r?\n/);
   const dependencyRows = [];
@@ -202,7 +210,7 @@ function assertDependencyAuditEvidenceBlocked(evidenceIndex, dependencyAudit) {
         throw new Error("malformed launch evidence table");
       }
       if (/^Dependency audit:/i.test(cells[itemIndex])) {
-        dependencyRows.push({ cells, statusIndex });
+        dependencyRows.push({ cells, itemIndex, statusIndex });
       }
     }
   }
@@ -210,10 +218,19 @@ function assertDependencyAuditEvidenceBlocked(evidenceIndex, dependencyAudit) {
   if (dependencyRows.length !== 1) {
     throw new Error("dependency audit evidence row must be present exactly once");
   }
-  const [{ cells, statusIndex }] = dependencyRows;
+  const [{ cells, itemIndex, statusIndex }] = dependencyRows;
+  const item = cells[itemIndex];
+  const itemSummary = /^Dependency audit: (\d+) critical and (\d+) high findings$/i.exec(item);
+  if (!itemSummary || Number(itemSummary[1]) !== critical || Number(itemSummary[2]) !== high) {
+    throw new Error("dependency audit evidence counts must match the current audit summary");
+  }
+
   const status = cells[statusIndex];
-  if (status !== "Blocked") {
-    throw new Error("dependency audit evidence must remain Blocked while audit blockers exist");
+  if (status !== conclusion) {
+    if (conclusion === "Blocked") {
+      throw new Error("dependency audit evidence must remain Blocked while audit blockers exist");
+    }
+    throw new Error("dependency audit evidence status must match the current release conclusion");
   }
 }
 
@@ -323,7 +340,7 @@ test("dependency audit evidence remains blocked while audit evidence reports blo
     "utf8",
   );
 
-  assert.doesNotThrow(() => assertDependencyAuditEvidenceBlocked(evidence, audit));
+  assert.doesNotThrow(() => assertDependencyAuditEvidenceConsistent(evidence, audit));
 
   const accepted = evidence.replace(
     /(\|\s*Dependency audit:[^\r\n]*\|)\s*Blocked\s*\|/i,
@@ -331,8 +348,37 @@ test("dependency audit evidence remains blocked while audit evidence reports blo
   );
   assert.notEqual(accepted, evidence, "adversarial fixture must alter the dependency audit row");
   assert.throws(
-    () => assertDependencyAuditEvidenceBlocked(accepted, audit),
+    () => assertDependencyAuditEvidenceConsistent(accepted, audit),
     /dependency audit evidence must remain Blocked/i,
+  );
+});
+
+test("dependency audit gate ignores historical severities and follows unique current fields", async () => {
+  const audit = await readFile(path.join(root, "docs/operations/dependency-audit.md"), "utf8");
+  assert.equal(
+    [...audit.matchAll(/^Current audit summary: \d+ CRITICAL, \d+ HIGH$/gm)].length,
+    1,
+    "dependency audit must expose one current summary",
+  );
+  assert.equal(
+    [...audit.matchAll(/^Current release conclusion: (?:Blocked|In review|Accepted)$/gm)].length,
+    1,
+    "dependency audit must expose one current release conclusion",
+  );
+
+  const historicalOnly = [
+    "Historical baseline: 2 CRITICAL, 11 HIGH",
+    "Current audit summary: 0 CRITICAL, 0 HIGH",
+    "Current release conclusion: In review",
+  ].join("\n");
+  const currentEvidence = [
+    "| Evidence item | Repository evidence | External evidence location | Status |",
+    "| --- | --- | --- | --- |",
+    "| Dependency audit: 0 critical and 0 high findings | audit | evidence | In review |",
+  ].join("\n");
+
+  assert.doesNotThrow(() =>
+    assertDependencyAuditEvidenceConsistent(currentEvidence, historicalOnly),
   );
 });
 
