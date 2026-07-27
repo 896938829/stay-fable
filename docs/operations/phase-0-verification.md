@@ -6,7 +6,15 @@ Review cadence: At every Phase 0 verification run and weekly while any gate is b
 
 Verification date: 2026-07-27
 
-Evidence base commit: `058735e2f0f464f03bb334c015d86ece567b7e74`
+Task 11 parent/input evidence commit: `058735e2f0f464f03bb334c015d86ece567b7e74`
+
+Verification implementation commit: `ea77dbfe11269ad9778ee6054cadffd24fbe2b0a`
+
+The verifier and this evidence page were introduced by the verification implementation commit.
+The recorded commands were executed against the parent plus the complete Task 11 working state,
+then `pnpm check` was repeated against that implementation commit. This follow-up only clarifies
+the evidence binding; it does not replace the implementation commit or claim that an earlier commit
+contained the verifier.
 
 This record separates deterministic repository checks from runtime and organizational checks that
 need systems or accountable reviewers outside this workstation. The release status is **Blocked**:
