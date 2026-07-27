@@ -1,4 +1,8 @@
 {
   "name": "@stay-fable/tsconfig",
-  "private": true
+  "version": "0.0.0",
+  "private": true,
+  "files": [
+    "base.json"
+  ]
 }
