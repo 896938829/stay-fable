@@ -1,4 +1,4 @@
-import { type INestApplication, ValidationPipe } from "@nestjs/common";
+import { type INestApplication, RequestMethod, ValidationPipe } from "@nestjs/common";
 import { DocumentBuilder, SwaggerModule } from "@nestjs/swagger";
 import helmet from "helmet";
 
@@ -8,7 +8,12 @@ export const configureApplication = (
 ): void => {
   app.use(helmet());
   app.enableShutdownHooks();
-  app.setGlobalPrefix("api/v1");
+  app.setGlobalPrefix("api/v1", {
+    exclude: [
+      { path: "health/live", method: RequestMethod.GET },
+      { path: "health/ready", method: RequestMethod.GET },
+    ],
+  });
   app.useGlobalPipes(
     new ValidationPipe({
       forbidNonWhitelisted: true,

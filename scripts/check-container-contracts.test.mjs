@@ -7,15 +7,15 @@ const dockerfileUrls = [
   new URL("apps/api/Dockerfile", rootUrl),
   new URL("apps/worker/Dockerfile", rootUrl),
 ];
+const nodeImage =
+  "node:24.14.1-bookworm-slim@sha256:b506e7321f176aae77317f99d67a24b272c1f09f1d10f1761f2773447d8da26c";
 
 test("pins non-root multi-stage Node 24 container images", async () => {
   for (const dockerfileUrl of dockerfileUrls) {
     const dockerfile = await readFile(dockerfileUrl, "utf8");
     const fromLines = dockerfile.match(/^FROM\s+.+$/gm) ?? [];
 
-    assert.ok(fromLines.length >= 2, `${dockerfileUrl.pathname} must be multi-stage`);
-    assert.match(dockerfile, /^FROM node:24\.14\.1-bookworm-slim AS build$/m);
-    assert.match(dockerfile, /^FROM node:24\.14\.1-bookworm-slim AS runtime$/m);
+    assert.deepEqual(fromLines, [`FROM ${nodeImage} AS build`, `FROM ${nodeImage} AS runtime`]);
     assert.doesNotMatch(dockerfile, /^FROM\s+\S+:latest(?:\s|$)/m);
     assert.match(dockerfile, /^USER node$/m);
   }
@@ -24,9 +24,19 @@ test("pins non-root multi-stage Node 24 container images", async () => {
 test("uses reproducible production dependency installation", async () => {
   for (const dockerfileUrl of dockerfileUrls) {
     const dockerfile = await readFile(dockerfileUrl, "utf8");
+    const dependencyCopyIndex = dockerfile.indexOf(
+      "COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./",
+    );
+    const fetchIndex = dockerfile.indexOf("pnpm fetch --frozen-lockfile");
+    const sourceCopyIndex = dockerfile.indexOf("COPY . .");
+    const offlineInstallIndex = dockerfile.indexOf("pnpm install --offline --frozen-lockfile");
 
     assert.match(dockerfile, /corepack prepare pnpm@11\.17\.0 --activate/);
-    assert.match(dockerfile, /pnpm install --frozen-lockfile/);
+    assert.ok(dependencyCopyIndex >= 0, "dependency metadata must be copied before fetching");
+    assert.ok(fetchIndex > dependencyCopyIndex, "pnpm fetch must follow dependency metadata");
+    assert.ok(sourceCopyIndex > fetchIndex, "source code must be copied after pnpm fetch");
+    assert.ok(offlineInstallIndex > sourceCopyIndex, "offline install must follow the source copy");
+    assert.match(dockerfile, /--mount=type=cache,id=pnpm-store/);
     assert.match(dockerfile, /pnpm deploy --filter .+ --prod \/out/);
   }
 });

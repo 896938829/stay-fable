@@ -1,4 +1,4 @@
-import { Body, Controller, type INestApplication, Post } from "@nestjs/common";
+import { Body, Controller, Get, type INestApplication, Post } from "@nestjs/common";
 import { Test } from "@nestjs/testing";
 import { Expose } from "class-transformer";
 import { IsString } from "class-validator";
@@ -11,6 +11,19 @@ class SmokeRequest {
   @Expose()
   @IsString()
   name!: string;
+}
+
+@Controller("health")
+class HealthProbeController {
+  @Get("live")
+  live() {
+    return { status: "ok", service: "api-server" };
+  }
+
+  @Get("ready")
+  ready() {
+    return { status: "ok", service: "api-server" };
+  }
 }
 
 @Controller("smoke")
@@ -33,7 +46,7 @@ describe("API bootstrap configuration", () => {
 
   it("enables runtime validation and transformation without opening a port", async () => {
     const module = await Test.createTestingModule({
-      controllers: [SmokeController],
+      controllers: [HealthProbeController, SmokeController],
     }).compile();
 
     app = module.createNestApplication();
@@ -56,5 +69,16 @@ describe("API bootstrap configuration", () => {
       transformed: true,
       name: "Fable",
     });
+
+    await request(server)
+      .get("/health/live")
+      .expect(200)
+      .expect({ status: "ok", service: "api-server" });
+    await request(server)
+      .get("/health/ready")
+      .expect(200)
+      .expect({ status: "ok", service: "api-server" });
+    await request(server).get("/api/v1/health/live").expect(404);
+    await request(server).get("/api/v1/health/ready").expect(404);
   });
 });

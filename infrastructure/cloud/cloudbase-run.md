@@ -48,3 +48,14 @@ COS 凭证做脱敏。
 应用、最后在后续版本清理旧结构；不得依赖破坏性自动回滚。若迁移失败，停止应用发布，
 按已演练的恢复步骤处理数据库，再恢复上一镜像。发布记录应保存镜像摘要、迁移版本、操作者
 和时间。
+
+## 基础镜像摘要核验
+
+Dockerfile 同时保留便于审计的版本标签 `node:24.14.1-bookworm-slim`，并锁定该标签的 OCI
+镜像索引摘要。摘要必须从 Docker 官方 Registry 的
+`registry-1.docker.io/v2/library/node/manifests/24.14.1-bookworm-slim` 获取，并以
+`Docker-Content-Digest` 响应头为准；请求需要从 `auth.docker.io` 获取
+`repository:library/node:pull` 只读令牌，并声明接受
+`application/vnd.oci.image.index.v1+json`。2026-07-27 核验值为
+`sha256:b506e7321f176aae77317f99d67a24b272c1f09f1d10f1761f2773447d8da26c`。升级 Node
+版本或发现镜像重建时，应重复此核验、审查上游变更并同步更新两个 Dockerfile 和契约测试。
