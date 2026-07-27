@@ -3,7 +3,7 @@
 ## Prerequisites
 
 - Node.js 24
-- Corepack with pnpm 11.17
+- Corepack with pnpm 11.17.0
 - Docker Desktop with Docker Compose v2
 - WeChat DevTools
 
@@ -28,7 +28,7 @@ other computers on the network.
 Stop the local services without deleting their data:
 
 ```powershell
-docker compose -f infrastructure/compose.yaml down
+docker compose -f infrastructure/compose.yaml stop
 ```
 
 ## Destructive local reset
