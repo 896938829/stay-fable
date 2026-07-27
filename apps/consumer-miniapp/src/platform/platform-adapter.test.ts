@@ -8,6 +8,6 @@ describe("assertSupportedPlatform", () => {
   });
 
   it("rejects an unplanned platform", () => {
-    expect(() => assertSupportedPlatform("h5")).toThrowError("Unsupported platform: h5");
+    expect(() => assertSupportedPlatform("h5")).toThrow("Unsupported platform: h5");
   });
 });
