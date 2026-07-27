@@ -14,7 +14,7 @@ export const parseRuntimeEnvironment = (environment: unknown): RuntimeEnvironmen
 
   if (
     parsedEnvironment.NODE_ENV === "production" &&
-    !parsedEnvironment.DATABASE_URL.includes("sslmode=require")
+    new URL(parsedEnvironment.DATABASE_URL).searchParams.get("sslmode") !== "require"
   ) {
     throw new Error("Production DATABASE_URL must require TLS");
   }

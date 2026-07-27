@@ -6,8 +6,22 @@ export default [
     ignores: ["**/dist/**", "**/coverage/**", "**/src/generated/**"],
   },
   eslint.configs.recommended,
-  ...typescriptEslint.configs.recommendedTypeChecked,
   {
+    files: ["**/*.{js,mjs,cjs}"],
+    languageOptions: {
+      globals: {
+        console: "readonly",
+        process: "readonly",
+        URL: "readonly",
+      },
+    },
+  },
+  ...typescriptEslint.configs.recommendedTypeChecked.map((config) => ({
+    ...config,
+    files: ["**/*.{ts,tsx}"],
+  })),
+  {
+    files: ["**/*.{ts,tsx}"],
     languageOptions: {
       parserOptions: {
         projectService: true,
