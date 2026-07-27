@@ -57,10 +57,7 @@ export const createSystemWorker = (
   const config = parseWorkerConfig(environment);
   const logger = dependencies.createLogger({
     level: typeof environment.LOG_LEVEL === "string" ? environment.LOG_LEVEL : "info",
-    redact: {
-      paths: ["password", "token", "idCardNumber"],
-      censor: "[REDACTED]",
-    },
+    redact: ["password", "token", "idCardNumber"],
   });
   const connection = dependencies.createConnection(config.redisUrl, {
     connectTimeout: 5_000,
@@ -69,7 +66,7 @@ export const createSystemWorker = (
   const worker = dependencies.createWorker(
     "system",
     (job) => {
-      logger.info({ jobId: job.id, jobName: job.name }, "Processing system job");
+      logger.info({ jobId: job.id, jobName: job.name }, "system job processed");
       return Promise.resolve();
     },
     {
@@ -80,14 +77,7 @@ export const createSystemWorker = (
   );
 
   worker.on("failed", (job, error) => {
-    logger.error(
-      {
-        err: error,
-        jobId: job?.id,
-        jobName: job?.name,
-      },
-      "System job failed",
-    );
+    logger.error({ jobId: job?.id, error }, "system job failed");
   });
 
   return { connection, worker };

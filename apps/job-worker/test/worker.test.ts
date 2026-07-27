@@ -50,11 +50,9 @@ describe("createSystemWorker", () => {
         maxRetriesPerRequest: null,
       }),
     );
-    expect(createLogger.mock.calls[0]?.[0]).toMatchObject({
+    expect(createLogger).toHaveBeenCalledWith({
       level: "info",
-      redact: {
-        paths: ["password", "token", "idCardNumber"],
-      },
+      redact: ["password", "token", "idCardNumber"],
     });
     expect(createWorker).toHaveBeenCalledWith(
       "system",
@@ -70,17 +68,12 @@ describe("createSystemWorker", () => {
 
     expect(logger.info).toHaveBeenCalledWith(
       { jobId: "job-1", jobName: "refresh-listing" },
-      "Processing system job",
+      "system job processed",
     );
 
-    listeners.get("failed")?.({ id: "job-2", name: "sync-booking" }, new Error("failed"));
-    expect(logger.error).toHaveBeenCalledWith(
-      expect.objectContaining({
-        jobId: "job-2",
-        jobName: "sync-booking",
-      }),
-      "System job failed",
-    );
+    const error = new Error("failed");
+    listeners.get("failed")?.({ id: "job-2", name: "sync-booking" }, error);
+    expect(logger.error).toHaveBeenCalledWith({ jobId: "job-2", error }, "system job failed");
   });
 
   it("uses the configured log level", () => {
