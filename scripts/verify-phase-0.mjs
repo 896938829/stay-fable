@@ -1,16 +1,62 @@
 import { spawn } from "node:child_process";
 import { Buffer } from "node:buffer";
-import { dirname, resolve } from "node:path";
+import { existsSync } from "node:fs";
+import { posix, win32 } from "node:path";
 import process from "node:process";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-const corepackCli = resolve(dirname(process.execPath), "node_modules/corepack/dist/corepack.js");
+export function resolveCorepackLauncher(
+  nodeExecutable,
+  platform = process.platform,
+  exists = existsSync,
+) {
+  const path = platform === "win32" ? win32 : posix;
+  const launcher = path.join(
+    path.dirname(nodeExecutable),
+    platform === "win32" ? "corepack.cmd" : "corepack",
+  );
+  if (!exists(launcher)) {
+    throw new Error(`Corepack launcher not found next to Node executable: ${launcher}`);
+  }
+  return {
+    kind: platform === "win32" ? "windows-cmd" : "executable",
+    path: launcher,
+  };
+}
+
+const corepackLauncher = resolveCorepackLauncher(process.execPath);
+
+function windowsCorepackCommand(launcher, arguments_) {
+  if (/["&|<>^%\r\n]/.test(launcher)) {
+    throw new Error("Corepack launcher path contains unsupported command characters");
+  }
+  for (const argument of arguments_) {
+    if (!/^[A-Za-z0-9@._:/\\=-]+$/.test(argument)) {
+      throw new Error(`Corepack argument contains unsupported command characters: ${argument}`);
+    }
+  }
+  return `call "${launcher}" ${arguments_.join(" ")}`;
+}
 
 function pnpmCommand(label, ...arguments_) {
+  const corepackArguments = ["pnpm", ...arguments_];
+  if (corepackLauncher.kind === "windows-cmd") {
+    return {
+      label,
+      executable: process.env.ComSpec ?? "C:\\Windows\\System32\\cmd.exe",
+      arguments: [
+        "/d",
+        "/s",
+        "/c",
+        windowsCorepackCommand(corepackLauncher.path, corepackArguments),
+      ],
+      windowsVerbatimArguments: true,
+    };
+  }
   return {
     label,
-    executable: process.execPath,
-    arguments: [corepackCli, "pnpm", ...arguments_],
+    executable: corepackLauncher.path,
+    arguments: corepackArguments,
   };
 }
 
@@ -127,6 +173,7 @@ export function runCommand(command) {
       cwd: fileURLToPath(new URL("../", import.meta.url)),
       stdio: capturesOutput ? ["ignore", "pipe", "pipe"] : "inherit",
       windowsHide: true,
+      windowsVerbatimArguments: command.windowsVerbatimArguments ?? false,
     });
 
     child.once("error", reject);
@@ -174,7 +221,10 @@ export async function runPhaseZeroVerification({ run = runCommand, log = console
 }
 
 const isCli =
-  process.argv[1] !== undefined && pathToFileURL(resolve(process.argv[1])).href === import.meta.url;
+  process.argv[1] !== undefined &&
+  pathToFileURL(
+    process.platform === "win32" ? win32.resolve(process.argv[1]) : posix.resolve(process.argv[1]),
+  ).href === import.meta.url;
 
 if (isCli) {
   try {

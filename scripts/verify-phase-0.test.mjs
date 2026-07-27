@@ -5,9 +5,42 @@ import test from "node:test";
 import {
   automatedRepositoryCommands,
   externalRuntimeChecks,
+  resolveCorepackLauncher,
   runPhaseZeroVerification,
   validateExpectedOutput,
 } from "./verify-phase-0.mjs";
+
+test("resolves the public Corepack launcher beside Node on Windows and POSIX", () => {
+  assert.deepEqual(
+    resolveCorepackLauncher(
+      "C:\\node\\node.exe",
+      "win32",
+      (path) => path === "C:\\node\\corepack.cmd",
+    ),
+    {
+      kind: "windows-cmd",
+      path: "C:\\node\\corepack.cmd",
+    },
+  );
+  assert.deepEqual(
+    resolveCorepackLauncher(
+      "/opt/node/bin/node",
+      "linux",
+      (path) => path === "/opt/node/bin/corepack",
+    ),
+    {
+      kind: "executable",
+      path: "/opt/node/bin/corepack",
+    },
+  );
+});
+
+test("reports the expected public Corepack launcher when it is missing", () => {
+  assert.throws(
+    () => resolveCorepackLauncher("/opt/node/bin/node", "linux", () => false),
+    /Corepack launcher not found next to Node executable: \/opt\/node\/bin\/corepack/,
+  );
+});
 
 test("runs the deterministic repository checks in the required order with audit last", async () => {
   assert.deepEqual(
@@ -64,11 +97,16 @@ test("runs every pnpm command through Corepack and verifies the exact pnpm versi
     ].includes(label),
   );
   for (const command of pnpmCommands) {
-    assert.equal(command.executable, process.execPath);
-    assert.match(command.arguments[0], /corepack[\\/]dist[\\/]corepack\.js$/);
-    assert.equal(command.arguments[1], "pnpm");
+    if (process.platform === "win32") {
+      assert.equal(command.executable.toLowerCase(), process.env.ComSpec?.toLowerCase());
+      assert.deepEqual(command.arguments.slice(0, 3), ["/d", "/s", "/c"]);
+      assert.match(command.arguments[3], /\\corepack\.cmd"\s+pnpm(?:\s|$)/i);
+    } else {
+      assert.match(command.executable, /[\\/]corepack$/);
+      assert.equal(command.arguments[0], "pnpm");
+    }
   }
-  assert.deepEqual(pnpmCommands[0].arguments.slice(1), ["pnpm", "--version"]);
+  assert.match(pnpmCommands[0].arguments.at(-1), /pnpm(?:\s+--version$|$)/);
   assert.equal(pnpmCommands[0].expectedOutput, "11.17.0");
 });
 
