@@ -13,7 +13,22 @@ test("declares the root workspace contract", async () => {
   assert.match(workspace, /^\s*-\s+["']?apps\/\*["']?\s*$/m);
   assert.match(workspace, /^\s*-\s+["']?packages\/\*["']?\s*$/m);
   assert.equal(root.scripts.verify, "node scripts/verify-workspace.mjs");
+  assert.equal(root.scripts["verify:phase-0"], "node scripts/verify-phase-0.mjs");
   assert.equal(root.scripts.test, "node --test scripts/*.test.mjs && turbo run test");
+});
+
+test("includes phase zero verification entry points and evidence in the workspace contract", async () => {
+  const verifier = await readFile(new URL("scripts/verify-workspace.mjs", rootUrl), "utf8");
+
+  for (const path of [
+    "scripts/verify-phase-0.mjs",
+    "scripts/verify-phase-0.test.mjs",
+    "docs/operations/phase-0-verification.md",
+    "infrastructure/cloud/cloudbase-run.md",
+    "infrastructure/runbooks/backup-restore.md",
+  ]) {
+    assert.ok(verifier.includes(`"${path}"`), `workspace verifier must require ${path}`);
+  }
 });
 
 test("activates reproducible pnpm project settings", async () => {

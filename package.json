@@ -15,6 +15,7 @@
     "test": "node --test scripts/*.test.mjs && turbo run test",
     "typecheck": "turbo run typecheck",
     "verify": "node scripts/verify-workspace.mjs",
+    "verify:phase-0": "node scripts/verify-phase-0.mjs",
     "check": "pnpm verify && pnpm format:check && pnpm lint && pnpm typecheck && pnpm test && pnpm build"
   },
   "devDependencies": {

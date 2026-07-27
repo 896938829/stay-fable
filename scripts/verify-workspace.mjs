@@ -14,6 +14,11 @@ const requiredPaths = [
   "apps/consumer-miniapp/package.json",
   "packages/api-contracts/package.json",
   "packages/validation/package.json",
+  "scripts/verify-phase-0.mjs",
+  "scripts/verify-phase-0.test.mjs",
+  "docs/operations/phase-0-verification.md",
+  "infrastructure/cloud/cloudbase-run.md",
+  "infrastructure/runbooks/backup-restore.md",
 ];
 
 await Promise.all(requiredPaths.map((path) => access(new URL(path, rootUrl))));
