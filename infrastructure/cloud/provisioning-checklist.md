@@ -28,5 +28,5 @@ the Security Owner.
 ## Approval record
 
 The Platform Owner records the immutable deployment identifier and signs the environment record only
-after Engineering and Security have reviewed the linked evidence. An approval cannot be inferred from
+after the Engineering Owner and Security Owner have reviewed the linked evidence. An approval cannot be inferred from
 this document's presence in the repository.

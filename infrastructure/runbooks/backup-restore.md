@@ -1,5 +1,5 @@
 Status: Draft for pre-production verification
-Owner role: Engineering and Platform Owner
+Owner role: Engineering Owner and Platform Owner
 Review cadence: Six-monthly and after database, backup, or network architecture changes
 
 # PostgreSQL backup restoration runbook

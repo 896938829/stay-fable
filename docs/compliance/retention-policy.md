@@ -32,4 +32,4 @@ deletion.
 - Identity-document deletion writes a deletion ledger and tombstone. If an immutable backup is
   restored, the Engineering Owner must ensure the deletion ledger is replayed before opening access;
   tombstoned content must not be served again.
-- Data Protection reviews a sample deletion trace and exception register at each cadence.
+- The Data Protection Owner reviews a sample deletion trace and exception register at each cadence.

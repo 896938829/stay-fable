@@ -19,11 +19,12 @@ auditable and a person must not independently approve their own high-risk change
 
 ## Separation and delegation
 
-- Production changes require an Engineering implementer and a different reviewer; the Platform Owner
-  gives launch approval only after Security and Data Protection gates are recorded.
+- Production changes require an implementer acting under the Engineering Owner and a different
+  reviewer; the Platform Owner gives launch approval only after the Security Owner and Data
+  Protection Owner gates are recorded.
 - Security exceptions require the Security Owner and release approver. A person who requests an
   exception cannot be its sole approver.
-- Finance access is distinct from merchant operations access. Payment certificate custody and
-  reconciliation approval are logged by role.
+- Finance Owner access is distinct from Operations Owner merchant access. Payment certificate custody
+  and reconciliation approval are logged by role.
 - Delegation records name the acting person, role, scope, start, expiry, and approver in the controlled
   access register.
