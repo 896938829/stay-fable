@@ -12,7 +12,7 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "lint": "turbo run lint",
-    "test": "turbo run test",
+    "test": "node --test scripts/*.test.mjs && turbo run test",
     "typecheck": "turbo run typecheck",
     "verify": "node scripts/verify-workspace.mjs",
     "check": "pnpm verify && pnpm format:check && pnpm lint && pnpm typecheck && pnpm test && pnpm build"
