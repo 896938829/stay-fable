@@ -9,11 +9,11 @@ exercise, notification decision, or forensic review has occurred.
 
 ## Seven-step response
 
-1. Assign severity, identify affected environment and assets, open a restricted incident record, appoint an Incident Commander, and activate the matching escalation path.
+1. Assign severity, identify the affected environment and assets, open a restricted incident record, appoint an Incident Commander, activate the matching escalation path, and immediately preserve volatile or overwrite-prone evidence before routine containment. If an active attack makes prior collection unsafe, the Incident Commander may authorize containment first and must record the time, operator, reason, and affected evidence.
 2. Revoke affected application sessions, CAM credentials and roles, application secrets, and payment certificates; rotate replacements through the approved secret process without putting values in the incident record.
-3. Isolate affected services and preserve CLS, WAF, database audit, CAM, host, and application logs before containment changes overwrite evidence.
-4. Restore a reviewed secure version from an immutable artifact, verify configuration and data integrity, and keep affected workloads isolated until Security approves controlled recovery.
-5. Have the Data Protection Owner assess affected people and data, jurisdiction, contract terms, and notification obligations with qualified counsel and relevant providers.
+3. Isolate affected services and complete preservation of CLS, WAF, database audit, CAM, host, application, network, process, memory, and ephemeral storage evidence; document chain of custody and every containment change.
+4. Restore a reviewed secure version from an immutable artifact, verify configuration and data integrity, and keep affected workloads isolated until the Security Owner approves controlled recovery.
+5. Have the Data Protection Owner assess affected people and data, jurisdiction, contracts, and notification obligations with qualified counsel and relevant providers. The Data Protection Owner owns the notification decision record, and the Platform Owner approves its operational execution after the assessment. The record must identify the authoritative deadline source without pre-judging the law, notification decision owner, approver, each recipient, deadline, sending owner, whether notice was sent or not sent and the reason, and the delivery evidence location.
 6. Record the timeline, impact, root cause, containment and corrective actions, a single owner and due date for each action, decisions, approvals, and evidence links.
 7. Monitor authentication, traffic, data integrity, application health, and security alerts for recurrence; only the Incident Commander and Security Owner may close the case after the observation period is clean.
 

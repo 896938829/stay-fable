@@ -5,7 +5,7 @@ Review cadence: Six-monthly and after database, backup, or network architecture 
 # PostgreSQL backup restoration runbook
 
 Control status: Not started. No restoration drill has been performed for this project. The first
-staging drill must be observed by Engineering and the Platform Owner; production data must not be
+staging drill must be observed by the Engineering Owner and the Platform Owner; production data must not be
 copied into a less controlled environment.
 
 ## Seven-step restoration drill
@@ -16,7 +16,7 @@ copied into a less controlled environment.
 4. Verify PostGIS availability, migration history, expected table counts, critical constraints, and representative integrity checks without changing restored data.
 5. Run the API readiness check against the isolated instance through a private test runner with no public traffic or customer requests.
 6. Record measured recovery point objective (RPO) and recovery time objective (RTO), backup identifiers, timestamps, test results, exceptions, and log links in the controlled evidence store.
-7. Obtain Platform Owner sign-off, revoke the temporary account and credentials, then destroy the restored instance and confirm deletion in the provider audit log.
+7. Before cleanup, the Platform Owner's sign-off must reference the restored instance's exact immutable resource ID. Confirm it is different from the source instance ID, belongs to the recovery network, and received no business traffic; a second role, the Security Owner or an Engineering Owner who was not the deletion operator, independently reviews those facts and the provider deletion plan preview. Revoke the temporary account and credentials, delete only that reviewed recovery resource, then retain the cloud audit event and proof that the resource no longer exists.
 
 ## Acceptance criteria
 
