@@ -3,8 +3,14 @@ packages:
   - "packages/*"
 
 allowBuilds:
+  "@parcel/watcher": true
   "@prisma/engines": true
   "@scarf/scarf": true
+  "@swc/core": true
+  "@tarojs/binding": true
+  "@tarojs/cli": true
+  core-js: true
+  core-js-pure: true
   esbuild: true
   msgpackr-extract: true
   prisma: true
@@ -15,6 +21,9 @@ injectWorkspacePackages: true
 strictPeerDependencies: true
 
 peerDependencyRules:
+  allowedVersions:
+    "@types/react": "19"
+    react: "19"
   ignoreMissing:
     - react
     - react-dom

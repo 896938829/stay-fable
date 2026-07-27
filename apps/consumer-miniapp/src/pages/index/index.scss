@@ -1,0 +1,17 @@
+.page {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+  padding: 48px;
+}
+
+.title {
+  color: #1f2937;
+  font-size: 48px;
+  font-weight: 700;
+}
+
+.status {
+  color: #047857;
+  font-size: 30px;
+}
