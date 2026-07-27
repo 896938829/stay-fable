@@ -1,7 +1,7 @@
+import pino, { type LoggerOptions } from "pino";
 import { describe, expect, it, vi } from "vitest";
-import type { LoggerOptions } from "pino";
 
-import { createSystemWorker } from "../src/worker.js";
+import { createSystemWorker, createWorkerLoggerOptions } from "../src/worker.js";
 
 describe("createSystemWorker", () => {
   it("creates a namespaced system worker with persistent Redis settings", async () => {
@@ -53,6 +53,9 @@ describe("createSystemWorker", () => {
     expect(createLogger).toHaveBeenCalledWith({
       level: "info",
       redact: ["password", "token", "idCardNumber"],
+      serializers: {
+        error: pino.stdSerializers.err,
+      },
     });
     expect(createWorker).toHaveBeenCalledWith(
       "system",
@@ -74,6 +77,20 @@ describe("createSystemWorker", () => {
     const error = new Error("failed");
     listeners.get("failed")?.({ id: "job-2", name: "sync-booking" }, error);
     expect(logger.error).toHaveBeenCalledWith({ jobId: "job-2", error }, "system job failed");
+
+    const operationalError = new Error("redis disconnected");
+    listeners.get("error")?.(operationalError);
+    expect(logger.error).toHaveBeenCalledWith({ error: operationalError }, "system worker error");
+  });
+
+  it("serializes errors with their message and stack", () => {
+    const serializeError = createWorkerLoggerOptions({}).serializers?.error;
+    const serializedError: unknown = serializeError?.(new Error("serialized failure"));
+
+    expect(serializedError).toMatchObject({
+      message: "serialized failure",
+    });
+    expect(typeof (serializedError as { stack?: unknown }).stack).toBe("string");
   });
 
   it("uses the configured log level", () => {

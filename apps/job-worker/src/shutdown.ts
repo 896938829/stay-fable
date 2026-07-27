@@ -1,4 +1,4 @@
-import type { QueueWorkerResource, RedisResource } from "./worker.js";
+import type { QueueWorkerResource, RedisResource, WorkerLogger } from "./worker.js";
 
 interface ShutdownResources {
   connection: RedisResource;
@@ -52,4 +52,29 @@ export const createGracefulShutdown = (resources: ShutdownResources): (() => Pro
     shutdownPromise ??= closeResources(resources);
     return shutdownPromise;
   };
+};
+
+interface ShutdownRuntime {
+  exitCode: string | number | null | undefined;
+  once(signal: "SIGINT" | "SIGTERM", listener: () => void): unknown;
+}
+
+export const registerShutdownHandlers = (
+  resources: ShutdownResources,
+  logger: Pick<WorkerLogger, "error">,
+  runtime: ShutdownRuntime = process,
+): void => {
+  const shutdown = createGracefulShutdown(resources);
+
+  for (const signal of ["SIGINT", "SIGTERM"] as const) {
+    runtime.once(signal, () => {
+      void shutdown().catch((error: unknown) => {
+        logger.error(
+          { error: asError(error, "Job worker shutdown failed") },
+          "job worker shutdown failed",
+        );
+        runtime.exitCode = 1;
+      });
+    });
+  }
 };

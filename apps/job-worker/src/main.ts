@@ -1,14 +1,7 @@
-import { createGracefulShutdown } from "./shutdown.js";
-import { createSystemWorker } from "./worker.js";
+import { registerShutdownHandlers } from "./shutdown.js";
+import { createSystemWorker, createWorkerLogger } from "./worker.js";
 
-const resources = createSystemWorker();
-const shutdown = createGracefulShutdown(resources);
+const logger = createWorkerLogger();
+const resources = createSystemWorker(process.env, { logger });
 
-for (const signal of ["SIGINT", "SIGTERM"] as const) {
-  process.once(signal, () => {
-    void shutdown().catch((error: unknown) => {
-      console.error("Job worker shutdown failed", error);
-      process.exitCode = 1;
-    });
-  });
-}
+registerShutdownHandlers(resources, logger);

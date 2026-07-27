@@ -21,12 +21,24 @@ describe("parseWorkerConfig", () => {
     }>();
   });
 
-  it("accepts any syntactically valid URL", () => {
-    expect(
+  it.each(["redis://127.0.0.1:6379", "rediss://redis.example.test:6380"])(
+    "accepts a Redis URL using %s",
+    (redisUrl) => {
+      expect(
+        parseWorkerConfig({
+          NODE_ENV: "test",
+          REDIS_URL: redisUrl,
+        }).redisUrl,
+      ).toBe(redisUrl);
+    },
+  );
+
+  it("rejects a non-Redis URL with a clear message", () => {
+    expect(() =>
       parseWorkerConfig({
         NODE_ENV: "test",
         REDIS_URL: "https://redis.example.test",
-      }).redisUrl,
-    ).toBe("https://redis.example.test");
+      }),
+    ).toThrow("REDIS_URL must use redis: or rediss: protocol");
   });
 });

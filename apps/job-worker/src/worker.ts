@@ -12,9 +12,10 @@ export interface RedisResource {
 export interface QueueWorkerResource {
   close(): Promise<void>;
   on(event: "failed", listener: (job: Job | undefined, error: Error) => void): unknown;
+  on(event: "error", listener: (error: Error) => void): unknown;
 }
 
-interface WorkerLogger {
+export interface WorkerLogger {
   error(bindings: object, message: string): void;
   info(bindings: object, message: string): void;
 }
@@ -35,6 +36,22 @@ interface WorkerDependencies {
   ): QueueWorkerResource;
 }
 
+interface WorkerOverrides extends Partial<WorkerDependencies> {
+  logger?: WorkerLogger;
+}
+
+export const createWorkerLoggerOptions = (environment: Record<string, unknown>): LoggerOptions => ({
+  level: typeof environment.LOG_LEVEL === "string" ? environment.LOG_LEVEL : "info",
+  redact: ["password", "token", "idCardNumber"],
+  serializers: {
+    error: pino.stdSerializers.err,
+  },
+});
+
+export const createWorkerLogger = (
+  environment: Record<string, unknown> = process.env,
+): WorkerLogger => pino(createWorkerLoggerOptions(environment));
+
 const defaultDependencies: WorkerDependencies = {
   createConnection: (url, options) => new Redis(url, options),
   createLogger: (options) => pino(options),
@@ -52,18 +69,22 @@ export interface SystemWorkerResources {
 
 export const createSystemWorker = (
   environment: Record<string, unknown> = process.env,
-  dependencies: WorkerDependencies = defaultDependencies,
+  overrides: WorkerOverrides = {},
 ): SystemWorkerResources => {
   const config = parseWorkerConfig(environment);
-  const logger = dependencies.createLogger({
-    level: typeof environment.LOG_LEVEL === "string" ? environment.LOG_LEVEL : "info",
-    redact: ["password", "token", "idCardNumber"],
-  });
-  const connection = dependencies.createConnection(config.redisUrl, {
-    connectTimeout: 5_000,
-    maxRetriesPerRequest: null,
-  });
-  const worker = dependencies.createWorker(
+  const logger =
+    overrides.logger ??
+    (overrides.createLogger ?? defaultDependencies.createLogger)(
+      createWorkerLoggerOptions(environment),
+    );
+  const connection = (overrides.createConnection ?? defaultDependencies.createConnection)(
+    config.redisUrl,
+    {
+      connectTimeout: 5_000,
+      maxRetriesPerRequest: null,
+    },
+  );
+  const worker = (overrides.createWorker ?? defaultDependencies.createWorker)(
     "system",
     (job) => {
       logger.info({ jobId: job.id, jobName: job.name }, "system job processed");
@@ -78,6 +99,9 @@ export const createSystemWorker = (
 
   worker.on("failed", (job, error) => {
     logger.error({ jobId: job?.id, error }, "system job failed");
+  });
+  worker.on("error", (error) => {
+    logger.error({ error }, "system worker error");
   });
 
   return { connection, worker };
