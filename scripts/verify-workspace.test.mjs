@@ -75,5 +75,5 @@ test("documents the WeChat-first agent workflow", async () => {
   assert.match(agents, /POSTGRES_PORT=55432/);
   assert.match(agents, /REDIS_PORT=56379/);
   assert.match(agents, /dev.*报告.*不阻断/s);
-  assert.match(agents, /release.*Critical.*High/s);
+  assert.match(agents, /release\/main\s+阻断.*Critical\/High/s);
 });
