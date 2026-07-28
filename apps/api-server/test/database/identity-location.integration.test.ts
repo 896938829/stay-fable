@@ -1,5 +1,7 @@
+import { randomBytes } from "node:crypto";
+
 import { PrismaPg } from "@prisma/adapter-pg";
-import { Pool } from "pg";
+import { Pool, type PoolClient } from "pg";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 
 import { CITY_SEED_IDENTITY_CONFLICT_ERROR, runSeed } from "../../prisma/seed.js";
@@ -11,9 +13,85 @@ const describeDatabase = runDatabaseIntegration ? describe : describe.skip;
 const suiteName = runDatabaseIntegration
   ? "identity and city PostgreSQL/PostGIS baseline"
   : "identity and city PostgreSQL/PostGIS baseline (set RUN_DATABASE_INTEGRATION=true to run)";
+
+type IsolatedSeedHarness = {
+  applicationName: string;
+  prisma: PrismaClient;
+  quotedSchema: string;
+};
+
+const quoteGeneratedTestSchema = (schemaName: string): string => {
+  if (!/^seed_test_[0-9a-f]{16}$/.test(schemaName)) {
+    throw new Error("Invalid generated test schema");
+  }
+  return `"${schemaName}"`;
+};
+
 describeDatabase(suiteName, () => {
   let pool: Pool;
   let prisma: PrismaClient;
+
+  const createIsolatedSeedHarness = async (): Promise<IsolatedSeedHarness> => {
+    const suffix = randomBytes(8).toString("hex");
+    const schemaName = `seed_test_${suffix}`;
+    const quotedSchema = quoteGeneratedTestSchema(schemaName);
+    const applicationName = `seed_race_${suffix}`;
+
+    await pool.query(`CREATE SCHEMA ${quotedSchema}`);
+    await pool.query(`CREATE TABLE ${quotedSchema}."city" (LIKE public."city" INCLUDING ALL)`);
+
+    const connectionUrl = new URL(requireSafeDatabaseIntegrationUrl(process.env.DATABASE_URL));
+    connectionUrl.searchParams.set("options", `-c search_path=${schemaName},public`);
+    connectionUrl.searchParams.set("application_name", applicationName);
+
+    return {
+      applicationName,
+      prisma: new PrismaClient({
+        adapter: new PrismaPg({
+          connectionString: connectionUrl.toString(),
+        }),
+      }),
+      quotedSchema,
+    };
+  };
+
+  const destroyIsolatedSeedHarness = async ({
+    prisma: isolatedPrisma,
+    quotedSchema,
+  }: IsolatedSeedHarness): Promise<void> => {
+    try {
+      await isolatedPrisma.$disconnect();
+    } finally {
+      await pool.query(`DROP SCHEMA ${quotedSchema} CASCADE`);
+    }
+  };
+
+  const waitForTransactionLock = async (applicationName: string): Promise<void> => {
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      const waiting = await pool.query<{
+        wait_event: string | null;
+        wait_event_type: string | null;
+      }>(
+        `
+          SELECT wait_event, wait_event_type
+          FROM pg_stat_activity
+          WHERE application_name = $1
+            AND state = 'active'
+        `,
+        [applicationName],
+      );
+      if (
+        waiting.rows.some(
+          ({ wait_event, wait_event_type }) =>
+            wait_event_type === "Lock" && wait_event === "transactionid",
+        )
+      ) {
+        return;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    throw new Error("Timed out waiting for seed transaction lock");
+  };
 
   beforeAll(() => {
     const connectionString = requireSafeDatabaseIntegrationUrl(process.env.DATABASE_URL);
@@ -97,12 +175,62 @@ describeDatabase(suiteName, () => {
   });
 
   test("seed rejects a city code mapped to a different UUID without changing it", async () => {
+    const harness = await createIsolatedSeedHarness();
     const conflictingId = "20000000-0000-4000-8000-000000000001";
 
-    await pool.query("DELETE FROM city WHERE code = $1", ["330100"]);
-    await pool.query(
-      `
-        INSERT INTO city (
+    try {
+      await pool.query(
+        `
+          INSERT INTO ${harness.quotedSchema}."city" (
+            id,
+            code,
+            name_zh,
+            center,
+            enabled,
+            display_order,
+            updated_at
+          )
+          VALUES (
+            $1::uuid,
+            '330100',
+            '冲突占位',
+            ST_SetSRID(ST_MakePoint(120, 30), 4326)::geography,
+            false,
+            999,
+            CURRENT_TIMESTAMP
+          )
+        `,
+        [conflictingId],
+      );
+
+      await expect(runSeed(harness.prisma)).rejects.toThrowError(CITY_SEED_IDENTITY_CONFLICT_ERROR);
+
+      const conflict = await pool.query<{ id: string; name_zh: string }>(
+        `
+          SELECT id::text, name_zh
+          FROM ${harness.quotedSchema}."city"
+          WHERE code = $1
+        `,
+        ["330100"],
+      );
+      expect(conflict.rows).toEqual([{ id: conflictingId, name_zh: "冲突占位" }]);
+    } finally {
+      await destroyIsolatedSeedHarness(harness);
+    }
+  });
+
+  test("seed rejects an uncommitted fixed UUID mapped to a wrong code after it wins", async () => {
+    const harness = await createIsolatedSeedHarness();
+    const blocker: PoolClient = await pool.connect();
+    let blockerTransactionOpen = false;
+    let seedAttempt: Promise<void> | undefined;
+
+    try {
+      await blocker.query("BEGIN");
+      blockerTransactionOpen = true;
+      await blocker.query(`SET LOCAL search_path TO ${harness.quotedSchema}, public`);
+      await blocker.query(`
+        INSERT INTO "city" (
           id,
           code,
           name_zh,
@@ -112,29 +240,37 @@ describeDatabase(suiteName, () => {
           updated_at
         )
         VALUES (
-          $1::uuid,
-          '330100',
-          '冲突占位',
+          '10000000-0000-4000-8000-000000000001',
+          'wrong-code',
+          '竞态胜者',
           ST_SetSRID(ST_MakePoint(120, 30), 4326)::geography,
           false,
           999,
           CURRENT_TIMESTAMP
         )
-      `,
-      [conflictingId],
-    );
+      `);
 
-    try {
-      await expect(runSeed(prisma)).rejects.toThrowError(CITY_SEED_IDENTITY_CONFLICT_ERROR);
+      seedAttempt = runSeed(harness.prisma);
+      await waitForTransactionLock(harness.applicationName);
 
-      const conflict = await pool.query<{ id: string; name_zh: string }>(
-        "SELECT id::text, name_zh FROM city WHERE code = $1",
-        ["330100"],
-      );
-      expect(conflict.rows).toEqual([{ id: conflictingId, name_zh: "冲突占位" }]);
+      await blocker.query("COMMIT");
+      blockerTransactionOpen = false;
+
+      await expect(seedAttempt).rejects.toThrowError(CITY_SEED_IDENTITY_CONFLICT_ERROR);
+
+      const winner = await pool.query<{ code: string; name_zh: string }>(`
+        SELECT code, name_zh
+        FROM ${harness.quotedSchema}."city"
+        WHERE id = '10000000-0000-4000-8000-000000000001'
+      `);
+      expect(winner.rows).toEqual([{ code: "wrong-code", name_zh: "竞态胜者" }]);
     } finally {
-      await pool.query("DELETE FROM city WHERE code = $1", ["330100"]);
-      await runSeed(prisma);
+      if (blockerTransactionOpen) {
+        await blocker.query("ROLLBACK");
+      }
+      await seedAttempt?.catch(() => undefined);
+      blocker.release();
+      await destroyIsolatedSeedHarness(harness);
     }
   });
 

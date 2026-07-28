@@ -56,43 +56,6 @@ export async function runSeed(prisma: PrismaClient): Promise<void> {
     );
 
     for (const city of cities) {
-      const existingIdentities = await transaction.$queryRaw<Array<{ id: string; code: string }>>(
-        Prisma.sql`
-          SELECT "id"::text AS "id", "code"
-          FROM "city"
-          WHERE "id" = ${city.id}::uuid OR "code" = ${city.code}
-          FOR UPDATE
-        `,
-      );
-
-      if (existingIdentities.length > 0) {
-        const identity = existingIdentities[0];
-        if (
-          existingIdentities.length !== 1 ||
-          identity?.id !== city.id ||
-          identity.code !== city.code
-        ) {
-          throw new Error(CITY_SEED_IDENTITY_CONFLICT_ERROR);
-        }
-
-        await transaction.$executeRaw(
-          Prisma.sql`
-            UPDATE "city"
-            SET
-              "name_zh" = ${city.nameZh},
-              "center" = ST_SetSRID(
-                ST_MakePoint(${city.longitude}, ${city.latitude}),
-                4326
-              )::geography,
-              "enabled" = true,
-              "display_order" = ${city.displayOrder},
-              "updated_at" = CURRENT_TIMESTAMP
-            WHERE "id" = ${city.id}::uuid
-          `,
-        );
-        continue;
-      }
-
       await transaction.$executeRaw(
         Prisma.sql`
           INSERT INTO "city" (
@@ -115,12 +78,42 @@ export async function runSeed(prisma: PrismaClient): Promise<void> {
             CURRENT_TIMESTAMP,
             CURRENT_TIMESTAMP
           )
-          ON CONFLICT ("id") DO UPDATE SET
-            "name_zh" = EXCLUDED."name_zh",
-            "center" = EXCLUDED."center",
-            "enabled" = EXCLUDED."enabled",
-            "display_order" = EXCLUDED."display_order",
+          ON CONFLICT DO NOTHING
+        `,
+      );
+
+      const existingIdentities = await transaction.$queryRaw<Array<{ id: string; code: string }>>(
+        Prisma.sql`
+          SELECT "id"::text AS "id", "code"
+          FROM "city"
+          WHERE "id" = ${city.id}::uuid OR "code" = ${city.code}
+          FOR UPDATE
+        `,
+      );
+
+      const identity = existingIdentities[0];
+      if (
+        existingIdentities.length !== 1 ||
+        identity?.id !== city.id ||
+        identity.code !== city.code
+      ) {
+        throw new Error(CITY_SEED_IDENTITY_CONFLICT_ERROR);
+      }
+
+      await transaction.$executeRaw(
+        Prisma.sql`
+          UPDATE "city"
+          SET
+            "name_zh" = ${city.nameZh},
+            "center" = ST_SetSRID(
+              ST_MakePoint(${city.longitude}, ${city.latitude}),
+              4326
+            )::geography,
+            "enabled" = true,
+            "display_order" = ${city.displayOrder},
             "updated_at" = CURRENT_TIMESTAMP
+          WHERE "id" = ${city.id}::uuid
+            AND "code" = ${city.code}
         `,
       );
     }
