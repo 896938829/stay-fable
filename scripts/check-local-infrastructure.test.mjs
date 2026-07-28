@@ -60,7 +60,13 @@ test("documents the required WSL2 runtime verification", async () => {
     /\[StringComparer\]::OrdinalIgnoreCase\.Equals\(\$currentPath, \$repoRoot\)/,
   );
   assert.match(windowsPhase, /\$runtimeDir = Join-Path \$repoRoot '\.wsl-runtime'/);
-  assert.match(windowsPhase, /corepack pnpm build/);
+  const prismaGenerateIndex = windowsPhase.indexOf(
+    "corepack pnpm --filter @stay-fable/api-server prisma:generate",
+  );
+  const fullBuildIndex = windowsPhase.indexOf("corepack pnpm build");
+  assert.ok(prismaGenerateIndex >= 0, "missing API Prisma generation");
+  assert.ok(fullBuildIndex >= 0, "missing full production build");
+  assert.ok(prismaGenerateIndex < fullBuildIndex, "Prisma generation must precede the full build");
   assert.match(
     windowsPhase,
     /corepack pnpm deploy --filter @stay-fable\/api-server --prod \(Join-Path \$runtimeDir 'api'\)/,
@@ -83,7 +89,7 @@ test("documents the required WSL2 runtime verification", async () => {
   assert.doesNotMatch(guide, /\|\s*(?:bash|sh)\b/);
   assert.match(
     guide,
-    /validation_root="\/tmp\/stay-fable-wsl-validation"[\s\S]*rm -rf -- "\$validation_root"[\s\S]*mkdir -p "\$validation_root\/api" "\$validation_root\/worker"[\s\S]*cp -a -- "\$artifact_root\/api\/\." "\$validation_root\/api\/"[\s\S]*cp -a -- "\$artifact_root\/worker\/\." "\$validation_root\/worker\/"/,
+    /validation_root="\/tmp\/stay-fable-wsl-validation"[\s\S]*mkdir -- "\$validation_root"[\s\S]*mkdir -- "\$validation_root\/api" "\$validation_root\/worker"[\s\S]*cp -a -- "\$artifact_root\/api\/\." "\$validation_root\/api\/"[\s\S]*cp -a -- "\$artifact_root\/worker\/\." "\$validation_root\/worker\/"/,
   );
   const collisionGuard = guide.match(
     /for container_name in stay-fable-wsl-validation-api stay-fable-wsl-validation-worker; do[\s\S]*docker ps -a --filter "name=\^\/\$\{container_name\}\$"[\s\S]*if \[ -n "\$listed_names" \]; then[\s\S]*exit 1[\s\S]*fi[\s\S]*done/,
@@ -91,9 +97,27 @@ test("documents the required WSL2 runtime verification", async () => {
   assert.ok(collisionGuard, "missing pre-mutation exact-name collision guard");
   assert.ok(guide.indexOf(inventoryBlock) < guide.indexOf(collisionGuard));
   assert.ok(guide.indexOf(collisionGuard) < guide.indexOf("cleanup_validation()"));
+  const composeOwnershipGuard = guide.match(
+    /docker ps -a --filter "label=com\.docker\.compose\.project=stay-fable-wsl-validation"[\s\S]*if \[ -n "\$project_containers" \]; then[\s\S]*exit 1[\s\S]*docker network ls --filter "label=com\.docker\.compose\.project=stay-fable-wsl-validation"[\s\S]*if \[ -n "\$project_networks" \]; then[\s\S]*exit 1[\s\S]*fi/,
+  )?.[0];
+  assert.ok(composeOwnershipGuard, "missing Compose project ownership preflight");
+  const tempRootGuard = guide.match(
+    /if \[ -e "\$validation_root" \]; then[\s\S]*exit 1[\s\S]*fi/,
+  )?.[0];
+  assert.ok(tempRootGuard, "missing ext4 validation-root collision guard");
+  assert.ok(guide.indexOf(composeOwnershipGuard) < guide.indexOf("cleanup_validation()"));
+  assert.ok(guide.indexOf(tempRootGuard) < guide.indexOf("cleanup_validation()"));
+  assert.match(
+    guide,
+    /validation_token=.*\$\$[\s\S]*ownership_marker="\$validation_root\/\.stay-fable-validation-owner"[\s\S]*mkdir -- "\$validation_root"[\s\S]*printf '%s\\n' "\$validation_token" > "\$ownership_marker"[\s\S]*validation_root_owned=true/,
+  );
   assert.match(
     guide,
     /POSTGRES_PORT=55432 REDIS_PORT=56379 docker compose --project-name stay-fable-wsl-validation -f infrastructure\/compose\.yaml up -d --wait --wait-timeout 120/,
+  );
+  assert.match(
+    guide,
+    /compose_mutation_started=false[\s\S]*trap 'cleanup_validation \$\?' EXIT[\s\S]*compose_mutation_started=true\s+POSTGRES_PORT=55432 REDIS_PORT=56379 docker compose --project-name stay-fable-wsl-validation/,
   );
   const composeCommands =
     guide.match(
@@ -125,6 +149,10 @@ test("documents the required WSL2 runtime verification", async () => {
     assert.match(runCommand, /-v "\$validation_root\/(?:api|worker):\/app:ro"/);
     assert.doesNotMatch(runCommand, /\.wsl-runtime|\/mnt\//);
   }
+  assert.match(
+    guide,
+    /for runtime_name in api worker; do[\s\S]*"\$validation_root\/\$runtime_name\/dist\/main\.js"[\s\S]*"\$validation_root\/\$runtime_name\/package\.json"[\s\S]*-d "\$validation_root\/\$runtime_name\/node_modules"[\s\S]*exit 1[\s\S]*done[\s\S]*docker run/,
+  );
   const curlCommands = guide.match(/^\s*(?:if )?curl --fail[^\r\n]+/gm) ?? [];
   assert.equal(curlCommands.length, 3);
   for (const command of curlCommands) {
@@ -147,24 +175,26 @@ test("documents the required WSL2 runtime verification", async () => {
   );
   assert.match(
     guide,
-    /10 分钟[\s\S]*RestartCount=0[\s\S]*(无|没有).*(重连循环|reconnect loop).*错误/is,
+    /10 分钟[\s\S]*Running=true[\s\S]*RestartCount=0[\s\S]*(无|没有).*(致命|fatal).*(重连循环|reconnect loop)/is,
   );
   assert.match(
     guide,
-    /for minute in \$\(seq 1 10\); do[\s\S]*if \[ "\$restart_count" -ne 0 \]; then[\s\S]*docker logs stay-fable-wsl-validation-worker[\s\S]*exit 1[\s\S]*fi[\s\S]*sleep 60[\s\S]*done/,
+    /for minute in \$\(seq 1 10\); do[\s\S]*worker_running=.*State\.Running[\s\S]*if \[ "\$worker_running" != true \] \|\| \[ "\$restart_count" -ne 0 \]; then[\s\S]*docker inspect[\s\S]*State\.Status[\s\S]*docker logs stay-fable-wsl-validation-worker[\s\S]*exit 1[\s\S]*fi[\s\S]*sleep 60[\s\S]*done/,
   );
   assert.match(
     guide,
-    /final_restart_count=.*RestartCount[\s\S]*if \[ "\$final_restart_count" -ne 0 \]; then[\s\S]*docker logs stay-fable-wsl-validation-worker[\s\S]*exit 1[\s\S]*fi[\s\S]*final_worker_logs=.*docker logs --since 10m[\s\S]*if printf[\s\S]*grep -Eiq '\(reconnect\|error\)'[\s\S]*exit 1[\s\S]*fi/,
+    /final_worker_running=.*State\.Running[\s\S]*final_restart_count=.*RestartCount[\s\S]*if \[ "\$final_worker_running" != true \] \|\| \[ "\$final_restart_count" -ne 0 \]; then[\s\S]*docker inspect[\s\S]*State\.Status[\s\S]*docker logs stay-fable-wsl-validation-worker[\s\S]*exit 1[\s\S]*fi/,
   );
+  assert.match(
+    guide,
+    /fatal_worker_log_pattern=.*level.*60.*fatal.*uncaught.*unhandled.*ECONN.*reconnect.*loop/i,
+  );
+  assert.equal(guide.match(/grep -Eiq "\$fatal_worker_log_pattern"/g)?.length, 2);
+  assert.doesNotMatch(guide, /grep -Eiq '\(reconnect\|error\)'/);
   assert.match(guide, /不得(停止|删除).*无关容器/s);
   assert.deepEqual(guide.match(/docker (?:rm|stop|kill)[^\r\n]+/g), [
     'docker rm -f "$container_name"; then',
   ]);
-  assert.match(
-    guide,
-    /^\s*if ! POSTGRES_PORT=55432 REDIS_PORT=56379 docker compose --project-name stay-fable-wsl-validation -f infrastructure\/compose\.yaml down; then$/m,
-  );
   assert.doesNotMatch(guide, /docker compose[^\r\n]*(down|rm)[^\r\n]*--volumes/);
   assert.doesNotMatch(guide, /test -d \.git/);
   assert.doesNotMatch(wslPhase, /git rev-parse --show-toplevel/);
@@ -174,6 +204,11 @@ test("documents the required WSL2 runtime verification", async () => {
   );
   const cleanupFunction = guide.match(/^cleanup_validation\(\) \{[\s\S]*?^\}$/m)?.[0];
   assert.ok(cleanupFunction, "missing validation cleanup function");
+  assert.match(cleanupFunction, /if \[ "\$compose_mutation_started" = true \]; then/);
+  assert.match(
+    cleanupFunction,
+    /docker ps -a --filter "label=com\.docker\.compose\.project=stay-fable-wsl-validation"[\s\S]*stay-fable-wsl-validation-(?:postgres|redis)-1[\s\S]*docker network ls --filter "label=com\.docker\.compose\.project=stay-fable-wsl-validation"[\s\S]*stay-fable-wsl-validation_default[\s\S]*docker compose --project-name stay-fable-wsl-validation[^\r\n]* down/,
+  );
   assert.match(cleanupFunction, /trap - EXIT/);
   assert.match(
     cleanupFunction,
@@ -190,11 +225,7 @@ test("documents the required WSL2 runtime verification", async () => {
   assert.doesNotMatch(cleanupFunction, /docker rm[^\r\n]*\|\| true/);
   assert.match(
     cleanupFunction,
-    /if ! POSTGRES_PORT=55432 REDIS_PORT=56379 docker compose --project-name stay-fable-wsl-validation[^\r\n]* down; then[\s\S]*cleanup_failed=1[\s\S]*fi/,
-  );
-  assert.match(
-    cleanupFunction,
-    /\[ "\$validation_root" = "\/tmp\/stay-fable-wsl-validation" \][\s\S]*rm -rf -- "\$validation_root"[\s\S]*cleanup_failed=1/,
+    /if \[ "\$validation_root_owned" = true \]; then[\s\S]*\[ "\$validation_root" != "\/tmp\/stay-fable-wsl-validation" \][\s\S]*\[ ! -f "\$ownership_marker" \][\s\S]*cat -- "\$ownership_marker"[\s\S]*\[ "\$marker_token" = "\$validation_token" \][\s\S]*rm -rf -- "\$validation_root"[\s\S]*cleanup_failed=1/,
   );
   assert.doesNotMatch(cleanupFunction, /\.wsl-runtime|\/mnt\//);
   assert.match(
@@ -223,7 +254,7 @@ test("documents the required WSL2 runtime verification", async () => {
   );
   assert.match(
     guide,
-    /1 秒.*API.*就绪[\s\S]*10 分 55 秒[\s\S]*RestartCount=0[\s\S]*(无|没有).*(reconnect|重连).*(error|错误)/is,
+    /1 秒.*API.*就绪[\s\S]*10 分 55 秒[\s\S]*Running=true[\s\S]*RestartCount=0[\s\S]*(无|没有).*(致命|fatal).*(reconnect|重连)/is,
   );
   assert.match(guide, /生产环境[\s\S]*rediss:\/\//);
 });

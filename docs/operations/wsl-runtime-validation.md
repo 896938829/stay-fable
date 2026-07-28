@@ -67,10 +67,10 @@ try {
   }
   New-Item -ItemType Directory -Path $runtimeDir | Out-Null
 
-  corepack pnpm build
-  if ($LASTEXITCODE -ne 0) { throw '生产构建失败' }
   corepack pnpm --filter @stay-fable/api-server prisma:generate
   if ($LASTEXITCODE -ne 0) { throw 'Prisma 客户端生成失败' }
+  corepack pnpm build
+  if ($LASTEXITCODE -ne 0) { throw '生产构建失败' }
   corepack pnpm deploy --filter @stay-fable/api-server --prod (Join-Path $runtimeDir 'api')
   if ($LASTEXITCODE -ne 0) { throw 'API 部署产物生成失败' }
   corepack pnpm deploy --filter @stay-fable/job-worker --prod (Join-Path $runtimeDir 'worker')
@@ -119,7 +119,10 @@ git status --short
 脚本在任何 Docker 变更前执行两次强制盘点。随后注册失败安全的 EXIT trap；清理
 只处理两个固定容器、隔离 Compose 项目和精确的 ext4 临时根目录
 `/tmp/stay-fable-wsl-validation`。Compose `down` 不带 `--volumes`，所以数据卷
-会保留。
+会保留。若固定容器名、同项目标签的容器或网络、或者 ext4 临时根目录已经存在，
+预检会直接失败，不会接管或清理它们。临时根目录由本次运行创建，并写入唯一所有权
+标记；清理时标记必须仍然匹配。Compose 也只有在本次运行开始创建资源且清理前标签、
+名称重新验证通过时才执行 `down`。
 
 API 就绪探测执行 20 次，每次请求最长 2 秒、连接超时 1 秒，失败后间隔 1 秒，
 因此最长 60 秒。Worker 随后执行完整的 10 分钟稳定性观察。
@@ -165,11 +168,37 @@ for container_name in stay-fable-wsl-validation-api stay-fable-wsl-validation-wo
 done
 
 validation_root="/tmp/stay-fable-wsl-validation"
+if ! project_containers="$(docker ps -a --filter "label=com.docker.compose.project=stay-fable-wsl-validation" --format '{{.Names}}')"; then
+  echo '无法检查隔离 Compose 项目的容器归属' >&2
+  exit 1
+fi
+if [ -n "$project_containers" ]; then
+  echo '隔离 Compose 项目已有容器；拒绝接管或清理' >&2
+  exit 1
+fi
+if ! project_networks="$(docker network ls --filter "label=com.docker.compose.project=stay-fable-wsl-validation" --format '{{.Name}}')"; then
+  echo '无法检查隔离 Compose 项目的网络归属' >&2
+  exit 1
+fi
+if [ -n "$project_networks" ]; then
+  echo '隔离 Compose 项目已有网络；拒绝接管或清理' >&2
+  exit 1
+fi
+if [ -e "$validation_root" ]; then
+  echo 'ext4 验证临时根目录已存在；拒绝接管或删除' >&2
+  exit 1
+fi
+
+validation_token="stay-fable-wsl-validation-$$-$(date +%s)-${RANDOM}"
+ownership_marker="$validation_root/.stay-fable-validation-owner"
+validation_root_owned=false
+compose_mutation_started=false
 
 cleanup_validation() {
   local validation_status="$1"
   local cleanup_failed=0
-  local container_name listed_names
+  local container_name listed_names cleanup_project_containers cleanup_project_networks
+  local project_resource labels_safe marker_token
   trap - EXIT
 
   for container_name in stay-fable-wsl-validation-api stay-fable-wsl-validation-worker; do
@@ -196,17 +225,64 @@ cleanup_validation() {
     fi
   done
 
-  if ! POSTGRES_PORT=55432 REDIS_PORT=56379 docker compose --project-name stay-fable-wsl-validation -f infrastructure/compose.yaml down; then
-    cleanup_failed=1
+  if [ "$compose_mutation_started" = true ]; then
+    labels_safe=true
+    if ! cleanup_project_containers="$(docker ps -a --filter "label=com.docker.compose.project=stay-fable-wsl-validation" --format '{{.Names}}')"; then
+      echo '无法重新验证 Compose 容器标签，拒绝执行 down' >&2
+      cleanup_failed=1
+      labels_safe=false
+    else
+      while IFS= read -r project_resource; do
+        [ -z "$project_resource" ] && continue
+        case "$project_resource" in
+          stay-fable-wsl-validation-postgres-1 | stay-fable-wsl-validation-redis-1) ;;
+          *)
+            echo "Compose 项目包含非预期容器，拒绝执行 down：${project_resource}" >&2
+            cleanup_failed=1
+            labels_safe=false
+            ;;
+        esac
+      done <<<"$cleanup_project_containers"
+    fi
+    if ! cleanup_project_networks="$(docker network ls --filter "label=com.docker.compose.project=stay-fable-wsl-validation" --format '{{.Name}}')"; then
+      echo '无法重新验证 Compose 网络标签，拒绝执行 down' >&2
+      cleanup_failed=1
+      labels_safe=false
+    else
+      while IFS= read -r project_resource; do
+        [ -z "$project_resource" ] && continue
+        if [ "$project_resource" != "stay-fable-wsl-validation_default" ]; then
+          echo "Compose 项目包含非预期网络，拒绝执行 down：${project_resource}" >&2
+          cleanup_failed=1
+          labels_safe=false
+        fi
+      done <<<"$cleanup_project_networks"
+    fi
+    if [ "$labels_safe" = true ]; then
+      if ! POSTGRES_PORT=55432 REDIS_PORT=56379 docker compose --project-name stay-fable-wsl-validation -f infrastructure/compose.yaml down; then
+        cleanup_failed=1
+      fi
+    fi
   fi
 
-  if [ "$validation_root" = "/tmp/stay-fable-wsl-validation" ]; then
-    if ! rm -rf -- "$validation_root"; then
+  if [ "$validation_root_owned" = true ]; then
+    if [ "$validation_root" != "/tmp/stay-fable-wsl-validation" ]; then
+      echo '临时根目录不符合预期，拒绝清理' >&2
+      cleanup_failed=1
+    elif [ ! -f "$ownership_marker" ]; then
+      echo '临时根目录所有权标记缺失，拒绝清理' >&2
+      cleanup_failed=1
+    elif ! marker_token="$(cat -- "$ownership_marker")"; then
+      echo '无法读取临时根目录所有权标记，拒绝清理' >&2
+      cleanup_failed=1
+    elif [ "$marker_token" = "$validation_token" ]; then
+      if ! rm -rf -- "$validation_root"; then
+        cleanup_failed=1
+      fi
+    else
+      echo '临时根目录所有权标记不匹配，拒绝清理' >&2
       cleanup_failed=1
     fi
-  else
-    echo '临时根目录不符合预期，拒绝清理' >&2
-    cleanup_failed=1
   fi
 
   if [ "$cleanup_failed" -ne 0 ]; then
@@ -225,11 +301,29 @@ if [ ! -d "$artifact_root/api" ] || [ ! -d "$artifact_root/worker" ]; then
   echo 'API 或 Worker 部署产物不存在' >&2
   exit 1
 fi
-rm -rf -- "$validation_root"
-mkdir -p "$validation_root/api" "$validation_root/worker"
+mkdir -- "$validation_root"
+printf '%s\n' "$validation_token" > "$ownership_marker"
+validation_root_owned=true
+mkdir -- "$validation_root/api" "$validation_root/worker"
 cp -a -- "$artifact_root/api/." "$validation_root/api/"
 cp -a -- "$artifact_root/worker/." "$validation_root/worker/"
 
+for runtime_name in api worker; do
+  if [ ! -f "$validation_root/$runtime_name/dist/main.js" ]; then
+    echo "${runtime_name} 产物缺少 dist/main.js" >&2
+    exit 1
+  fi
+  if [ ! -f "$validation_root/$runtime_name/package.json" ]; then
+    echo "${runtime_name} 产物缺少 package.json" >&2
+    exit 1
+  fi
+  if [ ! -d "$validation_root/$runtime_name/node_modules" ]; then
+    echo "${runtime_name} 产物缺少 node_modules 目录" >&2
+    exit 1
+  fi
+done
+
+compose_mutation_started=true
 POSTGRES_PORT=55432 REDIS_PORT=56379 docker compose --project-name stay-fable-wsl-validation -f infrastructure/compose.yaml up -d --wait --wait-timeout 120
 POSTGRES_PORT=55432 REDIS_PORT=56379 docker compose --project-name stay-fable-wsl-validation -f infrastructure/compose.yaml ps
 
@@ -280,35 +374,42 @@ docker inspect --format \
   'user={{.Config.User}} ReadonlyRootfs={{.HostConfig.ReadonlyRootfs}}' \
   stay-fable-wsl-validation-api stay-fable-wsl-validation-worker
 
+fatal_worker_log_pattern='("level"[[:space:]]*:[[:space:]]*60|"level"[[:space:]]*:[[:space:]]*"fatal"|(^|[[:space:]])FATAL([[:space:]]|:)|uncaught[[:space:]]*(exception)?|unhandled[[:space:]]*(rejection)?|ECONN[A-Z_]*|reconnect(ion)?[[:space:]]+loop)'
 for minute in $(seq 1 10); do
   echo "Worker observation minute ${minute}/10"
+  worker_running="$(docker inspect --format '{{.State.Running}}' stay-fable-wsl-validation-worker)"
   restart_count="$(docker inspect --format '{{.RestartCount}}' stay-fable-wsl-validation-worker)"
-  echo "RestartCount=${restart_count}"
-  if [ "$restart_count" -ne 0 ]; then
-    echo 'Worker 在观察期间发生重启' >&2
+  echo "Running=${worker_running} RestartCount=${restart_count}"
+  if [ "$worker_running" != true ] || [ "$restart_count" -ne 0 ]; then
+    echo 'Worker 在观察期间停止或发生重启' >&2
+    docker inspect --format 'status={{.State.Status}} running={{.State.Running}} RestartCount={{.RestartCount}}' \
+      stay-fable-wsl-validation-worker >&2 || true
     docker logs stay-fable-wsl-validation-worker >&2 || true
     exit 1
   fi
   worker_logs="$(docker logs --since 65s stay-fable-wsl-validation-worker 2>&1)"
   printf '%s\n' "$worker_logs"
-  if printf '%s\n' "$worker_logs" | grep -Eiq '(reconnect|error)'; then
-    echo 'Worker 日志出现 reconnect loop 或错误' >&2
+  if printf '%s\n' "$worker_logs" | grep -Eiq "$fatal_worker_log_pattern"; then
+    echo 'Worker 日志出现致命异常、连接失败或明确的重连循环' >&2
     exit 1
   fi
   sleep 60
 done
 
+final_worker_running="$(docker inspect --format '{{.State.Running}}' stay-fable-wsl-validation-worker)"
 final_restart_count="$(docker inspect --format '{{.RestartCount}}' stay-fable-wsl-validation-worker)"
-echo "RestartCount=${final_restart_count}"
-if [ "$final_restart_count" -ne 0 ]; then
-  echo 'Worker 最终重启次数非零' >&2
+echo "Running=${final_worker_running} RestartCount=${final_restart_count}"
+if [ "$final_worker_running" != true ] || [ "$final_restart_count" -ne 0 ]; then
+  echo 'Worker 最终状态不是运行中或重启次数非零' >&2
+  docker inspect --format 'status={{.State.Status}} running={{.State.Running}} RestartCount={{.RestartCount}}' \
+    stay-fable-wsl-validation-worker >&2 || true
   docker logs stay-fable-wsl-validation-worker >&2 || true
   exit 1
 fi
 final_worker_logs="$(docker logs --since 10m stay-fable-wsl-validation-worker 2>&1)"
 printf '%s\n' "$final_worker_logs"
-if printf '%s\n' "$final_worker_logs" | grep -Eiq '(reconnect|error)'; then
-  echo 'Worker 最终日志出现 reconnect loop 或错误' >&2
+if printf '%s\n' "$final_worker_logs" | grep -Eiq "$fatal_worker_log_pattern"; then
+  echo 'Worker 最终日志出现致命异常、连接失败或明确的重连循环' >&2
   exit 1
 fi
 
@@ -345,8 +446,9 @@ user=node ReadonlyRootfs=true
 
 就绪循环共 20 次，每次请求最长 2 秒、连接超时 1 秒、失败后间隔 1 秒，因此最长
 60 秒。已证明的实机运行中，ext4 副本挂载后 API 在 1 秒内就绪；Worker 连续稳定
-10 分 55 秒，`RestartCount=0`，没有 reconnect loop 或 error 错误。执行新一轮
-验收时仍须完整运行并记录自己的 10 分钟观察，不能只引用这组历史证据。
+10 分 55 秒，每次及最终检查均为 `Running=true`、`RestartCount=0`，没有致命
+Pino/Node/Redis 事件或明确的 reconnect loop。执行新一轮验收时仍须完整运行并
+记录自己的 10 分钟观察，不能只引用这组历史证据。
 
 本地隔离网络使用 `redis://redis:6379` 和关闭 TLS 的数据库 URL。真实生产环境
 必须设置 `NODE_ENV=production`，Redis 必须使用可信证书保护的 `rediss://` URL，
