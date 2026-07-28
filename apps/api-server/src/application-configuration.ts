@@ -6,6 +6,19 @@ import { ApiEnvelopeInterceptor } from "./common/http/api-envelope.interceptor.j
 import { ApiExceptionFilter } from "./common/http/api-exception.filter.js";
 import { requestContext } from "./common/http/request-context.js";
 
+export const OPEN_API_CONFIG = new DocumentBuilder()
+  .setTitle("Stay Fable API")
+  .setVersion("0.0.0")
+  .addBearerAuth(
+    {
+      type: "http",
+      scheme: "bearer",
+      bearerFormat: "opaque",
+    },
+    "session",
+  )
+  .build();
+
 export const configureApplication = (
   app: INestApplication,
   nodeEnvironment = process.env.NODE_ENV,
@@ -30,11 +43,7 @@ export const configureApplication = (
   app.useGlobalFilters(new ApiExceptionFilter(new Logger(ApiExceptionFilter.name)));
 
   if (nodeEnvironment !== "production") {
-    const openApiConfig = new DocumentBuilder()
-      .setTitle("Stay Fable API")
-      .setVersion("0.0.0")
-      .build();
-    const openApiDocument = SwaggerModule.createDocument(app, openApiConfig);
+    const openApiDocument = SwaggerModule.createDocument(app, OPEN_API_CONFIG);
     SwaggerModule.setup("internal/openapi", app, openApiDocument);
   }
 };

@@ -86,6 +86,7 @@ describe("LocationService", () => {
     expect(query).toBeInstanceOf(Prisma.Sql);
     expect(query?.values).toEqual([longitude, latitude]);
     expect(query?.sql).toContain("ST_Distance");
+    expect(query?.sql).toContain("false");
     expect(query?.sql).toContain("ST_MakePoint");
     expect(query?.sql).toContain("<->");
     expect(query?.sql).toContain('"enabled" = true');

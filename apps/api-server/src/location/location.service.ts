@@ -47,7 +47,9 @@ export class LocationService {
           "city"."id"::text AS "id",
           "city"."code",
           "city"."name_zh" AS "name",
-          ROUND(ST_Distance("city"."center", "input_location"."point"))::int AS "distance_meters"
+          ROUND(
+            ST_Distance("city"."center", "input_location"."point", false)
+          )::int AS "distance_meters"
         FROM "city"
         CROSS JOIN "input_location"
         WHERE "city"."enabled" = true

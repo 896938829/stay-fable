@@ -58,12 +58,12 @@ describe("LocationController", () => {
     expect(location.listCities).toHaveBeenCalledOnce();
   });
 
-  it("transforms and validates coordinates before resolving a location", async () => {
+  it("accepts JSON numbers before resolving a location", async () => {
     const { location, server } = await createApp();
 
     const response = await request(server)
       .post("/api/v1/location/resolve")
-      .send({ longitude: "120.1551", latitude: "30.2741" })
+      .send({ longitude: 120.1551, latitude: 30.2741 })
       .expect(200);
 
     expect((response.body as { data: unknown }).data).toEqual({
@@ -74,6 +74,39 @@ describe("LocationController", () => {
       longitude: 120.1551,
       latitude: 30.2741,
     });
+  });
+
+  it.each([
+    { longitude: -180, latitude: -90 },
+    { longitude: 180, latitude: 90 },
+  ])("accepts JSON numbers at coordinate boundaries", async (coordinates) => {
+    const { location, server } = await createApp();
+
+    await request(server).post("/api/v1/location/resolve").send(coordinates).expect(200);
+
+    expect(location.resolve).toHaveBeenCalledWith(coordinates);
+  });
+
+  it.each(["", " ", "120.1", true, false])("rejects non-number longitude %j", async (longitude) => {
+    const { location, server } = await createApp();
+
+    await request(server)
+      .post("/api/v1/location/resolve")
+      .send({ longitude, latitude: 30.2741 })
+      .expect(400);
+
+    expect(location.resolve).not.toHaveBeenCalled();
+  });
+
+  it.each(["", " ", "30.1", true, false])("rejects non-number latitude %j", async (latitude) => {
+    const { location, server } = await createApp();
+
+    await request(server)
+      .post("/api/v1/location/resolve")
+      .send({ longitude: 120.1551, latitude })
+      .expect(400);
+
+    expect(location.resolve).not.toHaveBeenCalled();
   });
 
   it.each([

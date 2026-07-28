@@ -1,5 +1,5 @@
 import { Body, Controller, Get, HttpCode, HttpStatus, Post, UseGuards } from "@nestjs/common";
-import { ApiOkResponse, ApiOperation, ApiTags } from "@nestjs/swagger";
+import { ApiBearerAuth, ApiOkResponse, ApiOperation, ApiTags } from "@nestjs/swagger";
 import type { City, ResolvedLocation } from "@stay-fable/api-contracts/location";
 
 import { SessionAuthGuard } from "../identity/session-auth.guard.js";
@@ -8,6 +8,7 @@ import { ResolveLocationDto } from "./dto/resolve-location.dto.js";
 import { LocationService } from "./location.service.js";
 
 @ApiTags("location")
+@ApiBearerAuth("session")
 @Controller()
 @UseGuards(SessionAuthGuard)
 export class LocationController {

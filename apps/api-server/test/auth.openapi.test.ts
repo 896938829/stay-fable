@@ -19,6 +19,7 @@ interface TestDocument {
     string,
     {
       post?: {
+        security?: Array<Record<string, string[]>>;
         responses?: Record<
           string,
           {
@@ -66,6 +67,7 @@ describe("AuthController OpenAPI", () => {
     ) as unknown as TestDocument;
 
     for (const path of ["/auth/wechat/login", "/auth/session/refresh"]) {
+      expect(document.paths[path]?.post?.security).toBeUndefined();
       expect(
         document.paths[path]?.post?.responses?.["201"]?.content?.["application/json"]?.schema,
       ).toEqual({ $ref: "#/components/schemas/AuthSessionEnvelopeDto" });

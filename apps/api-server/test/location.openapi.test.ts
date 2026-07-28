@@ -1,8 +1,9 @@
 import type { INestApplication } from "@nestjs/common";
-import { DocumentBuilder, SwaggerModule } from "@nestjs/swagger";
+import { SwaggerModule } from "@nestjs/swagger";
 import { Test } from "@nestjs/testing";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { OPEN_API_CONFIG } from "../src/application-configuration.js";
 import { SessionAuthGuard } from "../src/identity/session-auth.guard.js";
 import { LocationController } from "../src/location/location.controller.js";
 import { LocationService } from "../src/location/location.service.js";
@@ -24,16 +25,28 @@ interface TestDocument {
     {
       get?: {
         responses?: Record<string, { content?: { "application/json"?: { schema?: TestSchema } } }>;
+        security?: Array<Record<string, string[]>>;
       };
       post?: {
         requestBody?: {
           content?: { "application/json"?: { schema?: TestSchema } };
         };
         responses?: Record<string, { content?: { "application/json"?: { schema?: TestSchema } } }>;
+        security?: Array<Record<string, string[]>>;
       };
     }
   >;
-  components?: { schemas?: Record<string, TestSchema> };
+  components?: {
+    schemas?: Record<string, TestSchema>;
+    securitySchemes?: Record<
+      string,
+      {
+        bearerFormat?: string;
+        scheme?: string;
+        type?: string;
+      }
+    >;
+  };
 }
 
 describe("LocationController OpenAPI", () => {
@@ -59,10 +72,7 @@ describe("LocationController OpenAPI", () => {
     app = module.createNestApplication();
     await app.init();
 
-    const document = SwaggerModule.createDocument(
-      app,
-      new DocumentBuilder().setTitle("test").setVersion("test").build(),
-    ) as unknown as TestDocument;
+    const document = SwaggerModule.createDocument(app, OPEN_API_CONFIG) as unknown as TestDocument;
 
     expect(
       document.paths["/cities"]?.get?.responses?.["200"]?.content?.["application/json"]?.schema,
@@ -98,5 +108,12 @@ describe("LocationController OpenAPI", () => {
       minimum: 0,
     });
     expect(schemas?.ResolvedLocationEnvelopeDto?.required).toEqual(["data", "request_id"]);
+    expect(document.components?.securitySchemes?.session).toEqual({
+      type: "http",
+      scheme: "bearer",
+      bearerFormat: "opaque",
+    });
+    expect(document.paths["/cities"]?.get?.security).toEqual([{ session: [] }]);
+    expect(document.paths["/location/resolve"]?.post?.security).toEqual([{ session: [] }]);
   });
 });
