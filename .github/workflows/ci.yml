@@ -20,6 +20,7 @@ jobs:
       DATABASE_URL: postgresql://stay_fable_ci:stay_fable_ci@localhost:5432/stay_fable_ci
       REDIS_URL: redis://localhost:6379
       NODE_ENV: test
+      RUN_DATABASE_INTEGRATION: "true"
     services:
       postgres:
         image: postgis/postgis:17-3.5@sha256:404171ea9058c801f405af25d63b3b8e5c9e50f2759e49390dbcc3c7ee533f4d
@@ -58,6 +59,10 @@ jobs:
           cache: pnpm
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
+      - name: Apply API database migrations
+        run: pnpm --filter @stay-fable/api-server prisma:migrate
+      - name: Seed API reference data
+        run: pnpm --filter @stay-fable/api-server prisma:seed
       - name: Run quality checks
         run: pnpm check
       - name: Audit all workspace dependencies

@@ -6,3 +6,51 @@ generator client {
 datasource db {
   provider = "postgresql"
 }
+
+enum UserStatus {
+  ACTIVE
+  DISABLED
+}
+
+enum IdentityProvider {
+  WECHAT
+}
+
+model User {
+  id         String         @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  status     UserStatus     @default(ACTIVE)
+  createdAt  DateTime       @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt  DateTime       @updatedAt @map("updated_at") @db.Timestamptz(3)
+  identities UserIdentity[]
+
+  @@map("user")
+}
+
+model UserIdentity {
+  id              String           @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  userId          String           @map("user_id") @db.Uuid
+  provider        IdentityProvider
+  providerSubject String           @map("provider_subject") @db.VarChar(160)
+  createdAt       DateTime         @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt       DateTime         @updatedAt @map("updated_at") @db.Timestamptz(3)
+  user            User             @relation(fields: [userId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+
+  @@unique([provider, providerSubject], map: "user_identity_provider_subject_key")
+  @@index([userId], map: "user_identity_user_id_idx")
+  @@map("user_identity")
+}
+
+model City {
+  id           String                               @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  code         String                               @unique(map: "city_code_key") @db.VarChar(32)
+  nameZh       String                               @map("name_zh") @db.VarChar(80)
+  center       Unsupported("geography(Point,4326)")
+  enabled      Boolean                              @default(true)
+  displayOrder Int                                  @default(0) @map("display_order")
+  createdAt    DateTime                             @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt    DateTime                             @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  @@index([enabled, displayOrder], map: "city_enabled_display_order_idx")
+  @@index([center], type: Gist, map: "city_center_gix")
+  @@map("city")
+}

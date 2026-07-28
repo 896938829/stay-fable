@@ -6,9 +6,10 @@
   "scripts": {
     "build": "nest build",
     "dev": "nest start --watch",
-    "lint": "eslint src test prisma.config.ts",
+    "lint": "eslint src test prisma prisma.config.ts",
     "prisma:generate": "node --env-file=../../.env.example node_modules/prisma/build/index.js generate",
     "prisma:migrate": "prisma migrate deploy",
+    "prisma:seed": "tsx prisma/seed.ts",
     "start": "node dist/main.js",
     "test": "vitest run",
     "typecheck": "tsc -p tsconfig.json --noEmit"
@@ -43,6 +44,7 @@
     "@types/supertest": "7.2.1",
     "prisma": "7.9.0",
     "supertest": "7.2.2",
+    "tsx": "4.23.1",
     "typescript": "6.0.3",
     "vitest": "4.1.10"
   }
