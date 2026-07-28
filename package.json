@@ -7,16 +7,17 @@
     "node": ">=24 <25"
   },
   "scripts": {
-    "build": "turbo run build",
-    "dev": "turbo run build --filter=\"./packages/*\" && turbo run dev --parallel",
+    "build": "turbo run build --filter=!@stay-fable/consumer-miniapp",
+    "dev": "turbo run build --filter=\"./packages/*\" && turbo run dev --parallel --filter=!@stay-fable/consumer-miniapp",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
-    "lint": "eslint eslint.config.mjs prettier.config.mjs scripts/*.mjs packages/eslint-config/index.mjs && turbo run lint",
-    "test": "node --test scripts/*.test.mjs && turbo run test",
-    "typecheck": "turbo run typecheck",
+    "lint": "eslint eslint.config.mjs prettier.config.mjs scripts/*.mjs packages/eslint-config/index.mjs && turbo run lint --filter=!@stay-fable/consumer-miniapp",
+    "test": "node --test scripts/*.test.mjs && turbo run test --filter=!@stay-fable/consumer-miniapp",
+    "typecheck": "turbo run typecheck --filter=!@stay-fable/consumer-miniapp",
     "verify": "node scripts/verify-workspace.mjs",
     "verify:phase-0": "node scripts/verify-phase-0.mjs",
-    "check": "pnpm verify && pnpm format:check && pnpm lint && pnpm typecheck && pnpm test && pnpm build"
+    "wx:check": "node scripts/check-wx-project.mjs",
+    "check": "pnpm verify && pnpm wx:check && pnpm format:check && pnpm lint && pnpm typecheck && pnpm test && pnpm build"
   },
   "devDependencies": {
     "eslint": "10.8.0",

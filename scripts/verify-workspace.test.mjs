@@ -14,7 +14,14 @@ test("declares the root workspace contract", async () => {
   assert.match(workspace, /^\s*-\s+["']?packages\/\*["']?\s*$/m);
   assert.equal(root.scripts.verify, "node scripts/verify-workspace.mjs");
   assert.equal(root.scripts["verify:phase-0"], "node scripts/verify-phase-0.mjs");
-  assert.equal(root.scripts.test, "node --test scripts/*.test.mjs && turbo run test");
+  assert.equal(root.scripts["wx:check"], "node scripts/check-wx-project.mjs");
+  for (const script of ["lint", "typecheck", "test", "build"]) {
+    assert.ok(
+      root.scripts[script].includes("--filter=!@stay-fable/consumer-miniapp"),
+      `${script} must exclude the frozen Taro client`,
+    );
+  }
+  assert.ok(root.scripts.check.includes("pnpm wx:check"));
 });
 
 test("includes phase zero verification entry points and evidence in the workspace contract", async () => {
