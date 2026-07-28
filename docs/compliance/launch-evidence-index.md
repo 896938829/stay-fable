@@ -11,6 +11,8 @@ Review cadence: At every launch review and weekly while any launch gate is open
 本索引将仓库内的控制契约与必须采集的外部证明关联起来。外部材料保存在受访问控制的证据库中；
 其存放位置按类别固定，并在实际执行时获得不可变的运行编号或采集编号。
 
+## 当前上线门禁
+
 | Evidence item                                     | Repository evidence                                                                                                                                                | External evidence location                                                             | Status      |
 | ------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------- | ----------- |
 | 工作区质量检查                                    | [`package.json`](../../package.json)、[`verify-workspace.mjs`](../../scripts/verify-workspace.mjs)                                                                 | 受控证据库：`phase-0/quality/local-check/`                                             | In review   |
@@ -20,13 +22,20 @@ Review cadence: At every launch review and weekly while any launch gate is open
 | Gitleaks 完整历史扫描                             | [`ci.yml`](../../.github/workflows/ci.yml)、[`.gitleaks.toml`](../../.gitleaks.toml)                                                                               | 受控证据库：`phase-0/ci/gitleaks/`                                                     | Not started |
 | Trivy API 与任务消费者镜像扫描                    | [`ci.yml`](../../.github/workflows/ci.yml)、[`security-gates.md`](../operations/security-gates.md)                                                                 | 受控证据库：`phase-0/ci/trivy/`                                                        | Not started |
 | 微信（WeChat）原生项目编译与官方预览              | [`project.config.json`](../../wx/project.config.json)、[`app.json`](../../wx/app.json)、[`check-wx-project.mjs`](../../scripts/check-wx-project.mjs)               | 受控证据库：`phase-0/miniapps/wechat/`；当前 HEAD 尚未执行微信开发者工具编译与官方预览 | Blocked     |
-| 支付宝（Alipay）GUI 预览                          | [`config/index.ts`](../../apps/consumer-miniapp/config/index.ts)、[`package.json`](../../apps/consumer-miniapp/package.json)                                       | 受控证据库：`phase-0/miniapps/alipay/`；当前环境无法使用厂商 GUI                       | Blocked     |
-| 抖音（Douyin）GUI 预览                            | [`config/index.ts`](../../apps/consumer-miniapp/config/index.ts)、[`package.json`](../../apps/consumer-miniapp/package.json)                                       | 受控证据库：`phase-0/miniapps/douyin/`；当前环境无法使用厂商 GUI                       | Blocked     |
 | Dependency audit: 2 critical and 11 high findings | [`dependency-audit.md`](../operations/dependency-audit.md)、[`security-gates.md`](../operations/security-gates.md)                                                 | 受控证据库：`phase-0/security/dependency-audit/`；发布门禁仍以非零状态退出             | Blocked     |
 | 云资源配置控制                                    | [`provisioning-checklist.md`](../../infrastructure/cloud/provisioning-checklist.md)、[`cloudbase-run.md`](../../infrastructure/cloud/cloudbase-run.md)             | 受控证据库：`phase-0/cloud/`                                                           | Not started |
 | 备份恢复演练                                      | [`backup-restore.md`](../../infrastructure/runbooks/backup-restore.md)                                                                                             | 受控证据库：`phase-0/runbooks/backup-restore/`                                         | Not started |
 | 安全事件演练                                      | [`security-incident.md`](../../infrastructure/runbooks/security-incident.md)                                                                                       | 受控证据库：`phase-0/runbooks/security-incident/`                                      | Not started |
 | 合规与处理方评审                                  | [`data-inventory.md`](data-inventory.md)、[`third-party-processing-register.md`](third-party-processing-register.md)、[`retention-policy.md`](retention-policy.md) | 受控证据库：`phase-0/compliance/`                                                      | Not started |
+
+## 历史与延期的非当前门禁项目
+
+以下项目保留 2026-07-27 Taro 多平台方案的历史引用，但不参与当前微信优先版本的上线判定。
+
+| Historical/deferred item | Preserved repository reference                                                                                               | Disposition                                                |
+| ------------------------ | ---------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------- |
+| 支付宝（Alipay）GUI 预览 | [`config/index.ts`](../../apps/consumer-miniapp/config/index.ts)、[`package.json`](../../apps/consumer-miniapp/package.json) | Deferred — 冻结的 Taro 历史范围，不属于当前 `/wx` 上线门禁 |
+| 抖音（Douyin）GUI 预览   | [`config/index.ts`](../../apps/consumer-miniapp/config/index.ts)、[`package.json`](../../apps/consumer-miniapp/package.json) | Deferred — 冻结的 Taro 历史范围，不属于当前 `/wx` 上线门禁 |
 
 只有引用控制项中指定的负责人可以提议将状态改为 `Accepted（已接受）`，并且必须由独立复核人
 确认相应证据。任何 `Blocked（阻断）` 项都会阻止生产上线，直至问题解决，或由安全门禁中规定的角色

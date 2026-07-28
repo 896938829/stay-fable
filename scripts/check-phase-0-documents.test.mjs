@@ -363,6 +363,32 @@ test("launch evidence uses the native WeChat project and keeps official validati
   assert.match(row, /\|\s*Blocked\s*\|?\s*$/, "pending official evidence must remain blocked");
 });
 
+test("only WeChat is a current mini-program launch gate", async () => {
+  const markdown = await readFile(
+    path.join(root, "docs/compliance/launch-evidence-index.md"),
+    "utf8",
+  );
+  const currentSection = markdown.match(/^## 当前上线门禁\r?\n[\s\S]*?(?=^## |(?![\s\S]))/m)?.[0];
+  const historicalSection = markdown.match(
+    /^## 历史与延期的非当前门禁项目\r?\n[\s\S]*?(?=^## |(?![\s\S]))/m,
+  )?.[0];
+
+  assert.ok(currentSection, "launch evidence must identify the current gate section");
+  assert.match(currentSection, /微信（WeChat）/);
+  assert.doesNotMatch(currentSection, /支付宝（Alipay）|抖音（Douyin）/);
+
+  assert.ok(historicalSection, "launch evidence must retain deferred platform history");
+  for (const platform of ["支付宝（Alipay）", "抖音（Douyin）"]) {
+    const row = historicalSection
+      .split(/\r?\n/)
+      .find((line) => line.startsWith("|") && line.includes(platform));
+    assert.ok(row, `historical evidence must retain ${platform}`);
+    assert.match(row, /Deferred/);
+    assert.match(row, /不属于当前.*上线门禁/);
+    assert.doesNotMatch(row, /\|\s*Blocked\s*\|?\s*$/);
+  }
+});
+
 test("Phase 0 verification separates current native WeChat checks from historical Taro evidence", async () => {
   const markdown = await readFile(
     path.join(root, "docs/operations/phase-0-verification.md"),
@@ -397,6 +423,26 @@ test("Phase 0 verification separates current native WeChat checks from historica
   assert.match(historicalSection, /历史/);
   assert.match(historicalSection, /三个平台产物|三端/);
   assert.match(historicalSection, /不代表当前 HEAD|不可作为当前 HEAD/);
+});
+
+test("Phase 0 historical evidence names its immutable remediation commit", async () => {
+  const markdown = await readFile(
+    path.join(root, "docs/operations/phase-0-verification.md"),
+    "utf8",
+  );
+  const sourceSection = markdown.match(
+    /^## 2026-07-27 历史证据来源\r?\n[\s\S]*?(?=^## |(?![\s\S]))/m,
+  )?.[0];
+  const remediationSha = "bcd312122dc6fe9b41f5e6ec2febf3181e144410";
+
+  assert.ok(sourceSection, "historical evidence must have an explicitly dated source section");
+  assert.match(sourceSection, new RegExp(`历史整改证据提交：\`${remediationSha}\``));
+  assert.equal(
+    [...markdown.matchAll(new RegExp(remediationSha, "g"))].length,
+    1,
+    "the immutable remediation SHA must appear exactly once",
+  );
+  assert.doesNotMatch(markdown, /本页所在提交|本页的提交|当前提交/);
 });
 
 test("the 2026-07-27 architecture marks its client strategy as superseded", async () => {
