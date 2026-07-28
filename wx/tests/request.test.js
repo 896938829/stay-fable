@@ -237,6 +237,143 @@ describe("request client", () => {
     );
   });
 
+  it("shares the complete refresh-to-reauthentication chain with a staggered 401", async () => {
+    let accessToken = "old";
+    let releaseSecondUnauthorized;
+    let releaseReauthentication;
+    let markReauthenticationStarted;
+    const reauthenticationStarted = new Promise((resolve) => {
+      markReauthenticationStarted = resolve;
+    });
+    const attempts = new Map();
+    const anonymousReplays = [];
+    const request = vi.fn((options) => {
+      const path = new URL(options.url).pathname;
+      attempts.set(path, (attempts.get(path) || 0) + 1);
+      const respond = () => {
+        if (options.header.Authorization === "Bearer new") {
+          options.success({
+            statusCode: 200,
+            data: { data: path, request_id: `req_new_${path.slice(1)}` },
+          });
+          return;
+        }
+        if (!options.header.Authorization) {
+          anonymousReplays.push(path);
+        }
+        options.success({
+          statusCode: 401,
+          data: {
+            error: { code: "UNAUTHORIZED", message: "Expired" },
+            request_id: `req_old_${path.slice(1)}`,
+          },
+        });
+      };
+      if (path === "/two" && options.header.Authorization === "Bearer old") {
+        releaseSecondUnauthorized = respond;
+      } else {
+        queueMicrotask(respond);
+      }
+    });
+    const refreshSession = vi.fn(async () => {
+      accessToken = undefined;
+      throw new Error("refresh failed");
+    });
+    const reauthenticate = vi.fn(
+      () =>
+        new Promise((resolve) => {
+          markReauthenticationStarted();
+          releaseReauthentication = () => {
+            accessToken = "new";
+            resolve();
+          };
+        }),
+    );
+    const client = createClient(request, {
+      getSession: () => (accessToken ? { access_token: accessToken } : null),
+      refreshSession,
+      reauthenticate,
+    });
+
+    const first = client.get("/one");
+    const second = client.get("/two");
+    await reauthenticationStarted;
+    releaseSecondUnauthorized();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const secondAttemptsBeforeRecovery = attempts.get("/two");
+    releaseReauthentication();
+
+    const results = await Promise.allSettled([first, second]);
+    expect(secondAttemptsBeforeRecovery).toBe(1);
+    expect(results).toEqual([
+      { status: "fulfilled", value: "/one" },
+      { status: "fulfilled", value: "/two" },
+    ]);
+    expect(refreshSession).toHaveBeenCalledOnce();
+    expect(reauthenticate).toHaveBeenCalledOnce();
+    expect(anonymousReplays).toEqual([]);
+    expect(attempts).toEqual(
+      new Map([
+        ["/one", 2],
+        ["/two", 2],
+      ]),
+    );
+  });
+
+  it("replays a late old-token 401 with an already recovered nonempty token", async () => {
+    let accessToken = "old";
+    let releaseLateUnauthorized;
+    const attempts = new Map();
+    const request = vi.fn((options) => {
+      const path = new URL(options.url).pathname;
+      attempts.set(path, (attempts.get(path) || 0) + 1);
+      const respond = () => {
+        if (options.header.Authorization === "Bearer new") {
+          options.success({
+            statusCode: 200,
+            data: { data: path, request_id: `req_new_${path.slice(1)}` },
+          });
+        } else {
+          options.success({
+            statusCode: 401,
+            data: {
+              error: { code: "UNAUTHORIZED", message: "Expired" },
+              request_id: `req_old_${path.slice(1)}`,
+            },
+          });
+        }
+      };
+      if (path === "/late" && options.header.Authorization === "Bearer old") {
+        releaseLateUnauthorized = respond;
+      } else {
+        queueMicrotask(respond);
+      }
+    });
+    const refreshSession = vi.fn(async () => {
+      accessToken = "new";
+    });
+    const reauthenticate = vi.fn();
+    const client = createClient(request, {
+      getSession: () => ({ access_token: accessToken }),
+      refreshSession,
+      reauthenticate,
+    });
+
+    const early = client.get("/early");
+    const late = client.get("/late");
+    await expect(early).resolves.toBe("/early");
+    releaseLateUnauthorized();
+    await expect(late).resolves.toBe("/late");
+    expect(refreshSession).toHaveBeenCalledOnce();
+    expect(reauthenticate).not.toHaveBeenCalled();
+    expect(attempts).toEqual(
+      new Map([
+        ["/early", 2],
+        ["/late", 2],
+      ]),
+    );
+  });
+
   it("refresh failure performs one wx.login and replays the request exactly once", async () => {
     const oldSession = {
       access_token: "o".repeat(32),

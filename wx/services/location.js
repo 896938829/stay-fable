@@ -21,8 +21,7 @@ function createLocationService(requestClient) {
       if (!Array.isArray(data)) {
         throw invalidResponse();
       }
-      data.forEach(assertCity);
-      return data;
+      return data.map(assertCity);
     },
     async resolve(coordinates) {
       if (

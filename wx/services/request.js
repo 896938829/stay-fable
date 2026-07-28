@@ -79,28 +79,22 @@ function createRequestClient(dependencies) {
   } = dependencies;
   const reauthenticate = dependencies.reauthenticate || dependencies.ensureSession;
   const clearSession = dependencies.clearSession;
-  let refreshPromise;
-  let reauthenticationPromise;
+  let recoveryPromise;
 
-  async function refreshOnce() {
-    if (!refreshPromise) {
-      refreshPromise = Promise.resolve()
-        .then(() => refreshSession())
-        .finally(() => {
-          refreshPromise = undefined;
-        });
-    }
-    return refreshPromise;
-  }
-
-  async function reauthenticateOnce() {
-    if (!reauthenticationPromise) {
-      reauthenticationPromise = Promise.resolve()
-        .then(() => {
+  async function recoverOnce() {
+    if (!recoveryPromise) {
+      recoveryPromise = Promise.resolve()
+        .then(async () => {
+          try {
+            await refreshSession();
+            return;
+          } catch {
+            // A rejected refresh clears the session before the fallback login.
+          }
           if (typeof reauthenticate !== "function") {
             throw requestError("AUTH_REAUTHENTICATION_FAILED", "Authentication failed");
           }
-          return reauthenticate();
+          await reauthenticate();
         })
         .catch(() => {
           if (typeof clearSession === "function") {
@@ -113,10 +107,10 @@ function createRequestClient(dependencies) {
           throw requestError("AUTH_REAUTHENTICATION_FAILED", "Authentication failed");
         })
         .finally(() => {
-          reauthenticationPromise = undefined;
+          recoveryPromise = undefined;
         });
     }
-    return reauthenticationPromise;
+    return recoveryPromise;
   }
 
   async function send(method, path, data, options) {
@@ -171,16 +165,12 @@ function createRequestClient(dependencies) {
           latestSession && typeof latestSession.access_token === "string"
             ? latestSession.access_token
             : undefined;
-        if (latestAccessToken === attemptedAccessToken) {
-          try {
-            await refreshOnce();
-          } catch {
-            try {
-              await reauthenticateOnce();
-            } catch {
-              throw requestError("AUTH_REAUTHENTICATION_FAILED", "Authentication failed");
-            }
-          }
+        const anotherRecoveryCompleted =
+          typeof latestAccessToken === "string" &&
+          latestAccessToken !== "" &&
+          latestAccessToken !== attemptedAccessToken;
+        if (!anotherRecoveryCompleted) {
+          await recoverOnce();
         }
         return dispatch(true);
       }

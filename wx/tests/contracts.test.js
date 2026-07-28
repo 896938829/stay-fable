@@ -134,7 +134,7 @@ describe("contract-aware services", () => {
   });
 
   it("validates city and resolved-location response data", async () => {
-    const get = vi.fn(async () => [city]);
+    const get = vi.fn(async () => [{ ...city, longitude: 120.1, secret: "private" }]);
     const post = vi.fn(async (_path, data) => {
       expect(data).toEqual({ longitude: 120.1, latitude: 30.2 });
       return { city, distance_meters: 8 };
