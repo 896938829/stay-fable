@@ -333,7 +333,7 @@ test("launch evidence does not claim unfinished external gates are accepted", as
   }
 });
 
-test("launch evidence uses the native WeChat project and keeps official validation pending", async () => {
+test("launch evidence binds native WeChat validation to immutable inputs", async () => {
   const markdown = await readFile(
     path.join(root, "docs/compliance/launch-evidence-index.md"),
     "utf8",
@@ -355,12 +355,23 @@ test("launch evidence uses the native WeChat project and keeps official validati
     /apps\/consumer-miniapp/,
     "current WeChat evidence must not point to the frozen Taro reference",
   );
+  for (const evidence of [
+    "deb274c58f64b6259e89d19a582200182126d770",
+    "021ed57a0b3b1e876123befad4f375446621fb42",
+    "wxba597a3f09566936",
+    "WXML 32400",
+    "WXSS 2",
+    "3398",
+    "11626 bytes",
+  ]) {
+    assert.ok(row.includes(evidence), `WeChat evidence must include ${evidence}`);
+  }
+  assert.doesNotMatch(row, /尚未执行.*微信开发者工具.*编译.*官方预览/);
   assert.match(
     row,
-    /尚未执行.*微信开发者工具.*编译.*官方预览/,
-    "official WeChat compilation and preview must remain explicitly pending",
+    /\|\s*In review\s*\|?\s*$/,
+    "validated official evidence must remain in review until owner approval",
   );
-  assert.match(row, /\|\s*Blocked\s*\|?\s*$/, "pending official evidence must remain blocked");
 });
 
 test("only WeChat is a current mini-program launch gate", async () => {
@@ -413,11 +424,21 @@ test("Phase 0 verification separates current native WeChat checks from historica
   }
   assert.match(currentSection, /冻结/);
   assert.match(currentSection, /不进入.*默认.*(?:检查|构建)/s);
-  assert.match(
-    currentSection,
-    /Task 7.*尚未执行.*微信开发者工具.*编译.*预览/s,
-    "current HEAD must not claim Task 7 runtime evidence",
-  );
+  for (const evidence of [
+    "deb274c58f64b6259e89d19a582200182126d770",
+    "021ed57a0b3b1e876123befad4f375446621fb42",
+    "wxba597a3f09566936",
+    "`codeLength=32400`",
+    "`files=2`",
+    "`totalCodeLength=3398`",
+    "`total=11626 bytes`",
+  ]) {
+    assert.ok(currentSection.includes(evidence), `current evidence must include ${evidence}`);
+  }
+  assert.match(currentSection, /Task 7.*已执行.*微信开发者工具.*编译.*预览/s);
+  assert.match(currentSection, /证据文档.*不改变.*`wx` tree/s);
+  assert.match(currentSection, /等待.*(?:owner|负责人).*审批|待.*(?:owner|负责人).*审批/i);
+  assert.doesNotMatch(currentSection, /Task 7.*尚未执行/s);
 
   assert.ok(historicalSection, "verification evidence must retain a dated Taro history section");
   assert.match(historicalSection, /历史/);

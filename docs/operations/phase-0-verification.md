@@ -36,8 +36,21 @@ Review cadence: At every Phase 0 verification run and weekly while any gate is b
 执行原生项目静态验证，包括 `project.config.json`、`app.json` 和页面文件完整性。
 `apps/consumer-miniapp` 是冻结的 Taro 多平台参考工程，不进入默认检查、测试或构建。
 
-Task 7 尚未执行当前 HEAD 的微信开发者工具编译与预览，因此本页不主张已有对应运行证据。
-完成后必须把与精确提交绑定的编译和预览证据补充到上线证据索引。
+Task 7 已执行：2026-07-28 对微信开发者工具中的 `/wx` 完成编译与预览。不可变验证输入提交为
+`deb274c58f64b6259e89d19a582200182126d770`，对应 `wx` tree 为
+`021ed57a0b3b1e876123befad4f375446621fb42`。本次证据文档及其测试的后续提交不改变该
+`wx` tree，因此运行结果仍与被验证代码一一对应。项目 AppID 为
+`wxba597a3f09566936`。
+
+| 官方工具动作     | 输入                        | 实际返回                                                  |
+| ---------------- | --------------------------- | --------------------------------------------------------- |
+| WXML 编译        | `pages/index/index.wxml`    | 成功，`codeLength=32400`                                  |
+| WXSS 编译        | `pages/index/index.wxss`    | 成功，`files=2`（`comm`、`page`），`totalCodeLength=3398` |
+| `auto_preview`   | `pages/index/index`         | 成功，整包 `total=11626 bytes`                            |
+| 项目窗口生命周期 | 当前工作树的 `/wx`、窗口 s0 | 新开后准确关闭；未调用 `upload`，未发布体验版             |
+
+以上官方工具证据状态为 **In review**，等待 owner 审批，不得仅因编译和预览成功改为
+`Accepted`。完整上线门禁仍受依赖审计和其他外部证据约束。
 
 ## 2026-07-27 历史证据（Taro 三端）
 
@@ -73,7 +86,7 @@ HEAD 已完成微信开发者工具编译或官方预览的证据。
 | API 健康路由 | 应用契约和 HTTP 冒烟测试使用根路径 `/health/live` 与 `/health/ready`；健康路由排除在全局 API 前缀之外，因此 `/api/v1/health/live` 与 `/api/v1/health/ready` 返回 404。                 | In review |
 | 任务消费者   | 单元测试覆盖配置、启动失败处理、消费者错误和优雅关闭；尚未针对真实 Redis 连续运行十分钟。                                                                                              | Blocked   |
 | 管理后台     | 仓库冒烟测试覆盖构建后首页 HTTP 200、预期标题和根节点；尚未在浏览器中执行 React 产物，也未验证正式托管环境。                                                                           | In review |
-| 小程序       | 2026-07-27 的历史 Taro 仓库冒烟测试覆盖三个平台产物和微信虚拟机 App 注册；尚未执行当前 HEAD `/wx` 的微信开发者工具编译或官方预览。                                                     | Blocked   |
+| 小程序       | 当前 `/wx` tree 已完成微信开发者工具 WXML/WXSS 编译与 `auto_preview`；结果绑定到不可变输入提交和 tree ID，尚待 owner 审批。                                                            | In review |
 | 容器         | Dockerfile 静态契约验证了 `USER node`；尚未执行 `docker image inspect`、真实构建和非 root 运行检查。                                                                                   | Blocked   |
 
 ### 外部运行检查
@@ -86,7 +99,7 @@ HEAD 已完成微信开发者工具编译或官方预览的证据。
 | API 与任务消费者镜像                          | 成功构建记录、不可变镜像摘要、`docker image inspect` 用户、非 root 运行身份、API 探针和任务消费者 Redis 稳定性观察 | Blocked     |
 | GitHub Actions                                | 精确提交对应的托管验证任务链接，并包含 PostgreSQL/Redis 服务证据                                                   | Not started |
 | Gitleaks 与 Trivy                             | 完整历史秘密扫描结果，以及 API/任务消费者镜像扫描报告和摘要                                                        | Not started |
-| 官方小程序工具（2026-07-27 历史范围）         | 与提交绑定的微信、支付宝、抖音 GUI 预览截图或日志；当前 HEAD 仅保留微信正式用户端，且 Task 7 证据尚未采集          | Blocked     |
+| 官方微信小程序工具（当前范围）                | 当前 `/wx` 的输入提交、tree ID、AppID、WXML/WXSS 编译摘要和 `auto_preview` 包大小；证据已采集，等待 owner 审批     | In review   |
 | 云资源与账号                                  | 环境隔离清单、最小权限账号、KMS/CLS/WAF 证据、域名/ICP备案及支付渠道就绪证据                                       | Not started |
 | 法律、隐私与渗透测试                          | 已批准的处理方条款、隐私/法律签署、支付法律复核及限定范围的渗透测试报告                                            | Not started |
 
