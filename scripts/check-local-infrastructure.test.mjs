@@ -42,6 +42,55 @@ test("documents the required WSL2 runtime verification", async () => {
     /if ! docker ps --format [^\r\n]+; then[\s\S]*exit 1[\s\S]*fi[\s\S]*if ! docker ps -a --format [^\r\n]+; then[\s\S]*exit 1[\s\S]*fi/,
   )?.[0];
   assert.ok(inventoryBlock, "missing mandatory pre-mutation Docker inventory");
+  const windowsPhase = guide.match(/## Windows PowerShell 阶段[\s\S]*?## WSL 阶段/)?.[0];
+  assert.ok(windowsPhase, "missing Windows artifact-build phase before the WSL lifecycle");
+  const wslPhase = guide.match(/## WSL 阶段[\s\S]*/)?.[0];
+  assert.ok(wslPhase, "missing WSL runtime phase");
+  assert.match(windowsPhase, /\$ErrorActionPreference = 'Stop'/);
+  assert.match(
+    windowsPhase,
+    /\$repoRoot = \(Resolve-Path -LiteralPath \(git rev-parse --show-toplevel\)\)\.Path/,
+  );
+  assert.match(
+    windowsPhase,
+    /\$currentPath = \(Resolve-Path -LiteralPath \(Get-Location\)\.ProviderPath\)\.Path/,
+  );
+  assert.match(
+    windowsPhase,
+    /\[StringComparer\]::OrdinalIgnoreCase\.Equals\(\$currentPath, \$repoRoot\)/,
+  );
+  assert.match(windowsPhase, /\$runtimeDir = Join-Path \$repoRoot '\.wsl-runtime'/);
+  assert.match(windowsPhase, /corepack pnpm build/);
+  assert.match(
+    windowsPhase,
+    /corepack pnpm deploy --filter @stay-fable\/api-server --prod \(Join-Path \$runtimeDir 'api'\)/,
+  );
+  assert.match(
+    windowsPhase,
+    /corepack pnpm deploy --filter @stay-fable\/job-worker --prod \(Join-Path \$runtimeDir 'worker'\)/,
+  );
+  assert.match(windowsPhase, /wslpath -a/);
+  assert.match(
+    windowsPhase,
+    /finally \{[\s\S]*\[StringComparer\]::OrdinalIgnoreCase\.Equals[\s\S]*Remove-Item -LiteralPath \$runtimeDir -Recurse -Force/,
+  );
+  assert.doesNotMatch(windowsPhase, /\bcorepack enable\b/);
+  assert.doesNotMatch(wslPhase, /\bcorepack\b|\bpnpm\b/);
+  assert.match(
+    guide,
+    /\/tmp\/stay-fable-wsl-validation\.sh[\s\S]*(禁止|不得|不要).*(管道|stdin|标准输入)[\s\S]*docker compose exec -T/is,
+  );
+  assert.doesNotMatch(guide, /\|\s*(?:bash|sh)\b/);
+  assert.match(
+    guide,
+    /validation_root="\/tmp\/stay-fable-wsl-validation"[\s\S]*rm -rf -- "\$validation_root"[\s\S]*mkdir -p "\$validation_root\/api" "\$validation_root\/worker"[\s\S]*cp -a -- "\$artifact_root\/api\/\." "\$validation_root\/api\/"[\s\S]*cp -a -- "\$artifact_root\/worker\/\." "\$validation_root\/worker\/"/,
+  );
+  const collisionGuard = guide.match(
+    /for container_name in stay-fable-wsl-validation-api stay-fable-wsl-validation-worker; do[\s\S]*docker ps -a --filter "name=\^\/\$\{container_name\}\$"[\s\S]*if \[ -n "\$listed_names" \]; then[\s\S]*exit 1[\s\S]*fi[\s\S]*done/,
+  )?.[0];
+  assert.ok(collisionGuard, "missing pre-mutation exact-name collision guard");
+  assert.ok(guide.indexOf(inventoryBlock) < guide.indexOf(collisionGuard));
+  assert.ok(guide.indexOf(collisionGuard) < guide.indexOf("cleanup_validation()"));
   assert.match(
     guide,
     /POSTGRES_PORT=55432 REDIS_PORT=56379 docker compose --project-name stay-fable-wsl-validation -f infrastructure\/compose\.yaml up -d --wait --wait-timeout 120/,
@@ -58,8 +107,9 @@ test("documents the required WSL2 runtime verification", async () => {
   assert.match(guide, /SELECT PostGIS_Lib_Version\(\);[\s\S]*redis-cli ping/i);
   assert.match(guide, /postgis_lib_version[\s\S]*\d+\.\d+[\s\S]*PONG/i);
   const runCommands =
-    guide.match(/^docker run -d --name [^\r\n]+[\s\S]*?^  node:24[^\s]* node dist\/main\.js$/gm) ??
-    [];
+    guide.match(
+      /^docker run -d --name [^\r\n]+[\s\S]*?^ {2}node:24[^\s]* node dist\/main\.js$/gm,
+    ) ?? [];
 
   for (const containerName of [
     "stay-fable-wsl-validation-api",
@@ -72,6 +122,8 @@ test("documents the required WSL2 runtime verification", async () => {
     assert.match(runCommand, /--read-only/);
     assert.match(runCommand, /--tmpfs \/tmp/);
     assert.match(runCommand, /--network stay-fable-wsl-validation_default/);
+    assert.match(runCommand, /-v "\$validation_root\/(?:api|worker):\/app:ro"/);
+    assert.doesNotMatch(runCommand, /\.wsl-runtime|\/mnt\//);
   }
   const curlCommands = guide.match(/^\s*(?:if )?curl --fail[^\r\n]+/gm) ?? [];
   assert.equal(curlCommands.length, 3);
@@ -115,10 +167,7 @@ test("documents the required WSL2 runtime verification", async () => {
   );
   assert.doesNotMatch(guide, /docker compose[^\r\n]*(down|rm)[^\r\n]*--volumes/);
   assert.doesNotMatch(guide, /test -d \.git/);
-  assert.match(
-    guide,
-    /repo_root="\$\(git rev-parse --show-toplevel\)"[\s\S]*current_dir="\$\(pwd -P\)"[\s\S]*if \[ "\$current_dir" = "\$repo_root" \]; then[\s\S]*rm -rf -- "\$runtime_dir"[\s\S]*mkdir -p "\$runtime_dir"[\s\S]*else[\s\S]*exit 1[\s\S]*fi[\s\S]*pnpm deploy/,
-  );
+  assert.doesNotMatch(wslPhase, /git rev-parse --show-toplevel/);
   assert.match(
     guide,
     /删除 `.wsl-runtime\/`[\s\S]*git status --short[\s\S]*(保留|不会删除).*Compose.*数据卷/s,
@@ -145,8 +194,9 @@ test("documents the required WSL2 runtime verification", async () => {
   );
   assert.match(
     cleanupFunction,
-    /git rev-parse --show-toplevel[\s\S]*pwd -P[\s\S]*\[ "\$cleanup_current_dir" = "\$cleanup_repo_root" \].*&&.*\[ "\$cleanup_runtime_dir" = "\$cleanup_repo_root\/\.wsl-runtime" \][\s\S]*if ! rm -rf -- "\$cleanup_runtime_dir"; then[\s\S]*cleanup_failed=1[\s\S]*fi/,
+    /\[ "\$validation_root" = "\/tmp\/stay-fable-wsl-validation" \][\s\S]*rm -rf -- "\$validation_root"[\s\S]*cleanup_failed=1/,
   );
+  assert.doesNotMatch(cleanupFunction, /\.wsl-runtime|\/mnt\//);
   assert.match(
     cleanupFunction,
     /if \[ "\$cleanup_failed" -ne 0 \]; then[\s\S]*return 1[\s\S]*fi[\s\S]*return "\$validation_status"/,
@@ -169,8 +219,13 @@ test("documents the required WSL2 runtime verification", async () => {
   assert.match(guide, /trap 'cleanup_validation \$\?' EXIT\s+set -Eeuo pipefail/);
   assert.match(
     guide,
-    /if cleanup_validation 0; then[\s\S]*else[\s\S]*exit 1[\s\S]*fi[\s\S]*test ! -e "\$runtime_dir"[\s\S]*git status --short/,
+    /if cleanup_validation 0; then[\s\S]*else[\s\S]*exit 1[\s\S]*fi[\s\S]*test ! -e "\$validation_root"/,
   );
+  assert.match(
+    guide,
+    /1 秒.*API.*就绪[\s\S]*10 分 55 秒[\s\S]*RestartCount=0[\s\S]*(无|没有).*(reconnect|重连).*(error|错误)/is,
+  );
+  assert.match(guide, /生产环境[\s\S]*rediss:\/\//);
 });
 
 test("parses Docker Compose JSON array output", () => {
