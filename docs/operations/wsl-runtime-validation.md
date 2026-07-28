@@ -149,7 +149,7 @@ git status --short
 
 ## WSL 阶段
 
-以下内容是 `/tmp/stay-fable-wsl-validation.sh` 的完整内容。PowerShell 已传入经过
+以下内容是 `$lifecycleScript`（`/tmp/stay-fable-wsl-validation-$validationToken.sh`）的完整内容。PowerShell 已传入经过
 验证和 `wslpath` 转换的仓库、产物路径，因此这里不依赖 WSL Git，也不调用 WSL
 中的 Node 包管理工具。
 

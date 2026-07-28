@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, rm, unlink, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, rm, symlink, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, test } from "node:test";
@@ -189,6 +189,16 @@ test("checks local WXML src, import, and include resources", async () => {
   );
 });
 
+test("ignores WXML comments and data-src attributes", async () => {
+  const root = await createFixture();
+  await writeFile(
+    path.join(root, "pages", "index", "index.wxml"),
+    '<!-- <image src="/assets/commented-out.png" /> --><view data-src="/assets/metadata.png" />',
+  );
+
+  assert.deepEqual(await validateWxProject(root), { pageCount: 1 });
+});
+
 test("checks local icon configuration and WXSS url resources", async () => {
   const root = await createFixture();
   await writeFile(
@@ -217,6 +227,16 @@ test("checks local icon configuration and WXSS url resources", async () => {
     () => validateWxProject(root),
     /Missing WeChat WXSS resource:.*missing\.png/i,
   );
+});
+
+test("ignores url references inside WXSS comments", async () => {
+  const root = await createFixture();
+  await writeFile(
+    path.join(root, "pages", "index", "index.wxss"),
+    '/* view { background: url("/assets/commented-out.png"); } */',
+  );
+
+  assert.deepEqual(await validateWxProject(root), { pageCount: 1 });
 });
 
 test("rejects dangerous local resource references", async () => {
@@ -312,4 +332,53 @@ test("accepts safe component and local resource references", async () => {
   );
 
   assert.deepEqual(await validateWxProject(root), { pageCount: 1 });
+});
+
+test("accepts relative local components and import/include references", async () => {
+  const root = await createFixture();
+  const componentDir = path.join(root, "components", "card");
+  await mkdir(componentDir, { recursive: true });
+  await mkdir(path.join(root, "templates"), { recursive: true });
+  await writeFile(path.join(componentDir, "card.js"), "Component({});");
+  await writeFile(path.join(componentDir, "card.json"), JSON.stringify({ component: true }));
+  await writeFile(path.join(componentDir, "card.wxml"), "<view />");
+  await writeFile(path.join(componentDir, "card.wxss"), "");
+  await writeFile(path.join(root, "templates", "card.wxml"), '<template name="card" />');
+  await writeFile(path.join(root, "pages", "index", "row.wxml"), "<view />");
+  await writeFile(
+    path.join(root, "pages", "index", "index.json"),
+    JSON.stringify({ usingComponents: { card: "../../components/card/card" } }),
+  );
+  await writeFile(
+    path.join(root, "pages", "index", "index.wxml"),
+    '<import src="/templates/card.wxml" /><include src="./row.wxml" />',
+  );
+
+  assert.deepEqual(await validateWxProject(root), { pageCount: 1 });
+});
+
+test("rejects a project-local symlink whose target escapes the project root", async (t) => {
+  const root = await createFixture();
+  const outsideRoot = await mkdtemp(path.join(tmpdir(), "stay-fable-wx-outside-"));
+  tempRoots.push(outsideRoot);
+  const outsideFile = path.join(outsideRoot, "outside.png");
+  const linkPath = path.join(root, "assets", "escape.png");
+  await mkdir(path.dirname(linkPath), { recursive: true });
+  await writeFile(outsideFile, "outside");
+
+  try {
+    await symlink(outsideFile, linkPath, "file");
+  } catch (error) {
+    if (["EPERM", "EACCES", "UNKNOWN"].includes(error.code)) {
+      t.skip(`symlink creation unavailable: ${error.code}`);
+      return;
+    }
+    throw error;
+  }
+
+  await writeFile(
+    path.join(root, "pages", "index", "index.wxml"),
+    '<image src="/assets/escape.png" />',
+  );
+  await assert.rejects(() => validateWxProject(root), /Unsafe WeChat WXML reference.*escape\.png/i);
 });

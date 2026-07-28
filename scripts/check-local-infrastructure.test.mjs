@@ -127,6 +127,11 @@ test("documents the required WSL2 runtime verification", async () => {
     guide,
     /\/tmp\/stay-fable-wsl-validation-\$validationToken\.sh[\s\S]*(禁止|不得|不要).*(管道|stdin|标准输入)[\s\S]*docker compose exec -T/is,
   );
+  assert.doesNotMatch(guide, /`\/tmp\/stay-fable-wsl-validation\.sh`/);
+  assert.match(
+    guide,
+    /以下内容是 `\$lifecycleScript`（`\/tmp\/stay-fable-wsl-validation-\$validationToken\.sh`）的完整内容/,
+  );
   assert.doesNotMatch(guide, /\|\s*(?:bash|sh)\b/);
   assert.match(
     guide,

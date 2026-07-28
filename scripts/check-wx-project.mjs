@@ -1,4 +1,4 @@
-import { readFile, stat } from "node:fs/promises";
+import { lstat, readFile, realpath } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import vm from "node:vm";
@@ -14,12 +14,68 @@ function projectLabel(projectRoot, filePath) {
   return path.relative(projectRoot, filePath).split(path.sep).join("/");
 }
 
-async function readJson(filePath, fileName) {
+function isWithinProject(projectRoot, candidatePath) {
+  const relative = path.relative(projectRoot, candidatePath);
+  return (
+    relative === "" ||
+    (relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative))
+  );
+}
+
+async function safeRegularFile(projectRoot, filePath, missingMessage, unsafeMessage) {
+  const lexicalPath = path.resolve(filePath);
+  if (!isWithinProject(projectRoot, lexicalPath)) {
+    throw new Error(unsafeMessage);
+  }
+
+  let entryStats;
+  let resolvedPath;
+
+  try {
+    entryStats = await lstat(lexicalPath);
+    resolvedPath = await realpath(lexicalPath);
+  } catch {
+    // Missing and inaccessible paths have the same project-contract failure.
+  }
+
+  if (resolvedPath !== undefined && !isWithinProject(projectRoot, resolvedPath)) {
+    throw new Error(unsafeMessage);
+  }
+  if (!entryStats || resolvedPath === undefined) {
+    throw new Error(missingMessage);
+  }
+
+  let targetStats;
+  try {
+    targetStats = await lstat(resolvedPath);
+  } catch {
+    // A target that disappeared during validation is not a valid project file.
+  }
+  if (!targetStats?.isFile()) {
+    throw new Error(missingMessage);
+  }
+
+  return resolvedPath;
+}
+
+async function readJson(projectRoot, filePath, fileName) {
   let source;
 
   try {
-    source = await readFile(filePath, "utf8");
+    const safePath = await safeRegularFile(
+      projectRoot,
+      filePath,
+      `Unable to read ${fileName}`,
+      `Unsafe WeChat file path: ${fileName}`,
+    );
+    source = await readFile(safePath, "utf8");
   } catch (error) {
+    if (
+      error.message === `Unable to read ${fileName}` ||
+      error.message === `Unsafe WeChat file path: ${fileName}`
+    ) {
+      throw error;
+    }
     throw new Error(`Unable to read ${fileName}: ${error.message}`, { cause: error });
   }
 
@@ -38,20 +94,6 @@ async function readJson(filePath, fileName) {
   return value;
 }
 
-async function requireRegularFile(filePath, message) {
-  let fileStats;
-
-  try {
-    fileStats = await stat(filePath);
-  } catch {
-    // Missing and inaccessible paths have the same project-contract failure.
-  }
-
-  if (!fileStats?.isFile()) {
-    throw new Error(message);
-  }
-}
-
 function normalizeLocalReference(reference, kind) {
   if (typeof reference !== "string" || reference.trim() === "") {
     throw new Error(`Unsafe WeChat ${kind} reference: ${String(reference)}`);
@@ -61,15 +103,13 @@ function normalizeLocalReference(reference, kind) {
   if (externalResourcePattern.test(value) || dataResourcePattern.test(value)) {
     return { external: true };
   }
-  if (
-    value.includes("\\") ||
-    value.includes("\0") ||
-    value.split(/[?#]/, 1)[0].split("/").includes("..") ||
-    schemePattern.test(value)
-  ) {
+  if (value.includes("\\") || value.includes("\0") || schemePattern.test(value)) {
     throw new Error(`Unsafe WeChat ${kind} reference: ${value}`);
   }
   if (value.includes("{{") || value.includes("}}")) {
+    if (value.split(/[?#]/, 1)[0].split("/").includes("..")) {
+      throw new Error(`Unsafe WeChat ${kind} reference: ${value}`);
+    }
     return { dynamic: true };
   }
 
@@ -105,11 +145,13 @@ function resolveLocalReference(projectRoot, sourceFile, reference, kind) {
 }
 
 async function validateJavaScript(projectRoot, filePath) {
-  await requireRegularFile(
+  const safePath = await safeRegularFile(
+    projectRoot,
     filePath,
     `Missing WeChat JavaScript file: ${projectLabel(projectRoot, filePath)}`,
+    `Unsafe WeChat JavaScript file: ${projectLabel(projectRoot, filePath)}`,
   );
-  const source = await readFile(filePath, "utf8");
+  const source = await readFile(safePath, "utf8");
 
   try {
     new vm.Script(source, { filename: projectLabel(projectRoot, filePath) });
@@ -127,15 +169,23 @@ async function validateResource(projectRoot, sourceFile, reference, kind) {
     return;
   }
 
-  await requireRegularFile(
+  await safeRegularFile(
+    projectRoot,
     resourcePath,
     `Missing WeChat ${kind} resource: ${projectLabel(projectRoot, resourcePath)}`,
+    `Unsafe WeChat ${kind} reference: ${reference}`,
   );
 }
 
 async function validateWxml(projectRoot, filePath) {
-  const source = await readFile(filePath, "utf8");
-  const sourceAttributePattern = /\bsrc\s*=\s*(["'])(.*?)\1/gis;
+  const safePath = await safeRegularFile(
+    projectRoot,
+    filePath,
+    `Missing WeChat WXML file: ${projectLabel(projectRoot, filePath)}`,
+    `Unsafe WeChat WXML file: ${projectLabel(projectRoot, filePath)}`,
+  );
+  const source = (await readFile(safePath, "utf8")).replace(/<!--[\s\S]*?-->/g, "");
+  const sourceAttributePattern = /(?:^|[\s<])src\s*=\s*(["'])(.*?)\1/gis;
 
   for (const match of source.matchAll(sourceAttributePattern)) {
     await validateResource(projectRoot, filePath, match[2], "WXML");
@@ -143,7 +193,13 @@ async function validateWxml(projectRoot, filePath) {
 }
 
 async function validateWxss(projectRoot, filePath) {
-  const source = await readFile(filePath, "utf8");
+  const safePath = await safeRegularFile(
+    projectRoot,
+    filePath,
+    `Missing WeChat WXSS file: ${projectLabel(projectRoot, filePath)}`,
+    `Unsafe WeChat WXSS file: ${projectLabel(projectRoot, filePath)}`,
+  );
+  const source = (await readFile(safePath, "utf8")).replace(/\/\*[\s\S]*?\*\//g, "");
   const urlPattern = /\burl\(\s*(?:(["'])(.*?)\1|([^)"'\s][^)]*))\s*\)/gis;
 
   for (const match of source.matchAll(urlPattern)) {
@@ -152,10 +208,8 @@ async function validateWxss(projectRoot, filePath) {
 }
 
 async function validateOptionalWxss(projectRoot, filePath) {
-  let fileStats;
-
   try {
-    fileStats = await stat(filePath);
+    await lstat(filePath);
   } catch (error) {
     if (error.code === "ENOENT") {
       return;
@@ -163,9 +217,6 @@ async function validateOptionalWxss(projectRoot, filePath) {
     throw new Error(`Unable to inspect ${projectLabel(projectRoot, filePath)}: ${error.message}`, {
       cause: error,
     });
-  }
-  if (!fileStats.isFile()) {
-    throw new Error(`Missing WeChat WXSS file: ${projectLabel(projectRoot, filePath)}`);
   }
   await validateWxss(projectRoot, filePath);
 }
@@ -228,14 +279,17 @@ async function validateUsingComponents(projectRoot, configFile, config, validate
 
     for (const extension of localComponentExtensions) {
       const componentFile = `${basePath}${extension}`;
-      await requireRegularFile(
+      await safeRegularFile(
+        projectRoot,
         componentFile,
         `Missing WeChat component file: ${projectLabel(projectRoot, componentFile)}`,
+        `Unsafe WeChat component reference: ${String(reference)}`,
       );
     }
 
     const componentJsonPath = `${basePath}.json`;
     const componentJson = await readJson(
+      projectRoot,
       componentJsonPath,
       projectLabel(projectRoot, componentJsonPath),
     );
@@ -257,13 +311,14 @@ async function validateUsingComponents(projectRoot, configFile, config, validate
 }
 
 export async function validateWxProject(projectRoot) {
-  projectRoot = path.resolve(projectRoot);
+  projectRoot = await realpath(path.resolve(projectRoot));
   const projectConfig = await readJson(
+    projectRoot,
     path.join(projectRoot, "project.config.json"),
     "project.config.json",
   );
   const appJsonPath = path.join(projectRoot, "app.json");
-  const app = await readJson(appJsonPath, "app.json");
+  const app = await readJson(projectRoot, appJsonPath, "app.json");
 
   if (projectConfig.compileType !== "miniprogram") {
     throw new Error('project.config.json must set compileType to "miniprogram"');
@@ -285,7 +340,7 @@ export async function validateWxProject(projectRoot) {
   if (sitemapPath === undefined) {
     throw new Error(`Unsafe WeChat sitemap reference: ${app.sitemapLocation}`);
   }
-  await readJson(sitemapPath, projectLabel(projectRoot, sitemapPath));
+  await readJson(projectRoot, sitemapPath, projectLabel(projectRoot, sitemapPath));
 
   await validateJavaScript(projectRoot, path.join(projectRoot, "app.js"));
   await validateOptionalWxss(projectRoot, path.join(projectRoot, "app.wxss"));
@@ -304,12 +359,17 @@ export async function validateWxProject(projectRoot) {
 
     for (const extension of pageExtensions) {
       const pageFile = path.join(projectRoot, `${page}${extension}`);
-      await requireRegularFile(pageFile, `Missing WeChat page file: ${page}${extension}`);
+      await safeRegularFile(
+        projectRoot,
+        pageFile,
+        `Missing WeChat page file: ${page}${extension}`,
+        `Unsafe WeChat page file: ${page}${extension}`,
+      );
     }
 
     const pageBasePath = path.join(projectRoot, ...page.split("/"));
     const pageJsonPath = `${pageBasePath}.json`;
-    const pageConfig = await readJson(pageJsonPath, `${page}.json`);
+    const pageConfig = await readJson(projectRoot, pageJsonPath, `${page}.json`);
     pageConfigs.push({ config: pageConfig, file: pageJsonPath });
     await validateConfigResources(projectRoot, pageJsonPath, pageConfig);
     await validateJavaScript(projectRoot, `${pageBasePath}.js`);
