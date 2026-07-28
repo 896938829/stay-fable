@@ -59,17 +59,33 @@ test("excludes approved generated and planning artifacts from Prettier", async (
 
 test("documents the WeChat-first agent workflow", async () => {
   const agents = await readFile(new URL("AGENTS.md", rootUrl), "utf8");
+  const lines = agents.split(/\r?\n/);
+  const findRuleLine = (tokens, label) => {
+    const line = lines.find((candidate) => tokens.every((token) => candidate.includes(token)));
+    assert.ok(line, `AGENTS.md must document ${label}`);
+    return line;
+  };
 
   assert.match(agents, /\/wx.*唯一正式用户端/s);
+  const taroRule = findRuleLine(["apps", "consumer-miniapp"], "the Taro reference path");
+  assert.match(taroRule, /冻结/, "the Taro reference must remain frozen");
+  assert.match(
+    taroRule,
+    /不进入[^\n]*默认[^\n]*开发[^\n]*构建门禁/,
+    "the Taro reference must stay outside default development and build gates",
+  );
   const requiredRules = [
     [
-      "frozen Taro reference exclusion",
-      /apps\/consumer-miniapp[^\n]*冻结[^\n]*不进入默认开发和构建门禁/,
+      "read workflow and applicable skills before work",
+      /开始工作前[\s\S]*?阅读本文件[^\n]*当前任务涉及[^\n]*技能说明/,
     ],
-    ["start-of-work repository checks", /git status --short[^\n]*git worktree list/],
+    [
+      "start-of-work repository safety checks",
+      /开始工作前[\s\S]*?git status --short[^\n]*git worktree list[^\n]*不得覆盖未提交修改/,
+    ],
     [
       "dev feature-branch policy",
-      /从 `dev` 创建 `codex\/<feature>` 分支[^\n]*release[^\n]*main[^\n]*不直接开发/,
+      /从[^\n]*dev[^\n]*创建[^\n]*codex[^\n]*<feature>[^\n]*分支[^\n]*release[^\n]*main[^\n]*不直接开发/,
     ],
     [
       "minimum WeChat verification",
@@ -84,15 +100,24 @@ test("documents the WeChat-first agent workflow", async () => {
       /dev 阶段[^\n]*格式[^\n]*lint[^\n]*类型检查[^\n]*测试[^\n]*构建[^\n]*漏洞报告/,
     ],
     ["dev vulnerability reporting", /dev 已知依赖漏洞[^\n]*报告[^\n]*不阻断/],
-    [
-      "release vulnerability exception fields",
-      /release\/main\s+阻断[^\n]*Critical\/High[^\n]*批准人[^\n]*到期日[^\n]*缓解措施/,
-    ],
     ["fresh completion verification", /完成前[^\n]*全量验证[^\n]*不依赖历史结果/],
   ];
 
   for (const [rule, pattern] of requiredRules) {
     assert.match(agents, pattern, `AGENTS.md must document ${rule}`);
+  }
+  const releaseRule = findRuleLine(
+    ["release", "main", "Critical", "High"],
+    "release/main vulnerability policy",
+  );
+  assert.match(releaseRule, /阻断/, "release/main must block Critical and High vulnerabilities");
+  assert.doesNotMatch(
+    releaseRule,
+    /不[^\n]{0,3}阻断/,
+    "release/main must not describe Critical and High vulnerabilities as non-blocking",
+  );
+  for (const field of ["批准人", "到期日", "缓解措施"]) {
+    assert.ok(releaseRule.includes(field), `release/main risk exceptions must include ${field}`);
   }
   for (const skill of [
     "initializer",
