@@ -39,24 +39,37 @@ test("documents the required WSL2 runtime verification", async () => {
   assert.match(guide, /wsl\.exe -l -v[\s\S]*Ubuntu-22\.04[\s\S]*WSL\s*2/i);
   assert.match(
     guide,
-    /POSTGRES_PORT=55432 REDIS_PORT=56379 docker compose -f infrastructure\/compose\.yaml up -d --wait --wait-timeout 120/,
+    /POSTGRES_PORT=55432 REDIS_PORT=56379 docker compose --project-name stay-fable-wsl-validation -f infrastructure\/compose\.yaml up -d --wait --wait-timeout 120/,
   );
+  const composeCommands =
+    guide.match(/^(?:POSTGRES_PORT=55432 REDIS_PORT=56379 )?docker compose [^\r\n]+$/gm) ?? [];
+  assert.ok(composeCommands.length >= 5, "expected executable Compose verification commands");
+  for (const command of composeCommands) {
+    assert.match(command, /--project-name stay-fable-wsl-validation/);
+  }
+  assert.doesNotMatch(guide, /stay-fable-local_default/);
   assert.match(guide, /SELECT PostGIS_Lib_Version\(\);[\s\S]*redis-cli ping/i);
   assert.match(guide, /postgis_lib_version[\s\S]*\d+\.\d+[\s\S]*PONG/i);
   const runCommands =
-    guide.match(
-      /^docker run -d --name [^\r\n]+[\s\S]*?^  node:24\.14\.1-bookworm-slim node dist\/main\.js$/gm,
-    ) ?? [];
+    guide.match(/^docker run -d --name [^\r\n]+[\s\S]*?^  node:24[^\s]* node dist\/main\.js$/gm) ??
+    [];
 
-  for (const containerName of ["stay-fable-wsl-api", "stay-fable-wsl-worker"]) {
+  for (const containerName of [
+    "stay-fable-wsl-validation-api",
+    "stay-fable-wsl-validation-worker",
+  ]) {
     const runCommand = runCommands.find((command) => command.includes(`--name ${containerName}`));
 
     assert.ok(runCommand, `missing docker run command for ${containerName}`);
     assert.match(runCommand, /--user node/);
     assert.match(runCommand, /--read-only/);
     assert.match(runCommand, /--tmpfs \/tmp/);
-    assert.match(runCommand, /--network stay-fable-local_default/);
+    assert.match(runCommand, /--network stay-fable-wsl-validation_default/);
   }
+  assert.match(
+    guide,
+    /for attempt in \$\(seq 1 30\); do[\s\S]*curl --fail[\s\S]*health\/ready[\s\S]*sleep 2[\s\S]*done[\s\S]*if \[ "\$api_ready" != true \]; then[\s\S]*docker logs stay-fable-wsl-validation-api[\s\S]*docker logs stay-fable-wsl-validation-worker[\s\S]*exit 1[\s\S]*fi/,
+  );
   assert.match(guide, /health\/live[\s\S]*HTTP 200[\s\S]*health\/ready[\s\S]*HTTP 200/i);
   assert.match(
     guide,
@@ -66,15 +79,32 @@ test("documents the required WSL2 runtime verification", async () => {
     guide,
     /10 分钟[\s\S]*RestartCount=0[\s\S]*(无|没有).*(重连循环|reconnect loop).*错误/is,
   );
+  assert.match(
+    guide,
+    /for minute in \$\(seq 1 10\); do[\s\S]*if \[ "\$restart_count" -ne 0 \]; then[\s\S]*docker logs stay-fable-wsl-validation-worker[\s\S]*exit 1[\s\S]*fi[\s\S]*sleep 60[\s\S]*done/,
+  );
+  assert.match(
+    guide,
+    /final_restart_count=.*RestartCount[\s\S]*if \[ "\$final_restart_count" -ne 0 \]; then[\s\S]*docker logs stay-fable-wsl-validation-worker[\s\S]*exit 1[\s\S]*fi[\s\S]*final_worker_logs=.*docker logs --since 10m[\s\S]*if printf[\s\S]*grep -Eiq '\(reconnect\|error\)'[\s\S]*exit 1[\s\S]*fi/,
+  );
   assert.match(guide, /不得(停止|删除).*无关容器/s);
   assert.deepEqual(guide.match(/^docker (?:rm|stop|kill)[^\r\n]+/gm), [
-    "docker rm -f stay-fable-wsl-api stay-fable-wsl-worker",
+    "docker rm -f stay-fable-wsl-validation-api stay-fable-wsl-validation-worker",
   ]);
   assert.match(
     guide,
-    /^POSTGRES_PORT=55432 REDIS_PORT=56379 docker compose -f infrastructure\/compose\.yaml down$/m,
+    /^POSTGRES_PORT=55432 REDIS_PORT=56379 docker compose --project-name stay-fable-wsl-validation -f infrastructure\/compose\.yaml down$/m,
   );
   assert.doesNotMatch(guide, /docker compose[^\r\n]*(down|rm)[^\r\n]*--volumes/);
+  assert.doesNotMatch(guide, /test -d \.git/);
+  assert.match(
+    guide,
+    /repo_root="\$\(git rev-parse --show-toplevel\)"[\s\S]*current_dir="\$\(pwd -P\)"[\s\S]*if \[ "\$current_dir" = "\$repo_root" \]; then[\s\S]*rm -rf -- "\$runtime_dir"[\s\S]*mkdir -p "\$runtime_dir"[\s\S]*else[\s\S]*exit 1[\s\S]*fi[\s\S]*pnpm deploy/,
+  );
+  assert.match(
+    guide,
+    /repo_root="\$\(git rev-parse --show-toplevel\)"[\s\S]*current_dir="\$\(pwd -P\)"[\s\S]*if \[ "\$current_dir" = "\$repo_root" \].*&&.*\[ "\$runtime_dir" = "\$repo_root\/\.wsl-runtime" \]; then[\s\S]*rm -rf -- "\$runtime_dir"[\s\S]*else[\s\S]*exit 1[\s\S]*fi[\s\S]*git status --short/,
+  );
   assert.match(
     guide,
     /删除 `.wsl-runtime\/`[\s\S]*git status --short[\s\S]*(保留|不会删除).*Compose.*数据卷/s,
