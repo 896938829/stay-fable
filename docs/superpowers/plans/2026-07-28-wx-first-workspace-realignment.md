@@ -305,6 +305,9 @@ git commit -m "test: verify native WeChat project"
 **Files:**
 
 - Modify: `package.json`
+- Modify: `apps/api-server/package.json`
+- Create: `apps/api-server/turbo.json`
+- Modify: `scripts/verify-workspace.mjs`
 - Modify: `scripts/verify-workspace.test.mjs`
 
 - [x] **Step 1: 写入失败的脚本契约**
@@ -315,15 +318,20 @@ git commit -m "test: verify native WeChat project"
 assert.equal(root.scripts["wx:check"], "node scripts/check-wx-project.mjs");
 assert.equal(
   root.scripts["prisma:generate"],
-  "node --env-file=.env.example -e \"const { spawnSync } = require('node:child_process'); const result = spawnSync('pnpm --filter @stay-fable/api-server prisma:generate', { stdio: 'inherit', shell: true, env: process.env }); if (result.error) throw result.error; process.exit(result.status ?? 1)\"",
+  "pnpm --filter @stay-fable/api-server prisma:generate",
 );
 for (const script of ["lint", "typecheck", "test", "build"]) {
   assert.match(root.scripts[script], /--filter=!@stay-fable\/consumer-miniapp/);
 }
 assert.equal(
   root.scripts.check,
-  "pnpm verify && pnpm wx:check && pnpm prisma:generate && pnpm format:check && pnpm lint && pnpm typecheck && pnpm test && pnpm build",
+  "pnpm verify && pnpm wx:check && pnpm format:check && pnpm lint && pnpm typecheck && pnpm test && pnpm build",
 );
+assert.deepEqual(apiTurbo.extends, ["//"]);
+assert.deepEqual(apiTurbo.tasks["prisma:generate"].outputs, ["src/generated/prisma/**"]);
+for (const task of ["build", "lint", "test", "typecheck"]) {
+  assert.deepEqual(apiTurbo.tasks[task].dependsOn, ["$TURBO_EXTENDS$", "prisma:generate"]);
+}
 ```
 
 - [x] **Step 2: 运行测试并确认失败**
@@ -336,7 +344,7 @@ node --test scripts/verify-workspace.test.mjs
 
 Expected: FAIL，`wx:check` 为 `undefined`。
 
-- [x] **Step 3: 调整根脚本**
+- [x] **Step 3: 调整根脚本和 API 包级 Turbo 依赖**
 
 将 `package.json` 对应脚本改为：
 
@@ -348,14 +356,49 @@ Expected: FAIL，`wx:check` 为 `undefined`。
     "lint": "eslint eslint.config.mjs prettier.config.mjs scripts/*.mjs packages/eslint-config/index.mjs && turbo run lint --filter=!@stay-fable/consumer-miniapp",
     "test": "node --test scripts/*.test.mjs && turbo run test --filter=!@stay-fable/consumer-miniapp",
     "typecheck": "turbo run typecheck --filter=!@stay-fable/consumer-miniapp",
-    "prisma:generate": "node --env-file=.env.example -e \"const { spawnSync } = require('node:child_process'); const result = spawnSync('pnpm --filter @stay-fable/api-server prisma:generate', { stdio: 'inherit', shell: true, env: process.env }); if (result.error) throw result.error; process.exit(result.status ?? 1)\"",
+    "prisma:generate": "pnpm --filter @stay-fable/api-server prisma:generate",
     "wx:check": "node scripts/check-wx-project.mjs",
-    "check": "pnpm verify && pnpm wx:check && pnpm prisma:generate && pnpm format:check && pnpm lint && pnpm typecheck && pnpm test && pnpm build"
+    "check": "pnpm verify && pnpm wx:check && pnpm format:check && pnpm lint && pnpm typecheck && pnpm test && pnpm build"
   }
 }
 ```
 
-保留其他现有脚本和值不变。
+`apps/api-server/package.json` 使用无 shell 包装的直接 Node CLI：
+
+```json
+{
+  "scripts": {
+    "prisma:generate": "node --env-file=../../.env.example node_modules/prisma/build/index.js generate"
+  }
+}
+```
+
+创建 `apps/api-server/turbo.json`：
+
+```json
+{
+  "extends": ["//"],
+  "tasks": {
+    "prisma:generate": {
+      "outputs": ["src/generated/prisma/**"]
+    },
+    "build": {
+      "dependsOn": ["$TURBO_EXTENDS$", "prisma:generate"]
+    },
+    "lint": {
+      "dependsOn": ["$TURBO_EXTENDS$", "prisma:generate"]
+    },
+    "test": {
+      "dependsOn": ["$TURBO_EXTENDS$", "prisma:generate"]
+    },
+    "typecheck": {
+      "dependsOn": ["$TURBO_EXTENDS$", "prisma:generate"]
+    }
+  }
+}
+```
+
+将该包级配置加入 `scripts/verify-workspace.mjs` 的 required paths；保留其他现有脚本和值不变。
 
 - [x] **Step 4: 验证默认门禁不运行 Taro**
 
@@ -365,14 +408,14 @@ Run:
 corepack pnpm check
 ```
 
-Expected: exit 0；`check` 在所有 lint/typecheck/test/build 门禁前从根脚本生成 Prisma Client；
-Turbo 输出中不出现 `@stay-fable/consumer-miniapp` 任务，微信静态检查输出
-`WeChat project verified: 2 pages`。
+Expected: exit 0；API 的 lint/typecheck/test/build 各自通过同包 Turbo prerequisite 从零生成
+Prisma Client；根 `check` 和 CI 不重复生成；Turbo 输出中不出现
+`@stay-fable/consumer-miniapp` 任务，微信静态检查输出 `WeChat project verified: 2 pages`。
 
 - [x] **Step 5: 提交**
 
 ```powershell
-git add package.json scripts/verify-workspace.test.mjs
+git add package.json apps/api-server/package.json apps/api-server/turbo.json scripts/verify-workspace.mjs scripts/verify-workspace.test.mjs
 git commit -m "build: make native WeChat the default client"
 ```
 
@@ -395,6 +438,8 @@ test("reports dependency vulnerabilities on dev and blocks release branches", as
   assert.match(source, /id:\s*dependency-audit/);
   assert.match(source, /continue-on-error:.*dev/);
   assert.match(source, /pnpm audit --audit-level high/);
+  assert.equal(source.match(/run:\s*pnpm check/g)?.length, 1);
+  assert.doesNotMatch(source, /prisma:generate/);
 });
 ```
 
@@ -428,6 +473,9 @@ push:
   continue-on-error: ${{ github.ref_name == 'dev' || github.base_ref == 'dev' }}
   run: pnpm audit --audit-level high
 ```
+
+CI 只运行一次自包含的 `pnpm check`，删除独立的 Prisma Client 生成步骤，避免与 API
+Turbo prerequisite 重复。
 
 该表达式使 `dev` push 和目标为 `dev` 的 PR 只报告审计失败；`release`、`main` 及目标为
 这些分支的 PR 继续阻断。

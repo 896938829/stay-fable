@@ -37,12 +37,24 @@ test("CI workflow enforces verification, secret scanning, and container scanning
   const workflowText = JSON.stringify(workflow);
   for (const command of [
     "pnpm install --frozen-lockfile",
-    "pnpm --filter @stay-fable/api-server prisma:generate",
     "pnpm check",
     "pnpm audit --audit-level high",
   ]) {
     assert.match(workflowText, new RegExp(command.replaceAll(/[.*+?^${}()|[\]\\]/g, "\\$&")));
   }
+
+  const qualitySteps = verify.steps.filter((step) => step.run === "pnpm check");
+  assert.equal(qualitySteps.length, 1, "CI must call the self-contained root check exactly once");
+  assert.equal(
+    Object.hasOwn(qualitySteps[0], "continue-on-error"),
+    false,
+    "the self-contained root check must remain blocking",
+  );
+  assert.equal(
+    verify.steps.some((step) => /prisma:generate/.test(step.run ?? "")),
+    false,
+    "CI must not duplicate Prisma generation outside the Turbo task graph",
+  );
 
   assert.equal(workflow.jobs.secrets.steps[0].with["fetch-depth"], 0);
   assert.match(

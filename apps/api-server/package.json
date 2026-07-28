@@ -7,7 +7,7 @@
     "build": "nest build",
     "dev": "nest start --watch",
     "lint": "eslint src test prisma.config.ts",
-    "prisma:generate": "prisma generate",
+    "prisma:generate": "node --env-file=../../.env.example node_modules/prisma/build/index.js generate",
     "prisma:migrate": "prisma migrate deploy",
     "start": "node dist/main.js",
     "test": "vitest run",

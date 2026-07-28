@@ -9,6 +9,7 @@ assert.equal(root.engines?.node, ">=24 <25");
 
 const requiredPaths = [
   "apps/api-server/package.json",
+  "apps/api-server/turbo.json",
   "apps/job-worker/package.json",
   "apps/management-web/package.json",
   "apps/consumer-miniapp/package.json",

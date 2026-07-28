@@ -14,18 +14,16 @@ test("declares the root workspace contract", async () => {
   assert.match(workspace, /^\s*-\s+["']?packages\/\*["']?\s*$/m);
   assert.equal(root.scripts.verify, "node scripts/verify-workspace.mjs");
   assert.equal(root.scripts["verify:phase-0"], "node scripts/verify-phase-0.mjs");
-  const prismaGenerateCommand =
-    "node --env-file=.env.example -e \"const { spawnSync } = require('node:child_process'); const result = spawnSync('pnpm --filter @stay-fable/api-server prisma:generate', { stdio: 'inherit', shell: true, env: process.env }); if (result.error) throw result.error; process.exit(result.status ?? 1)\"";
   const expectedScripts = {
     build: "turbo run build --filter=!@stay-fable/consumer-miniapp",
     dev: 'turbo run build --filter="./packages/*" && turbo run dev --parallel --filter=!@stay-fable/consumer-miniapp',
     lint: "eslint eslint.config.mjs prettier.config.mjs scripts/*.mjs packages/eslint-config/index.mjs && turbo run lint --filter=!@stay-fable/consumer-miniapp",
     test: "node --test scripts/*.test.mjs && turbo run test --filter=!@stay-fable/consumer-miniapp",
     typecheck: "turbo run typecheck --filter=!@stay-fable/consumer-miniapp",
-    "prisma:generate": prismaGenerateCommand,
+    "prisma:generate": "pnpm --filter @stay-fable/api-server prisma:generate",
     "wx:check": "node scripts/check-wx-project.mjs",
     check:
-      "pnpm verify && pnpm wx:check && pnpm prisma:generate && pnpm format:check && pnpm lint && pnpm typecheck && pnpm test && pnpm build",
+      "pnpm verify && pnpm wx:check && pnpm format:check && pnpm lint && pnpm typecheck && pnpm test && pnpm build",
   };
   for (const [script, expected] of Object.entries(expectedScripts)) {
     assert.equal(root.scripts[script], expected, `${script} must match the approved command`);
@@ -36,24 +34,18 @@ test("declares the root workspace contract", async () => {
     [
       "pnpm verify",
       "pnpm wx:check",
-      "pnpm prisma:generate",
       "pnpm format:check",
       "pnpm lint",
       "pnpm typecheck",
       "pnpm test",
       "pnpm build",
     ],
-    "check must generate Prisma once before every quality and build gate",
-  );
-  assert.equal(
-    root.scripts.check.match(/\bpnpm prisma:generate\b/g)?.length,
-    1,
-    "check must generate Prisma exactly once",
+    "check must run the approved gates in deterministic order",
   );
   assert.doesNotMatch(
     root.scripts.check,
-    /\|\||continue-on-error/,
-    "check must not neutralize Prisma or quality gate failures",
+    /\|\||continue-on-error|prisma:generate/,
+    "check must not neutralize failures or duplicate the Turbo prerequisite",
   );
 });
 
@@ -61,6 +53,7 @@ test("includes phase zero verification entry points and evidence in the workspac
   const verifier = await readFile(new URL("scripts/verify-workspace.mjs", rootUrl), "utf8");
 
   for (const path of [
+    "apps/api-server/turbo.json",
     "scripts/verify-phase-0.mjs",
     "scripts/verify-phase-0.test.mjs",
     "scripts/api-runtime-child.mjs",
@@ -71,6 +64,31 @@ test("includes phase zero verification entry points and evidence in the workspac
     "infrastructure/runbooks/backup-restore.md",
   ]) {
     assert.ok(verifier.includes(`"${path}"`), `workspace verifier must require ${path}`);
+  }
+});
+
+test("models Prisma generation as an API package Turbo prerequisite", async () => {
+  const apiPackage = JSON.parse(
+    await readFile(new URL("apps/api-server/package.json", rootUrl), "utf8"),
+  );
+  const apiTurbo = JSON.parse(
+    await readFile(new URL("apps/api-server/turbo.json", rootUrl), "utf8"),
+  );
+
+  assert.equal(
+    apiPackage.scripts["prisma:generate"],
+    "node --env-file=../../.env.example node_modules/prisma/build/index.js generate",
+  );
+  assert.deepEqual(apiTurbo.extends, ["//"]);
+  assert.deepEqual(apiTurbo.tasks["prisma:generate"], {
+    outputs: ["src/generated/prisma/**"],
+  });
+  for (const task of ["build", "lint", "test", "typecheck"]) {
+    assert.deepEqual(
+      apiTurbo.tasks[task]?.dependsOn,
+      ["$TURBO_EXTENDS$", "prisma:generate"],
+      `${task} must preserve root prerequisites and generate Prisma first`,
+    );
   }
 });
 

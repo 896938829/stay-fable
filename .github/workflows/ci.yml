@@ -58,8 +58,6 @@ jobs:
           cache: pnpm
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
-      - name: Generate Prisma client
-        run: pnpm --filter @stay-fable/api-server prisma:generate
       - name: Run quality checks
         run: pnpm check
       - name: Audit all workspace dependencies
