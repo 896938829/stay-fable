@@ -21,6 +21,7 @@ const nextAccessToken = "next-access-token-".padEnd(43, "a");
 const nextRefreshToken = "next-refresh-token-".padEnd(43, "r");
 const hash = (token: string) => createHash("sha256").update(token).digest("hex");
 const familyId = hash(refreshToken);
+const sessionVersion = 7;
 
 const createHarness = () => {
   const redis = {
@@ -49,7 +50,7 @@ describe("SessionService atomic state transitions", () => {
   it("issues access, refresh, and family records in one script without plaintext storage", async () => {
     const { service, redis } = createHarness();
 
-    const session = await service.issue(userId);
+    const session = await service.issue(userId, sessionVersion);
 
     expect(session).toEqual({
       access_token: accessToken,
@@ -66,6 +67,9 @@ describe("SessionService atomic state transitions", () => {
       `session:family:${familyId}`,
     ]);
     expect(arguments_?.slice(-3)).toEqual(["120000", "600000", String(now.getTime())]);
+    for (const serializedRecord of arguments_?.slice(0, 3) ?? []) {
+      expect(JSON.parse(serializedRecord)).toMatchObject({ sessionVersion });
+    }
     expect(JSON.stringify({ keys, arguments_ })).not.toContain(accessToken);
     expect(JSON.stringify({ keys, arguments_ })).not.toContain(refreshToken);
   });
@@ -74,7 +78,7 @@ describe("SessionService atomic state transitions", () => {
     const { service, redis } = createHarness();
     vi.mocked(redis.executeSessionScript).mockRejectedValueOnce(new Error("redis internals"));
 
-    await expect(service.issue(userId)).rejects.toMatchObject({
+    await expect(service.issue(userId, sessionVersion)).rejects.toMatchObject({
       code: "AUTH_SESSION_SERVICE_UNAVAILABLE",
       message: "登录服务暂时不可用，请稍后重试",
       status: 503,
@@ -90,12 +94,17 @@ describe("SessionService atomic state transitions", () => {
       issuedAt: now.getTime(),
       expiresAt: now.getTime() + 600_000,
       accessKey: `session:access:${hash(accessToken)}`,
+      sessionVersion,
     };
     vi.mocked(redis.executeSessionScript).mockResolvedValueOnce(
       JSON.stringify({ status: "ACTIVE", record }),
     );
 
-    await expect(service.inspectRefresh(refreshToken)).resolves.toEqual({ userId, familyId });
+    await expect(service.inspectRefresh(refreshToken)).resolves.toEqual({
+      userId,
+      familyId,
+      sessionVersion,
+    });
     expect(tokenGenerator.generate).not.toHaveBeenCalled();
     expect(redis.executeSessionScript).toHaveBeenCalledWith(
       expect.any(String),
@@ -120,10 +129,10 @@ describe("SessionService atomic state transitions", () => {
   it("rotates the family in one script and returns the new tokens", async () => {
     const { service, redis } = createHarness();
     // Reserve the first pair as if it were already issued.
-    await service.issue(userId);
+    await service.issue(userId, sessionVersion);
     vi.mocked(redis.executeSessionScript).mockResolvedValueOnce("OK");
 
-    const rotated = await service.refresh(refreshToken, { userId, familyId });
+    const rotated = await service.refresh(refreshToken, { userId, familyId, sessionVersion });
 
     expect(rotated.access_token).toBe(nextAccessToken);
     expect(rotated.refresh_token).toBe(nextRefreshToken);
@@ -135,6 +144,9 @@ describe("SessionService atomic state transitions", () => {
       `session:refresh:${hash(nextRefreshToken)}`,
     ]);
     expect(arguments_).toEqual(expect.arrayContaining([String(now.getTime()), "120000", "600000"]));
+    for (const serializedRecord of arguments_?.slice(1, 5) ?? []) {
+      expect(JSON.parse(serializedRecord)).toMatchObject({ sessionVersion });
+    }
   });
 
   it.each(["INVALID", "EXPIRED", "REPLAY"])(
@@ -143,7 +155,9 @@ describe("SessionService atomic state transitions", () => {
       const { service, redis } = createHarness();
       vi.mocked(redis.executeSessionScript).mockResolvedValueOnce(status);
 
-      await expect(service.refresh(refreshToken, { userId, familyId })).rejects.toMatchObject({
+      await expect(
+        service.refresh(refreshToken, { userId, familyId, sessionVersion }),
+      ).rejects.toMatchObject({
         code: "AUTH_REFRESH_REJECTED",
         status: 401,
       });
@@ -158,7 +172,9 @@ describe("SessionService atomic state transitions", () => {
       code: "AUTH_SESSION_SERVICE_UNAVAILABLE",
       status: 503,
     });
-    await expect(service.refresh(refreshToken, { userId, familyId })).rejects.toMatchObject({
+    await expect(
+      service.refresh(refreshToken, { userId, familyId, sessionVersion }),
+    ).rejects.toMatchObject({
       code: "AUTH_SESSION_SERVICE_UNAVAILABLE",
       status: 503,
     });
@@ -184,7 +200,7 @@ describe("SessionService atomic state transitions", () => {
     expect(redis.executeSessionScript).toHaveBeenCalledWith(
       expect.any(String),
       [`session:family:${familyId}`],
-      [String(now.getTime())],
+      [familyId, String(now.getTime())],
     );
   });
 
@@ -196,9 +212,14 @@ describe("SessionService atomic state transitions", () => {
       familyId,
       issuedAt: now.getTime(),
       expiresAt: now.getTime() + 120_000,
+      sessionVersion,
     };
     vi.mocked(redis.getJson).mockResolvedValueOnce(record);
-    await expect(service.resolveAccess(accessToken)).resolves.toEqual({ userId, familyId });
+    await expect(service.resolveAccess(accessToken)).resolves.toEqual({
+      userId,
+      familyId,
+      sessionVersion,
+    });
 
     vi.mocked(redis.getJson).mockResolvedValueOnce(null);
     await expect(service.resolveAccess(accessToken)).rejects.toMatchObject({

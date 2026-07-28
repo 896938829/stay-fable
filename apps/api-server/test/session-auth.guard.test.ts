@@ -19,11 +19,13 @@ const contextFor = (authorization?: string) => {
 describe("SessionAuthGuard", () => {
   it("accepts strict Bearer syntax and attaches the current user", async () => {
     const sessions = {
-      resolveAccess: vi.fn(() => Promise.resolve({ userId: "user-id", familyId: "family-id" })),
+      resolveAccess: vi.fn(() =>
+        Promise.resolve({ userId: "user-id", familyId: "family-id", sessionVersion: 7 }),
+      ),
     } as unknown as SessionService;
     const database = {
       user: {
-        findUnique: vi.fn(() => Promise.resolve({ status: "ACTIVE" })),
+        findUnique: vi.fn(() => Promise.resolve({ status: "ACTIVE", sessionVersion: 7 })),
       },
     } as unknown as DatabaseService;
     const guard = new SessionAuthGuard(sessions, database);
@@ -33,16 +35,22 @@ describe("SessionAuthGuard", () => {
     expect(sessions.resolveAccess).toHaveBeenCalledWith("opaque-token");
     expect(database.user.findUnique).toHaveBeenCalledWith({
       where: { id: "user-id" },
-      select: { status: true },
+      select: { status: true, sessionVersion: true },
     });
     expect(request.user).toEqual({ id: "user-id" });
   });
 
-  it.each([null, { status: "DISABLED" }])(
-    "revokes the current family before rejecting a missing or disabled access user",
+  it.each([
+    null,
+    { status: "DISABLED", sessionVersion: 8 },
+    { status: "ACTIVE", sessionVersion: 8 },
+  ])(
+    "revokes the current family before rejecting a missing, disabled, or epoch-mismatched access user",
     async (user) => {
       const sessions = {
-        resolveAccess: vi.fn(() => Promise.resolve({ userId: "user-id", familyId: "family-id" })),
+        resolveAccess: vi.fn(() =>
+          Promise.resolve({ userId: "user-id", familyId: "family-id", sessionVersion: 7 }),
+        ),
         revokeFamily: vi.fn(() => Promise.resolve()),
       } as unknown as SessionService;
       const database = {
@@ -61,6 +69,29 @@ describe("SessionAuthGuard", () => {
       expect(request.user).toBeUndefined();
     },
   );
+
+  it("maps database lookup failures to a stable safe 503", async () => {
+    const sessions = {
+      resolveAccess: vi.fn(() =>
+        Promise.resolve({ userId: "user-id", familyId: "family-id", sessionVersion: 7 }),
+      ),
+      revokeFamily: vi.fn(),
+    } as unknown as SessionService;
+    const database = {
+      user: {
+        findUnique: vi.fn(() => Promise.reject(new Error("postgres secret detail"))),
+      },
+    } as unknown as DatabaseService;
+    const guard = new SessionAuthGuard(sessions, database);
+    const { context } = contextFor("Bearer opaque-token");
+
+    await expect(guard.canActivate(context)).rejects.toMatchObject({
+      code: "AUTH_SESSION_SERVICE_UNAVAILABLE",
+      message: "登录服务暂时不可用，请稍后重试",
+      status: 503,
+    });
+    expect(sessions.revokeFamily).not.toHaveBeenCalled();
+  });
 
   it.each([
     undefined,

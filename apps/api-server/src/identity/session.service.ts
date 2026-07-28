@@ -28,6 +28,7 @@ export const randomTokenGenerator: TokenGenerator = {
 interface StoredSessionBase {
   userId: string;
   familyId: string;
+  sessionVersion: number;
   issuedAt: number;
   expiresAt: number;
 }
@@ -51,6 +52,7 @@ export interface UsedRefreshTombstone {
   kind: "used-refresh";
   userId: string;
   familyId: string;
+  sessionVersion: number;
 }
 
 export type StoredSession =
@@ -59,6 +61,7 @@ export type StoredSession =
 export interface RefreshInspection {
   userId: string;
   familyId: string;
+  sessionVersion: number;
 }
 
 const tokenHash = (token: string): string => createHash("sha256").update(token).digest("hex");
@@ -82,6 +85,8 @@ const hasBaseFields = (value: unknown): value is StoredSessionBase => {
   return (
     typeof candidate.userId === "string" &&
     typeof candidate.familyId === "string" &&
+    Number.isInteger(candidate.sessionVersion) &&
+    (candidate.sessionVersion ?? -1) >= 0 &&
     typeof candidate.issuedAt === "number" &&
     typeof candidate.expiresAt === "number"
   );
@@ -119,7 +124,7 @@ export class SessionService {
     this.refreshTtlSeconds = config.getOrThrow<number>("SESSION_REFRESH_TTL_SECONDS");
   }
 
-  async issue(userId: string): Promise<AuthSession> {
+  async issue(userId: string, sessionVersion: number): Promise<AuthSession> {
     const accessToken = this.tokenGenerator.generate();
     const refreshToken = this.tokenGenerator.generate();
     const createdFamilyId = tokenHash(refreshToken);
@@ -131,6 +136,7 @@ export class SessionService {
       kind: "access",
       userId,
       familyId: createdFamilyId,
+      sessionVersion,
       issuedAt,
       expiresAt: issuedAt + this.accessTtlSeconds * 1000,
     };
@@ -138,6 +144,7 @@ export class SessionService {
       kind: "refresh",
       userId,
       familyId: createdFamilyId,
+      sessionVersion,
       issuedAt,
       expiresAt,
       accessKey: storedAccessKey,
@@ -146,6 +153,7 @@ export class SessionService {
       kind: "family",
       userId,
       familyId: createdFamilyId,
+      sessionVersion,
       issuedAt,
       expiresAt,
       accessKey: storedAccessKey,
@@ -191,13 +199,17 @@ export class SessionService {
     if (record === null) {
       throw refreshRejected();
     }
-    return { userId: record.userId, familyId: record.familyId };
+    return {
+      userId: record.userId,
+      familyId: record.familyId,
+      sessionVersion: record.sessionVersion,
+    };
   }
 
   async refresh(token: string, inspected?: RefreshInspection): Promise<AuthSession> {
     // AuthService supplies an inspected active family. Without one we still execute the
     // rotation script so a used-refresh tombstone can atomically revoke its active family.
-    const active = inspected ?? { userId: "", familyId: "" };
+    const active = inspected ?? { userId: "", familyId: "", sessionVersion: 0 };
     const replayProbe = tokenHash(token);
     const newAccessToken =
       inspected === undefined ? `replay-access-${replayProbe}` : this.tokenGenerator.generate();
@@ -210,6 +222,7 @@ export class SessionService {
       kind: "access",
       userId: active.userId,
       familyId: active.familyId,
+      sessionVersion: active.sessionVersion,
       issuedAt,
       expiresAt: issuedAt + this.accessTtlSeconds * 1000,
     };
@@ -217,6 +230,7 @@ export class SessionService {
       kind: "refresh",
       userId: active.userId,
       familyId: active.familyId,
+      sessionVersion: active.sessionVersion,
       issuedAt,
       expiresAt: issuedAt + this.refreshTtlSeconds * 1000,
       accessKey: newAccessKey,
@@ -225,6 +239,7 @@ export class SessionService {
       kind: "family",
       userId: active.userId,
       familyId: active.familyId,
+      sessionVersion: active.sessionVersion,
       issuedAt,
       expiresAt: issuedAt + this.refreshTtlSeconds * 1000,
       accessKey: newAccessKey,
@@ -234,6 +249,7 @@ export class SessionService {
       kind: "used-refresh",
       userId: active.userId,
       familyId: active.familyId,
+      sessionVersion: active.sessionVersion,
     };
 
     let result: string;
@@ -281,7 +297,7 @@ export class SessionService {
       const result = await this.redis.executeSessionScript(
         REVOKE_FAMILY_BY_ID_SCRIPT,
         [familyKey(familyId)],
-        [String(this.clock.now().getTime())],
+        [familyId, String(this.clock.now().getTime())],
       );
       if (result !== "REVOKED") {
         throw sessionUnavailable();
@@ -291,7 +307,9 @@ export class SessionService {
     }
   }
 
-  async resolveAccess(token: string): Promise<{ userId: string; familyId: string }> {
+  async resolveAccess(
+    token: string,
+  ): Promise<{ userId: string; familyId: string; sessionVersion: number }> {
     const key = accessKey(token);
     let record: unknown;
     try {
@@ -309,7 +327,11 @@ export class SessionService {
       throw accessExpired();
     }
 
-    return { userId: record.userId, familyId: record.familyId };
+    return {
+      userId: record.userId,
+      familyId: record.familyId,
+      sessionVersion: record.sessionVersion,
+    };
   }
 
   private response(accessToken: string, refreshToken: string, userId: string): AuthSession {

@@ -6,6 +6,10 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import type { Clock } from "../src/common/clock/clock.js";
 import { RedisService, type RedisClient } from "../src/infrastructure/redis/redis.service.js";
+import {
+  ISSUE_SESSION_SCRIPT,
+  REVOKE_FAMILY_BY_ID_SCRIPT,
+} from "../src/identity/session-scripts.js";
 import { SessionService, type TokenGenerator } from "../src/identity/session.service.js";
 import { requireSafeDatabaseIntegrationUrl } from "./database/database-integration-guard.js";
 
@@ -15,6 +19,7 @@ const suiteName = runDatabaseIntegration
   ? "atomic session state with real Redis"
   : "atomic session state with real Redis (set RUN_DATABASE_INTEGRATION=true to run)";
 const userId = "018f47b6-0f58-7f52-8a35-3f92a6f34762";
+const sessionVersion = 7;
 const hash = (token: string) => createHash("sha256").update(token).digest("hex");
 
 describeRedis(suiteName, () => {
@@ -77,7 +82,7 @@ describeRedis(suiteName, () => {
     cleanupKeys.add(`session:family:${familyId}`);
     const service = createService([access, refresh, nextAccess, nextRefresh]);
 
-    await service.issue(userId);
+    await service.issue(userId, sessionVersion);
     await expect(
       client.mget(
         `session:access:${hash(access)}`,
@@ -103,6 +108,128 @@ describeRedis(suiteName, () => {
     );
   });
 
+  it("rejects mismatched issue epochs before writing any session key", async () => {
+    const access = token("epoch-issue-access");
+    const refresh = token("epoch-issue-refresh");
+    const familyId = hash(refresh);
+    const accessSessionKey = `session:access:${hash(access)}`;
+    const refreshSessionKey = `session:refresh:${hash(refresh)}`;
+    const familySessionKey = `session:family:${familyId}`;
+    cleanupKeys.add(accessSessionKey);
+    cleanupKeys.add(refreshSessionKey);
+    cleanupKeys.add(familySessionKey);
+    const now = Date.now();
+    const redis = new RedisService(client);
+
+    await expect(
+      redis.executeSessionScript(
+        ISSUE_SESSION_SCRIPT,
+        [accessSessionKey, refreshSessionKey, familySessionKey],
+        [
+          JSON.stringify({
+            kind: "access",
+            userId,
+            familyId,
+            sessionVersion: 1,
+            issuedAt: now,
+            expiresAt: now + 120_000,
+          }),
+          JSON.stringify({
+            kind: "refresh",
+            userId,
+            familyId,
+            sessionVersion: 2,
+            issuedAt: now,
+            expiresAt: now + 3_600_000,
+            accessKey: accessSessionKey,
+          }),
+          JSON.stringify({
+            kind: "family",
+            userId,
+            familyId,
+            sessionVersion: 1,
+            issuedAt: now,
+            expiresAt: now + 3_600_000,
+            accessKey: accessSessionKey,
+            refreshKey: refreshSessionKey,
+          }),
+          "120000",
+          "3600000",
+          String(now),
+        ],
+      ),
+    ).resolves.toBe("INVALID");
+    await expect(
+      client.mget(accessSessionKey, refreshSessionKey, familySessionKey),
+    ).resolves.toEqual([null, null, null]);
+  });
+
+  it("rejects a rotation epoch mismatch without consuming the active family", async () => {
+    const access = token("epoch-rotate-access");
+    const refresh = token("epoch-rotate-refresh");
+    const nextAccess = token("epoch-rotate-next-access");
+    const nextRefresh = token("epoch-rotate-next-refresh");
+    const familyId = hash(refresh);
+    const activeKeys = [
+      `session:access:${hash(access)}`,
+      `session:refresh:${hash(refresh)}`,
+      `session:family:${familyId}`,
+    ];
+    cleanupKeys.add(activeKeys[2] as string);
+    const service = createService([access, refresh, nextAccess, nextRefresh]);
+    await service.issue(userId, sessionVersion);
+    const before = await client.mget(...activeKeys);
+
+    await expect(
+      service.refresh(refresh, { userId, familyId, sessionVersion: sessionVersion + 1 }),
+    ).rejects.toMatchObject({
+      code: "AUTH_REFRESH_REJECTED",
+      status: 401,
+    });
+    await expect(client.mget(...activeKeys)).resolves.toEqual(before);
+  });
+
+  it("refuses corrupt or mismatched family revocation targets without deleting linked keys", async () => {
+    const access = token("corrupt-family-access");
+    const refresh = token("corrupt-family-refresh");
+    const familyId = hash(refresh);
+    const familySessionKey = `session:family:${familyId}`;
+    cleanupKeys.add(familySessionKey);
+    const service = createService([access, refresh]);
+    await service.issue(userId, sessionVersion);
+    const rawFamily = await client.get(familySessionKey);
+    expect(rawFamily).not.toBeNull();
+    const family = JSON.parse(rawFamily ?? "{}") as Record<string, unknown>;
+    await client.set(
+      familySessionKey,
+      JSON.stringify({ ...family, familyId: "corrupt-family-id" }),
+      "PX",
+      3_600_000,
+    );
+    const linkedKeys = [
+      `session:access:${hash(access)}`,
+      `session:refresh:${hash(refresh)}`,
+      familySessionKey,
+    ];
+    const before = await client.mget(...linkedKeys);
+
+    await expect(service.revokeFamily(familyId)).rejects.toMatchObject({
+      code: "AUTH_SESSION_SERVICE_UNAVAILABLE",
+      status: 503,
+    });
+    await expect(client.mget(...linkedKeys)).resolves.toEqual(before);
+
+    const redis = new RedisService(client);
+    await expect(
+      redis.executeSessionScript(
+        REVOKE_FAMILY_BY_ID_SCRIPT,
+        [familySessionKey],
+        ["different-family-id", String(Date.now())],
+      ),
+    ).resolves.toBe("CORRUPT");
+    await expect(client.mget(...linkedKeys)).resolves.toEqual(before);
+  });
+
   it("allows at most one concurrent rotation of the same refresh", async () => {
     const access = token("race-access");
     const refresh = token("race-refresh");
@@ -115,7 +242,7 @@ describeRedis(suiteName, () => {
     const familyId = hash(refresh);
     cleanupKeys.add(`session:family:${familyId}`);
     const service = createService([access, refresh, ...generated]);
-    await service.issue(userId);
+    await service.issue(userId, sessionVersion);
     const inspected = await service.inspectRefresh(refresh);
 
     const results = await Promise.allSettled([
@@ -165,7 +292,7 @@ describeRedis(suiteName, () => {
       redis,
     );
 
-    await service.issue(userId);
+    await service.issue(userId, sessionVersion);
     const oldRemaining = await redis.ttlMilliseconds(oldRefresh);
     expect(oldRemaining).toBeGreaterThan(3_595_000);
     expect(oldRemaining).toBeLessThanOrEqual(3_600_000);
@@ -194,7 +321,7 @@ describeRedis(suiteName, () => {
     const familyId = hash(refresh);
     cleanupKeys.add(`session:family:${familyId}`);
     const service = createService([access, refresh, nextAccess, nextRefresh]);
-    await service.issue(userId);
+    await service.issue(userId, sessionVersion);
     await service.refresh(refresh, await service.inspectRefresh(refresh));
 
     await expect(service.refresh(refresh)).rejects.toMatchObject({
@@ -232,7 +359,7 @@ describeRedis(suiteName, () => {
     ];
     cleanupKeys.add(keys[2] as string);
     const healthy = createService([access, refresh]);
-    await healthy.issue(userId);
+    await healthy.issue(userId, sessionVersion);
     const before = await client.mget(...keys);
     const failingClient: RedisClient = {
       ping: () => client.ping(),
@@ -245,7 +372,9 @@ describeRedis(suiteName, () => {
     };
     const failing = createService([nextAccess, nextRefresh], new RedisService(failingClient));
 
-    await expect(failing.refresh(refresh, { userId, familyId })).rejects.toMatchObject({
+    await expect(
+      failing.refresh(refresh, { userId, familyId, sessionVersion }),
+    ).rejects.toMatchObject({
       code: "AUTH_SESSION_SERVICE_UNAVAILABLE",
       status: 503,
     });

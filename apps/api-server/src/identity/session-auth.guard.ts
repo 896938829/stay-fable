@@ -17,6 +17,8 @@ const expiredSession = (): BusinessException =>
   new BusinessException(401, "AUTH_SESSION_EXPIRED", "登录状态已过期，请重新登录");
 const disabledUser = (): BusinessException =>
   new BusinessException(403, "AUTH_USER_DISABLED", "账号已被停用");
+const sessionUnavailable = (): BusinessException =>
+  new BusinessException(503, "AUTH_SESSION_SERVICE_UNAVAILABLE", "登录服务暂时不可用，请稍后重试");
 
 @Injectable()
 export class SessionAuthGuard implements CanActivate {
@@ -38,11 +40,20 @@ export class SessionAuthGuard implements CanActivate {
     }
 
     const resolved = await this.sessions.resolveAccess(token);
-    const user = await this.database.user.findUnique({
-      where: { id: resolved.userId },
-      select: { status: true },
-    });
-    if (user === null || user.status === "DISABLED") {
+    let user: { status: "ACTIVE" | "DISABLED"; sessionVersion: number } | null;
+    try {
+      user = await this.database.user.findUnique({
+        where: { id: resolved.userId },
+        select: { status: true, sessionVersion: true },
+      });
+    } catch {
+      throw sessionUnavailable();
+    }
+    if (
+      user === null ||
+      user.status === "DISABLED" ||
+      user.sessionVersion !== resolved.sessionVersion
+    ) {
       await this.sessions.revokeFamily(resolved.familyId);
       throw disabledUser();
     }

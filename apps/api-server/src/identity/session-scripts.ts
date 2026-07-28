@@ -10,6 +10,9 @@ local function valid_base(record)
   return record
     and type(record.userId) == "string"
     and type(record.familyId) == "string"
+    and type(record.sessionVersion) == "number"
+    and record.sessionVersion >= 0
+    and record.sessionVersion == math.floor(record.sessionVersion)
     and type(record.issuedAt) == "number"
     and type(record.expiresAt) == "number"
 end
@@ -36,6 +39,9 @@ local function valid_tombstone(record)
     and record.kind == "used-refresh"
     and type(record.userId) == "string"
     and type(record.familyId) == "string"
+    and type(record.sessionVersion) == "number"
+    and record.sessionVersion >= 0
+    and record.sessionVersion == math.floor(record.sessionVersion)
 end
 `.trim();
 
@@ -61,6 +67,8 @@ if not valid_access(access)
   or access.userId ~= family.userId
   or access.familyId ~= refresh.familyId
   or access.familyId ~= family.familyId
+  or access.sessionVersion ~= refresh.sessionVersion
+  or access.sessionVersion ~= family.sessionVersion
   or refresh.accessKey ~= KEYS[1]
   or family.accessKey ~= KEYS[1]
   or family.refreshKey ~= KEYS[2]
@@ -110,6 +118,9 @@ if not now
   or new_refresh.accessKey ~= KEYS[3]
   or new_family.accessKey ~= KEYS[3]
   or new_family.refreshKey ~= KEYS[4]
+  or new_access.sessionVersion ~= new_refresh.sessionVersion
+  or new_access.sessionVersion ~= new_family.sessionVersion
+  or new_access.sessionVersion ~= tombstone.sessionVersion
   or new_access.expiresAt <= now
   or new_refresh.expiresAt <= now
   or new_family.expiresAt <= now then
@@ -147,6 +158,7 @@ if not valid_family(active)
   or active.expiresAt <= now
   or active.userId ~= old_refresh.userId
   or active.familyId ~= old_refresh.familyId
+  or active.sessionVersion ~= old_refresh.sessionVersion
   or active.accessKey ~= old_refresh.accessKey
   or active.refreshKey ~= KEYS[1]
   or new_access.userId ~= old_refresh.userId
@@ -157,6 +169,10 @@ if not valid_family(active)
   or new_refresh.familyId ~= old_refresh.familyId
   or new_family.familyId ~= old_refresh.familyId
   or tombstone.familyId ~= old_refresh.familyId
+  or new_access.sessionVersion ~= old_refresh.sessionVersion
+  or new_refresh.sessionVersion ~= old_refresh.sessionVersion
+  or new_family.sessionVersion ~= old_refresh.sessionVersion
+  or tombstone.sessionVersion ~= old_refresh.sessionVersion
   or redis.call("EXISTS", KEYS[3], KEYS[4]) ~= 0 then
   return "INVALID"
 end
@@ -186,7 +202,8 @@ local active = decode(redis.call("GET", family_key))
 if not active then return "REVOKED" end
 if not valid_family(active)
   or active.userId ~= source.userId
-  or active.familyId ~= source.familyId then
+  or active.familyId ~= source.familyId
+  or active.sessionVersion ~= source.sessionVersion then
   return "INVALID"
 end
 
@@ -196,12 +213,18 @@ return "REVOKED"
 
 export const REVOKE_FAMILY_BY_ID_SCRIPT = `
 ${luaHelpers}
-local now = tonumber(ARGV[1])
-if not now then return "INVALID" end
+local expected_family_id = ARGV[1]
+local now = tonumber(ARGV[2])
+if type(expected_family_id) ~= "string"
+  or expected_family_id == ""
+  or not now
+  or KEYS[1] ~= "session:family:" .. expected_family_id then
+  return "CORRUPT"
+end
 
 local active = decode(redis.call("GET", KEYS[1]))
 if not active then return "REVOKED" end
-if not valid_family(active) then return "INVALID" end
+if not valid_family(active) or active.familyId ~= expected_family_id then return "CORRUPT" end
 
 redis.call("DEL", active.accessKey, active.refreshKey, KEYS[1])
 return "REVOKED"

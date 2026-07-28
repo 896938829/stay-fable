@@ -17,11 +17,12 @@ enum IdentityProvider {
 }
 
 model User {
-  id         String         @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  status     UserStatus     @default(ACTIVE)
-  createdAt  DateTime       @default(now()) @map("created_at") @db.Timestamptz(3)
-  updatedAt  DateTime       @updatedAt @map("updated_at") @db.Timestamptz(3)
-  identities UserIdentity[]
+  id             String         @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  status         UserStatus     @default(ACTIVE)
+  sessionVersion Int            @default(0) @map("session_version")
+  createdAt      DateTime       @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt      DateTime       @updatedAt @map("updated_at") @db.Timestamptz(3)
+  identities     UserIdentity[]
 
   @@map("user")
 }

@@ -3,7 +3,6 @@ import type { AuthSession } from "@stay-fable/api-contracts/auth";
 
 import { BusinessException } from "../common/http/business.exception.js";
 import { DatabaseService } from "../database/database.service.js";
-import { Prisma } from "../generated/prisma/client.js";
 import { SessionService } from "./session.service.js";
 import {
   WECHAT_IDENTITY_PROVIDER,
@@ -14,6 +13,7 @@ import {
 interface AuthUser {
   id: string;
   status: "ACTIVE" | "DISABLED";
+  sessionVersion: number;
 }
 
 const identityLookup = (identity: WechatIdentity) => ({
@@ -23,7 +23,7 @@ const identityLookup = (identity: WechatIdentity) => ({
       providerSubject: identity.subject,
     },
   },
-  select: { user: { select: { id: true, status: true } } },
+  select: { user: { select: { id: true, status: true, sessionVersion: true } } },
 });
 
 const isUniqueConflict = (error: unknown): boolean =>
@@ -38,6 +38,11 @@ const requireEnabled = (user: AuthUser): AuthUser => {
   }
   return user;
 };
+
+const disabledUser = (): BusinessException =>
+  new BusinessException(403, "AUTH_USER_DISABLED", "账号已被停用");
+const sessionUnavailable = (): BusinessException =>
+  new BusinessException(503, "AUTH_SESSION_SERVICE_UNAVAILABLE", "登录服务暂时不可用，请稍后重试");
 
 @Injectable()
 export class AuthService {
@@ -68,7 +73,7 @@ export class AuthService {
               },
             },
           },
-          select: { id: true, status: true },
+          select: { id: true, status: true, sessionVersion: true },
         });
       });
     } catch (error) {
@@ -83,7 +88,8 @@ export class AuthService {
       user = winner.user;
     }
 
-    return this.sessions.issue(requireEnabled(user).id);
+    const enabledUser = requireEnabled(user);
+    return this.sessions.issue(enabledUser.id, enabledUser.sessionVersion);
   }
 
   async refresh(refreshToken: string): Promise<AuthSession> {
@@ -101,18 +107,46 @@ export class AuthService {
       throw error;
     }
 
-    return this.database.$transaction(async (transaction) => {
-      const users = await transaction.$queryRaw<AuthUser[]>(
-        Prisma.sql`SELECT id, status FROM "user" WHERE id = ${inspected.userId}::uuid FOR SHARE`,
-      );
-      const user = users[0];
+    const before = await this.readSessionUser(inspected.userId);
+    if (
+      before === null ||
+      before.status === "DISABLED" ||
+      before.sessionVersion !== inspected.sessionVersion
+    ) {
+      await this.sessions.revokeFamilyByRefresh(refreshToken);
+      throw disabledUser();
+    }
 
-      if (user === undefined || user.status === "DISABLED") {
-        await this.sessions.revokeFamilyByRefresh(refreshToken);
-        throw new BusinessException(403, "AUTH_USER_DISABLED", "账号已被停用");
-      }
+    const rotated = await this.sessions.refresh(refreshToken, inspected);
+    let after: { status: "ACTIVE" | "DISABLED"; sessionVersion: number } | null;
+    try {
+      after = await this.readSessionUser(inspected.userId);
+    } catch (error) {
+      await this.sessions.revokeFamily(inspected.familyId);
+      throw error;
+    }
+    if (
+      after === null ||
+      after.status === "DISABLED" ||
+      after.sessionVersion !== inspected.sessionVersion
+    ) {
+      await this.sessions.revokeFamily(inspected.familyId);
+      throw disabledUser();
+    }
 
-      return this.sessions.refresh(refreshToken, inspected);
-    });
+    return rotated;
+  }
+
+  private async readSessionUser(
+    userId: string,
+  ): Promise<{ status: "ACTIVE" | "DISABLED"; sessionVersion: number } | null> {
+    try {
+      return await this.database.user.findUnique({
+        where: { id: userId },
+        select: { status: true, sessionVersion: true },
+      });
+    } catch {
+      throw sessionUnavailable();
+    }
   }
 }

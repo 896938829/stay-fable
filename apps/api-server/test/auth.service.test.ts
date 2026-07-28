@@ -10,11 +10,13 @@ import type { WechatIdentityProvider } from "../src/identity/wechat-identity.pro
 interface HarnessUser {
   id: string;
   status: "ACTIVE" | "DISABLED";
+  sessionVersion: number;
 }
 
 const activeUser: HarnessUser = {
   id: "018f47b6-0f58-7f52-8a35-3f92a6f34762",
   status: "ACTIVE",
+  sessionVersion: 0,
 };
 const session = {
   access_token: "a".repeat(32),
@@ -34,10 +36,6 @@ const createHarness = (existingUser: HarnessUser | null = activeUser) => {
     ),
   } satisfies WechatIdentityProvider;
   const transaction = {
-    $queryRaw: vi.fn((query: unknown) => {
-      void query;
-      return Promise.resolve<Array<{ id: string; status: "ACTIVE" | "DISABLED" }>>([activeUser]);
-    }),
     userIdentity: {
       findUnique: vi.fn(() =>
         Promise.resolve(existingUser === null ? null : { user: existingUser }),
@@ -47,6 +45,12 @@ const createHarness = (existingUser: HarnessUser | null = activeUser) => {
       create: vi.fn(() => Promise.resolve(activeUser)),
     },
   };
+  const databaseUserFindUnique = vi.fn(() =>
+    Promise.resolve<{ status: "ACTIVE" | "DISABLED"; sessionVersion: number } | null>({
+      status: "ACTIVE",
+      sessionVersion: 0,
+    }),
+  );
   const database = {
     $transaction: vi.fn((callback: (tx: typeof transaction) => unknown) =>
       Promise.resolve(callback(transaction)),
@@ -55,18 +59,25 @@ const createHarness = (existingUser: HarnessUser | null = activeUser) => {
       findUnique: vi.fn(() => Promise.resolve({ user: activeUser })),
     },
     user: {
-      findUnique: vi.fn(),
+      findUnique: databaseUserFindUnique,
     },
   } as unknown as DatabaseService;
   const sessions = {
     issue: vi.fn(() => Promise.resolve(session)),
-    inspectRefresh: vi.fn(() => Promise.resolve({ userId: activeUser.id, familyId: "family-id" })),
+    inspectRefresh: vi.fn(() =>
+      Promise.resolve({
+        userId: activeUser.id,
+        familyId: "family-id",
+        sessionVersion: activeUser.sessionVersion,
+      }),
+    ),
     revokeFamilyByRefresh: vi.fn(() => Promise.resolve()),
+    revokeFamily: vi.fn(() => Promise.resolve()),
     refresh: vi.fn(),
   } as unknown as SessionService;
   const service = new AuthService(provider, database, sessions);
 
-  return { service, provider, database, transaction, sessions };
+  return { service, provider, database, databaseUserFindUnique, transaction, sessions };
 };
 
 describe("AuthService", () => {
@@ -83,10 +94,10 @@ describe("AuthService", () => {
           providerSubject: "mock_subject",
         },
       },
-      select: { user: { select: { id: true, status: true } } },
+      select: { user: { select: { id: true, status: true, sessionVersion: true } } },
     });
     expect(transaction.user.create).not.toHaveBeenCalled();
-    expect(sessions.issue).toHaveBeenCalledWith(activeUser.id);
+    expect(sessions.issue).toHaveBeenCalledWith(activeUser.id, activeUser.sessionVersion);
   });
 
   it("creates a user and identity together when the subject is new", async () => {
@@ -103,7 +114,7 @@ describe("AuthService", () => {
           },
         },
       },
-      select: { id: true, status: true },
+      select: { id: true, status: true, sessionVersion: true },
     });
   });
 
@@ -140,26 +151,24 @@ describe("AuthService", () => {
     expect(sessions.refresh).toHaveBeenCalledWith("r".repeat(32), {
       userId: activeUser.id,
       familyId: "family-id",
+      sessionVersion: activeUser.sessionVersion,
     });
     expect(sessions.revokeFamilyByRefresh).not.toHaveBeenCalled();
   });
 
-  it("holds a parameterized shared user-row lock while rotating an active family", async () => {
-    const { service, transaction, sessions } = createHarness();
+  it("checks the user epoch before and after rotation without a database transaction", async () => {
+    const { service, database, sessions } = createHarness();
     vi.mocked(sessions.refresh).mockResolvedValueOnce(session);
 
     await expect(service.refresh("r".repeat(32))).resolves.toEqual(session);
 
-    expect(transaction.$queryRaw).toHaveBeenCalledTimes(1);
-    const query = transaction.$queryRaw.mock.calls[0]?.[0] as
-      { strings?: readonly string[]; values?: readonly unknown[] } | undefined;
-    expect(query?.strings?.join("?").replaceAll(/\s+/g, " ").trim()).toBe(
-      'SELECT id, status FROM "user" WHERE id = ?::uuid FOR SHARE',
-    );
-    expect(query?.values).toEqual([activeUser.id]);
-    expect(transaction.$queryRaw.mock.invocationCallOrder[0]).toBeLessThan(
-      vi.mocked(sessions.refresh).mock.invocationCallOrder[0] ?? 0,
-    );
+    expect(database.$transaction).not.toHaveBeenCalled();
+    expect(database.user.findUnique).toHaveBeenCalledTimes(2);
+    expect(database.user.findUnique).toHaveBeenCalledWith({
+      where: { id: activeUser.id },
+      select: { status: true, sessionVersion: true },
+    });
+    expect(sessions.revokeFamily).not.toHaveBeenCalled();
   });
 
   it("routes a rejected inspection through atomic rotation for replay revocation", async () => {
@@ -177,11 +186,15 @@ describe("AuthService", () => {
     expect(database.$transaction).not.toHaveBeenCalled();
   });
 
-  it.each([null, { ...activeUser, status: "DISABLED" as const }])(
-    "revokes the family before rejecting a missing or disabled user",
+  it.each([
+    null,
+    { status: "DISABLED" as const, sessionVersion: 1 },
+    { status: "ACTIVE" as const, sessionVersion: 1 },
+  ])(
+    "revokes the family before rejecting a missing, disabled, or epoch-mismatched user",
     async (databaseUser) => {
-      const { service, transaction, sessions } = createHarness();
-      transaction.$queryRaw.mockResolvedValueOnce(databaseUser === null ? [] : [databaseUser]);
+      const { service, databaseUserFindUnique, sessions } = createHarness();
+      databaseUserFindUnique.mockResolvedValueOnce(databaseUser);
 
       await expect(service.refresh("r".repeat(32))).rejects.toMatchObject({
         code: "AUTH_USER_DISABLED",
@@ -192,4 +205,19 @@ describe("AuthService", () => {
       expect(sessions.refresh).not.toHaveBeenCalled();
     },
   );
+
+  it("revokes the newly rotated family when the user epoch changes before the second read", async () => {
+    const { service, databaseUserFindUnique, sessions } = createHarness();
+    databaseUserFindUnique
+      .mockResolvedValueOnce({ status: "ACTIVE", sessionVersion: 0 })
+      .mockResolvedValueOnce({ status: "DISABLED", sessionVersion: 1 });
+    vi.mocked(sessions.refresh).mockResolvedValueOnce(session);
+
+    await expect(service.refresh("r".repeat(32))).rejects.toMatchObject({
+      code: "AUTH_USER_DISABLED",
+      status: 403,
+    });
+    expect(sessions.refresh).toHaveBeenCalledOnce();
+    expect(sessions.revokeFamily).toHaveBeenCalledWith("family-id");
+  });
 });

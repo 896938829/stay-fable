@@ -174,6 +174,85 @@ describeDatabase(suiteName, () => {
     expect(afterSecondSeed.rows).toEqual([{ count: "2" }]);
   });
 
+  test("status changes advance a non-negative database session epoch", async () => {
+    const inserted = await pool.query<{
+      id: string;
+      session_version: number;
+    }>(
+      `
+        INSERT INTO "user" (updated_at)
+        VALUES (CURRENT_TIMESTAMP)
+        RETURNING id::text, session_version
+      `,
+    );
+    const userId = inserted.rows[0]?.id;
+    expect(inserted.rows[0]?.session_version).toBe(0);
+
+    try {
+      const disabled = await pool.query<{ session_version: number }>(
+        `
+          UPDATE "user"
+          SET status = 'DISABLED'
+          WHERE id = $1::uuid
+          RETURNING session_version
+        `,
+        [userId],
+      );
+      expect(disabled.rows[0]?.session_version).toBe(1);
+
+      const unchanged = await pool.query<{ session_version: number }>(
+        `
+          UPDATE "user"
+          SET status = 'DISABLED'
+          WHERE id = $1::uuid
+          RETURNING session_version
+        `,
+        [userId],
+      );
+      expect(unchanged.rows[0]?.session_version).toBe(1);
+
+      const reenabled = await pool.query<{ session_version: number }>(
+        `
+          UPDATE "user"
+          SET status = 'ACTIVE'
+          WHERE id = $1::uuid
+          RETURNING session_version
+        `,
+        [userId],
+      );
+      expect(reenabled.rows[0]?.session_version).toBe(2);
+
+      await expect(
+        pool.query(
+          `
+            UPDATE "user"
+            SET session_version = -1
+            WHERE id = $1::uuid
+          `,
+          [userId],
+        ),
+      ).rejects.toMatchObject({ code: "23514" });
+
+      const trigger = await pool.query<{ function_name: string; trigger_name: string }>(`
+        SELECT
+          p.proname AS function_name,
+          t.tgname AS trigger_name
+        FROM pg_trigger t
+        JOIN pg_proc p ON p.oid = t.tgfoid
+        WHERE t.tgrelid = '"user"'::regclass
+          AND NOT t.tgisinternal
+      `);
+      expect(trigger.rows).toContainEqual({
+        function_name: "bump_user_session_version",
+        trigger_name: "user_status_session_version_trigger",
+      });
+    } finally {
+      if (userId !== undefined) {
+        await pool.query('DELETE FROM "user" WHERE id = $1::uuid', [userId]);
+      }
+    }
+  });
+
   test("seed rejects a city code mapped to a different UUID without changing it", async () => {
     const harness = await createIsolatedSeedHarness();
     const conflictingId = "20000000-0000-4000-8000-000000000001";
