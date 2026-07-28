@@ -61,6 +61,39 @@ test("documents the WeChat-first agent workflow", async () => {
   const agents = await readFile(new URL("AGENTS.md", rootUrl), "utf8");
 
   assert.match(agents, /\/wx.*唯一正式用户端/s);
+  const requiredRules = [
+    [
+      "frozen Taro reference exclusion",
+      /apps\/consumer-miniapp[^\n]*冻结[^\n]*不进入默认开发和构建门禁/,
+    ],
+    ["start-of-work repository checks", /git status --short[^\n]*git worktree list/],
+    [
+      "dev feature-branch policy",
+      /从 `dev` 创建 `codex\/<feature>` 分支[^\n]*release[^\n]*main[^\n]*不直接开发/,
+    ],
+    [
+      "minimum WeChat verification",
+      /微信功能[^\n]*静态检查[^\n]*微信开发者工具编译[^\n]*预览或自动化验收/,
+    ],
+    ["unrelated-container protection", /不得停止或删除无关容器/],
+    ["non-root read-only services", /API 与 Worker[^\n]*非 root[^\n]*只读根文件系统/],
+    ["Worker stability observation", /Worker[^\n]*10 分钟[^\n]*重启 0[^\n]*无重连循环/],
+    ["runtime cleanup and volume retention", /删除临时容器\/产物[^\n]*Compose 数据卷[^\n]*保留/],
+    [
+      "dev quality gates",
+      /dev 阶段[^\n]*格式[^\n]*lint[^\n]*类型检查[^\n]*测试[^\n]*构建[^\n]*漏洞报告/,
+    ],
+    ["dev vulnerability reporting", /dev 已知依赖漏洞[^\n]*报告[^\n]*不阻断/],
+    [
+      "release vulnerability exception fields",
+      /release\/main\s+阻断[^\n]*Critical\/High[^\n]*批准人[^\n]*到期日[^\n]*缓解措施/,
+    ],
+    ["fresh completion verification", /完成前[^\n]*全量验证[^\n]*不依赖历史结果/],
+  ];
+
+  for (const [rule, pattern] of requiredRules) {
+    assert.match(agents, pattern, `AGENTS.md must document ${rule}`);
+  }
   for (const skill of [
     "initializer",
     "compiler",
@@ -74,6 +107,13 @@ test("documents the WeChat-first agent workflow", async () => {
   assert.match(agents, /Ubuntu-22\.04/);
   assert.match(agents, /POSTGRES_PORT=55432/);
   assert.match(agents, /REDIS_PORT=56379/);
-  assert.match(agents, /dev.*报告.*不阻断/s);
-  assert.match(agents, /release\/main\s+阻断.*Critical\/High/s);
+  for (const service of [
+    "PostgreSQL/PostGIS",
+    "Redis",
+    "API /health/live",
+    "/health/ready",
+    "Worker",
+  ]) {
+    assert.ok(agents.includes(service), `AGENTS.md must require validating ${service}`);
+  }
 });
