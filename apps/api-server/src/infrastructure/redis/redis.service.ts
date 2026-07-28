@@ -6,12 +6,7 @@ export interface RedisClient {
   ping: () => Promise<unknown>;
   quit: () => Promise<unknown>;
   get: (key: string) => Promise<string | null>;
-  set: (
-    key: string,
-    value: string,
-    expiryMode: "EX",
-    ttlSeconds: number,
-  ) => Promise<unknown>;
+  set: (key: string, value: string, expiryMode: "EX", ttlSeconds: number) => Promise<unknown>;
   eval: (script: string, numberOfKeys: number, key: string) => Promise<unknown>;
   del: (key: string) => Promise<unknown>;
 }
