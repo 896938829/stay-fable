@@ -88,7 +88,10 @@ function createRequestClient(dependencies) {
           try {
             await refreshSession();
             return;
-          } catch {
+          } catch (error) {
+            if (error && error.code === "AUTH_SESSION_OPERATION_CANCELLED") {
+              throw error;
+            }
             // A rejected refresh clears the session before the fallback login.
           }
           if (typeof reauthenticate !== "function") {
@@ -96,7 +99,10 @@ function createRequestClient(dependencies) {
           }
           await reauthenticate();
         })
-        .catch(() => {
+        .catch((error) => {
+          if (error && error.code === "AUTH_SESSION_OPERATION_CANCELLED") {
+            throw error;
+          }
           if (typeof clearSession === "function") {
             try {
               clearSession();

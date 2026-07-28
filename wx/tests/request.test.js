@@ -465,4 +465,33 @@ describe("request client", () => {
     expect(clearSession).toHaveBeenCalledOnce();
     expect(request).toHaveBeenCalledOnce();
   });
+
+  it("does not reauthenticate after an explicit session-operation cancellation", async () => {
+    const request = vi.fn((options) =>
+      options.success({
+        statusCode: 401,
+        data: {
+          error: { code: "UNAUTHORIZED", message: "Expired" },
+          request_id: "req_unauthorized",
+        },
+      }),
+    );
+    const cancellation = Object.assign(new Error("Session operation cancelled"), {
+      code: "AUTH_SESSION_OPERATION_CANCELLED",
+    });
+    const refreshSession = vi.fn(async () => {
+      throw cancellation;
+    });
+    const reauthenticate = vi.fn();
+    const clearSession = vi.fn();
+    const client = createClient(request, { refreshSession, reauthenticate, clearSession });
+
+    await expect(client.get("/private")).rejects.toMatchObject({
+      code: "AUTH_SESSION_OPERATION_CANCELLED",
+      message: "Session operation cancelled",
+    });
+    expect(reauthenticate).not.toHaveBeenCalled();
+    expect(clearSession).not.toHaveBeenCalled();
+    expect(request).toHaveBeenCalledOnce();
+  });
 });

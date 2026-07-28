@@ -89,4 +89,50 @@ describe("search store", () => {
     });
     expect(stored()).toEqual(store.get());
   });
+
+  it("keeps the prior state when persisting an update fails", () => {
+    const { store, stored, wxApi } = setup();
+    const original = store.initializeDefaults();
+    wxApi.setStorageSync.mockImplementation(() => {
+      throw new Error("storage quota exceeded");
+    });
+
+    expect(() => store.set({ city, guests: 4 })).toThrow("storage quota exceeded");
+    expect(store.get()).toEqual(original);
+    expect(stored()).toEqual(original);
+  });
+
+  it("keeps the prior state when persisting clear fails", () => {
+    const { store, stored, wxApi } = setup();
+    const original = store.initializeDefaults();
+    store.set({ city, guests: 4 });
+    const current = store.get();
+    wxApi.setStorageSync.mockImplementation(() => {
+      throw new Error("storage I/O failed");
+    });
+
+    expect(() => store.clear()).toThrow("storage I/O failed");
+    expect(store.get()).toEqual(current);
+    expect(stored()).toEqual(current);
+    expect(store.get()).not.toEqual(original);
+  });
+
+  it("does not cache initialized state until its canonical storage write succeeds", () => {
+    const initial = {
+      city,
+      checkin: "2026-07-30",
+      checkout: "2026-08-02",
+      guests: 3,
+    };
+    const { store, wxApi } = setup(initial);
+    const write = wxApi.setStorageSync.getMockImplementation();
+    wxApi.setStorageSync.mockImplementation(() => {
+      throw new Error("storage quota exceeded");
+    });
+
+    expect(() => store.initializeDefaults()).toThrow("storage quota exceeded");
+    wxApi.setStorageSync.mockImplementation(write);
+    expect(store.get()).toEqual(initial);
+    expect(wxApi.setStorageSync).toHaveBeenCalledTimes(2);
+  });
 });

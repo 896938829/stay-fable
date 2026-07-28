@@ -80,8 +80,8 @@ function createSearchStore(options) {
   }
 
   function persist(next) {
-    state = next;
     wxApi.setStorageSync(storageKey, next);
+    state = next;
     return state;
   }
 
@@ -91,10 +91,14 @@ function createSearchStore(options) {
     }
     const stored = wxApi.getStorageSync(storageKey);
     if (stored !== undefined && stored !== null && stored !== "") {
+      let canonical;
       try {
-        return persist(validate(stored));
+        canonical = validate(stored);
       } catch {
         // Invalid persisted state is replaced with safe date defaults.
+      }
+      if (canonical) {
+        return persist(canonical);
       }
     }
     return persist(validate(defaults()));

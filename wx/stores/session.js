@@ -16,6 +16,12 @@ function refreshError() {
   return error;
 }
 
+function operationCancelledError() {
+  const error = new Error("Session operation cancelled");
+  error.code = "AUTH_SESSION_OPERATION_CANCELLED";
+  return error;
+}
+
 function wechatLogin(wxApi) {
   return new Promise((resolve, reject) => {
     try {
@@ -44,8 +50,10 @@ function createSessionStore(options) {
   let loaded = false;
   let ensurePromise;
   let refreshPromise;
+  let generation = 0;
 
   function clear() {
+    generation += 1;
     memory = null;
     loaded = true;
     wxApi.removeStorageSync(storageKey);
@@ -53,9 +61,22 @@ function createSessionStore(options) {
 
   function set(session) {
     const canonical = assertAuthSession(session);
+    wxApi.setStorageSync(storageKey, canonical);
     memory = canonical;
     loaded = true;
+    generation += 1;
+    return canonical;
+  }
+
+  function commit(session, operationGeneration) {
+    if (generation !== operationGeneration) {
+      throw operationCancelledError();
+    }
+    const canonical = assertAuthSession(session);
     wxApi.setStorageSync(storageKey, canonical);
+    memory = canonical;
+    loaded = true;
+    generation += 1;
     return canonical;
   }
 
@@ -85,12 +106,22 @@ function createSessionStore(options) {
       return Promise.resolve(existing);
     }
     if (!ensurePromise) {
+      const operationGeneration = generation;
       ensurePromise = (async () => {
         try {
           const code = await wechatLogin(wxApi);
+          if (generation !== operationGeneration) {
+            throw operationCancelledError();
+          }
           const session = await authService.login(code);
-          return set(session);
+          return commit(session, operationGeneration);
         } catch (error) {
+          if (
+            error.code === "AUTH_SESSION_OPERATION_CANCELLED" ||
+            generation !== operationGeneration
+          ) {
+            throw operationCancelledError();
+          }
           clear();
           throw error;
         }
@@ -103,6 +134,7 @@ function createSessionStore(options) {
 
   function refreshSession() {
     if (!refreshPromise) {
+      const operationGeneration = generation;
       refreshPromise = (async () => {
         const current = get();
         if (!current) {
@@ -110,8 +142,14 @@ function createSessionStore(options) {
         }
         try {
           const session = await authService.refresh(current.refresh_token);
-          return set(session);
+          return commit(session, operationGeneration);
         } catch (error) {
+          if (
+            error.code === "AUTH_SESSION_OPERATION_CANCELLED" ||
+            generation !== operationGeneration
+          ) {
+            throw operationCancelledError();
+          }
           clear();
           throw error;
         }

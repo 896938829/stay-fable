@@ -29,6 +29,14 @@ function createStorageWx(initial) {
   };
 }
 
+function deferred() {
+  let resolve;
+  const promise = new Promise((next) => {
+    resolve = next;
+  });
+  return { promise, resolve };
+}
+
 describe("session store", () => {
   it("uses a valid stored session without logging in", async () => {
     const expected = makeSession();
@@ -141,5 +149,83 @@ describe("session store", () => {
     expect(JSON.stringify(wxApi.stored())).not.toContain("private");
     store.clear();
     expect(wxApi.removeStorageSync).toHaveBeenCalledWith("session");
+  });
+
+  it("does not revive a session when clear wins over an in-flight refresh", async () => {
+    const current = makeSession("f");
+    const next = makeSession("g");
+    const pending = deferred();
+    const wxApi = createStorageWx(current);
+    const authService = {
+      login: vi.fn(),
+      refresh: vi.fn(() => pending.promise),
+    };
+    const store = createSessionStore({ wxApi, authService, storageKey: "session" });
+
+    const refresh = store.refreshSession();
+    await vi.waitFor(() => expect(authService.refresh).toHaveBeenCalledOnce());
+    store.clear();
+    const writesAfterClear = wxApi.setStorageSync.mock.calls.length;
+    pending.resolve(next);
+
+    await expect(refresh).rejects.toMatchObject({
+      code: "AUTH_SESSION_OPERATION_CANCELLED",
+      message: "Session operation cancelled",
+    });
+    expect(store.get()).toBeNull();
+    expect(wxApi.stored()).toBeUndefined();
+    expect(wxApi.setStorageSync).toHaveBeenCalledTimes(writesAfterClear);
+  });
+
+  it("does not revive a session when clear wins over an in-flight login", async () => {
+    const next = makeSession("h");
+    const pending = deferred();
+    const wxApi = createStorageWx();
+    wxApi.login.mockImplementation(({ success }) => success({ code: "temporary-code" }));
+    const authService = {
+      login: vi.fn(() => pending.promise),
+      refresh: vi.fn(),
+    };
+    const store = createSessionStore({ wxApi, authService, storageKey: "session" });
+
+    const login = store.ensureSession();
+    await vi.waitFor(() => expect(authService.login).toHaveBeenCalledOnce());
+    store.clear();
+    const writesAfterClear = wxApi.setStorageSync.mock.calls.length;
+    pending.resolve(next);
+
+    await expect(login).rejects.toMatchObject({
+      code: "AUTH_SESSION_OPERATION_CANCELLED",
+      message: "Session operation cancelled",
+    });
+    expect(store.get()).toBeNull();
+    expect(wxApi.stored()).toBeUndefined();
+    expect(wxApi.setStorageSync).toHaveBeenCalledTimes(writesAfterClear);
+  });
+
+  it("does not let an old refresh overwrite an explicitly set session", async () => {
+    const pending = deferred();
+    const explicit = makeSession("i");
+    const stale = makeSession("j");
+    const wxApi = createStorageWx(makeSession("k"));
+    const authService = {
+      login: vi.fn(),
+      refresh: vi.fn(() => pending.promise),
+    };
+    const store = createSessionStore({ wxApi, authService, storageKey: "session" });
+
+    const refresh = store.refreshSession();
+    await vi.waitFor(() => expect(authService.refresh).toHaveBeenCalledOnce());
+    store.set(explicit);
+    const writesAfterSet = wxApi.setStorageSync.mock.calls.length;
+    pending.resolve(stale);
+
+    await expect(refresh).rejects.toMatchObject({
+      code: "AUTH_SESSION_OPERATION_CANCELLED",
+      message: "Session operation cancelled",
+    });
+    expect(store.get()).toEqual(explicit);
+    expect(wxApi.stored()).toEqual(explicit);
+    expect(wxApi.setStorageSync).toHaveBeenCalledTimes(writesAfterSet);
   });
 });
