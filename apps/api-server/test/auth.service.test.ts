@@ -186,12 +186,8 @@ describe("AuthService", () => {
     expect(database.$transaction).not.toHaveBeenCalled();
   });
 
-  it.each([
-    null,
-    { status: "DISABLED" as const, sessionVersion: 1 },
-    { status: "ACTIVE" as const, sessionVersion: 1 },
-  ])(
-    "revokes the family before rejecting a missing, disabled, or epoch-mismatched user",
+  it.each([null, { status: "DISABLED" as const, sessionVersion: 1 }])(
+    "revokes the family before rejecting a missing or disabled user",
     async (databaseUser) => {
       const { service, databaseUserFindUnique, sessions } = createHarness();
       databaseUserFindUnique.mockResolvedValueOnce(databaseUser);
@@ -206,6 +202,18 @@ describe("AuthService", () => {
     },
   );
 
+  it("revokes and rejects refresh when an active user epoch mismatches before rotation", async () => {
+    const { service, databaseUserFindUnique, sessions } = createHarness();
+    databaseUserFindUnique.mockResolvedValueOnce({ status: "ACTIVE", sessionVersion: 1 });
+
+    await expect(service.refresh("r".repeat(32))).rejects.toMatchObject({
+      code: "AUTH_REFRESH_REJECTED",
+      status: 401,
+    });
+    expect(sessions.revokeFamilyByRefresh).toHaveBeenCalledWith("r".repeat(32));
+    expect(sessions.refresh).not.toHaveBeenCalled();
+  });
+
   it("revokes the newly rotated family when the user epoch changes before the second read", async () => {
     const { service, databaseUserFindUnique, sessions } = createHarness();
     databaseUserFindUnique
@@ -216,6 +224,21 @@ describe("AuthService", () => {
     await expect(service.refresh("r".repeat(32))).rejects.toMatchObject({
       code: "AUTH_USER_DISABLED",
       status: 403,
+    });
+    expect(sessions.refresh).toHaveBeenCalledOnce();
+    expect(sessions.revokeFamily).toHaveBeenCalledWith("family-id");
+  });
+
+  it("revokes and rejects refresh when an active user epoch mismatches after rotation", async () => {
+    const { service, databaseUserFindUnique, sessions } = createHarness();
+    databaseUserFindUnique
+      .mockResolvedValueOnce({ status: "ACTIVE", sessionVersion: 0 })
+      .mockResolvedValueOnce({ status: "ACTIVE", sessionVersion: 1 });
+    vi.mocked(sessions.refresh).mockResolvedValueOnce(session);
+
+    await expect(service.refresh("r".repeat(32))).rejects.toMatchObject({
+      code: "AUTH_REFRESH_REJECTED",
+      status: 401,
     });
     expect(sessions.refresh).toHaveBeenCalledOnce();
     expect(sessions.revokeFamily).toHaveBeenCalledWith("family-id");

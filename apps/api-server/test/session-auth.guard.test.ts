@@ -40,12 +40,8 @@ describe("SessionAuthGuard", () => {
     expect(request.user).toEqual({ id: "user-id" });
   });
 
-  it.each([
-    null,
-    { status: "DISABLED", sessionVersion: 8 },
-    { status: "ACTIVE", sessionVersion: 8 },
-  ])(
-    "revokes the current family before rejecting a missing, disabled, or epoch-mismatched access user",
+  it.each([null, { status: "DISABLED", sessionVersion: 8 }])(
+    "revokes the current family before rejecting a missing or disabled access user",
     async (user) => {
       const sessions = {
         resolveAccess: vi.fn(() =>
@@ -69,6 +65,29 @@ describe("SessionAuthGuard", () => {
       expect(request.user).toBeUndefined();
     },
   );
+
+  it("revokes the current family and expires access when an active user epoch mismatches", async () => {
+    const sessions = {
+      resolveAccess: vi.fn(() =>
+        Promise.resolve({ userId: "user-id", familyId: "family-id", sessionVersion: 7 }),
+      ),
+      revokeFamily: vi.fn(() => Promise.resolve()),
+    } as unknown as SessionService;
+    const database = {
+      user: {
+        findUnique: vi.fn(() => Promise.resolve({ status: "ACTIVE", sessionVersion: 8 })),
+      },
+    } as unknown as DatabaseService;
+    const guard = new SessionAuthGuard(sessions, database);
+    const { context, request } = contextFor("Bearer opaque-token");
+
+    await expect(guard.canActivate(context)).rejects.toMatchObject({
+      code: "AUTH_SESSION_EXPIRED",
+      status: 401,
+    });
+    expect(sessions.revokeFamily).toHaveBeenCalledWith("family-id");
+    expect(request.user).toBeUndefined();
+  });
 
   it("maps database lookup failures to a stable safe 503", async () => {
     const sessions = {

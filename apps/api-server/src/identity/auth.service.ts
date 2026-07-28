@@ -41,6 +41,8 @@ const requireEnabled = (user: AuthUser): AuthUser => {
 
 const disabledUser = (): BusinessException =>
   new BusinessException(403, "AUTH_USER_DISABLED", "账号已被停用");
+const refreshRejected = (): BusinessException =>
+  new BusinessException(401, "AUTH_REFRESH_REJECTED", "刷新凭证无效或已过期");
 const sessionUnavailable = (): BusinessException =>
   new BusinessException(503, "AUTH_SESSION_SERVICE_UNAVAILABLE", "登录服务暂时不可用，请稍后重试");
 
@@ -108,13 +110,13 @@ export class AuthService {
     }
 
     const before = await this.readSessionUser(inspected.userId);
-    if (
-      before === null ||
-      before.status === "DISABLED" ||
-      before.sessionVersion !== inspected.sessionVersion
-    ) {
+    if (before === null || before.status === "DISABLED") {
       await this.sessions.revokeFamilyByRefresh(refreshToken);
       throw disabledUser();
+    }
+    if (before.sessionVersion !== inspected.sessionVersion) {
+      await this.sessions.revokeFamilyByRefresh(refreshToken);
+      throw refreshRejected();
     }
 
     const rotated = await this.sessions.refresh(refreshToken, inspected);
@@ -125,13 +127,13 @@ export class AuthService {
       await this.sessions.revokeFamily(inspected.familyId);
       throw error;
     }
-    if (
-      after === null ||
-      after.status === "DISABLED" ||
-      after.sessionVersion !== inspected.sessionVersion
-    ) {
+    if (after === null || after.status === "DISABLED") {
       await this.sessions.revokeFamily(inspected.familyId);
       throw disabledUser();
+    }
+    if (after.sessionVersion !== inspected.sessionVersion) {
+      await this.sessions.revokeFamily(inspected.familyId);
+      throw refreshRejected();
     }
 
     return rotated;

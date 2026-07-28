@@ -49,13 +49,13 @@ export class SessionAuthGuard implements CanActivate {
     } catch {
       throw sessionUnavailable();
     }
-    if (
-      user === null ||
-      user.status === "DISABLED" ||
-      user.sessionVersion !== resolved.sessionVersion
-    ) {
+    if (user === null || user.status === "DISABLED") {
       await this.sessions.revokeFamily(resolved.familyId);
       throw disabledUser();
+    }
+    if (user.sessionVersion !== resolved.sessionVersion) {
+      await this.sessions.revokeFamily(resolved.familyId);
+      throw expiredSession();
     }
 
     request.user = { id: resolved.userId };

@@ -368,11 +368,17 @@ describeDatabase(suiteName, () => {
     await request(server)
       .get("/api/v1/identity-test/current-user")
       .set("Authorization", `Bearer ${session.access_token}`)
-      .expect(403);
+      .expect(401)
+      .expect((response) => {
+        expect((response.body as ErrorEnvelope).error.code).toBe("AUTH_SESSION_EXPIRED");
+      });
     await request(server)
       .post("/api/v1/auth/session/refresh")
       .send({ refresh_token: session.refresh_token })
-      .expect(401);
+      .expect(401)
+      .expect((response) => {
+        expect((response.body as ErrorEnvelope).error.code).toBe("AUTH_REFRESH_REJECTED");
+      });
     await expect(
       redis.mget(
         `session:access:${hash(session.access_token)}`,

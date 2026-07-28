@@ -226,12 +226,63 @@ describeDatabase(suiteName, () => {
         pool.query(
           `
             UPDATE "user"
-            SET session_version = -1
+            SET session_version = 0
             WHERE id = $1::uuid
           `,
           [userId],
         ),
-      ).rejects.toMatchObject({ code: "23514" });
+      ).rejects.toMatchObject({
+        code: "23514",
+        constraint: "user_session_version_monotonic_check",
+      });
+
+      const explicitlyAdvanced = await pool.query<{ session_version: number }>(
+        `
+          UPDATE "user"
+          SET session_version = 5
+          WHERE id = $1::uuid
+          RETURNING session_version
+        `,
+        [userId],
+      );
+      expect(explicitlyAdvanced.rows[0]?.session_version).toBe(5);
+
+      await expect(
+        pool.query(
+          `
+            UPDATE "user"
+            SET session_version = 4
+            WHERE id = $1::uuid
+          `,
+          [userId],
+        ),
+      ).rejects.toMatchObject({
+        code: "23514",
+        constraint: "user_session_version_monotonic_check",
+      });
+
+      const statusAdvanced = await pool.query<{ session_version: number }>(
+        `
+          UPDATE "user"
+          SET status = 'DISABLED'
+          WHERE id = $1::uuid
+          RETURNING session_version
+        `,
+        [userId],
+      );
+      expect(statusAdvanced.rows[0]?.session_version).toBe(6);
+
+      const explicitHigherStatusVersion = await pool.query<{ session_version: number }>(
+        `
+          UPDATE "user"
+          SET status = 'ACTIVE',
+              session_version = 10
+          WHERE id = $1::uuid
+          RETURNING session_version
+        `,
+        [userId],
+      );
+      expect(explicitHigherStatusVersion.rows[0]?.session_version).toBe(10);
 
       const trigger = await pool.query<{ function_name: string; trigger_name: string }>(`
         SELECT
