@@ -60,13 +60,28 @@ test("activates reproducible pnpm project settings", async () => {
   assert.match(lockfile, /^\s+injectWorkspacePackages:\s+true$/m);
 });
 
-test("excludes approved generated and planning artifacts from Prettier", async () => {
+test("excludes only the frozen Taro subtree from Prettier", async () => {
   const prettierIgnore = await readFile(new URL(".prettierignore", rootUrl), "utf8");
+  const activeRules = prettierIgnore
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line && !line.startsWith("#"));
 
   assert.match(prettierIgnore, /^pnpm-lock\.yaml$/m);
   assert.match(prettierIgnore, /^docs\/superpowers\/$/m);
   assert.match(prettierIgnore, /^\.agents\/skills\/$/m);
   assert.match(prettierIgnore, /^wx\/$/m);
+  assert.equal(
+    activeRules.filter((rule) => rule === "apps/consumer-miniapp/").length,
+    1,
+    "the frozen Taro tree must have one exact active ignore rule",
+  );
+  for (const overbroadRule of ["apps/", "apps/*", "apps/**", "**/consumer-miniapp/"]) {
+    assert.ok(
+      !activeRules.includes(overbroadRule),
+      `the exact Taro exclusion must not be replaced by ${overbroadRule}`,
+    );
+  }
 });
 
 test("documents the WeChat-first agent workflow", async () => {

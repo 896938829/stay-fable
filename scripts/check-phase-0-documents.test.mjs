@@ -359,6 +359,25 @@ test("launch evidence does not claim unfinished external gates are accepted", as
   }
 });
 
+test("launch evidence records WSL2 Docker validation without unblocking unarchived evidence", async () => {
+  const markdown = await readFile(
+    path.join(root, "docs/compliance/launch-evidence-index.md"),
+    "utf8",
+  );
+  const dockerRows = markdown
+    .split(/\r?\n/)
+    .filter((line) => line.startsWith("|") && line.includes("Docker"));
+
+  assert.equal(dockerRows.length, 2, "launch evidence must retain both Docker gates");
+  for (const row of dockerRows) {
+    assert.match(row, /WSL2 Docker.*运行时验证.*完成/);
+    assert.match(row, /受控证据.*(?:尚未归档|尚未审批)/);
+    assert.match(row, /\|\s*Blocked\s*\|?\s*$/);
+    assert.doesNotMatch(row, /没有本地 Docker 引擎/);
+    assert.doesNotMatch(row, /\|\s*Accepted\s*\|?\s*$/);
+  }
+});
+
 test("launch evidence binds native WeChat validation to immutable inputs", async () => {
   const markdown = await readFile(
     path.join(root, "docs/compliance/launch-evidence-index.md"),

@@ -2,3 +2,4 @@ pnpm-lock.yaml
 docs/superpowers/
 .agents/skills/
 wx/
+apps/consumer-miniapp/
