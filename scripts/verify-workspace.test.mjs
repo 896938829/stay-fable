@@ -14,19 +14,47 @@ test("declares the root workspace contract", async () => {
   assert.match(workspace, /^\s*-\s+["']?packages\/\*["']?\s*$/m);
   assert.equal(root.scripts.verify, "node scripts/verify-workspace.mjs");
   assert.equal(root.scripts["verify:phase-0"], "node scripts/verify-phase-0.mjs");
+  const prismaGenerateCommand =
+    "node --env-file=.env.example -e \"const { spawnSync } = require('node:child_process'); const result = spawnSync('pnpm --filter @stay-fable/api-server prisma:generate', { stdio: 'inherit', shell: true, env: process.env }); if (result.error) throw result.error; process.exit(result.status ?? 1)\"";
   const expectedScripts = {
     build: "turbo run build --filter=!@stay-fable/consumer-miniapp",
     dev: 'turbo run build --filter="./packages/*" && turbo run dev --parallel --filter=!@stay-fable/consumer-miniapp',
     lint: "eslint eslint.config.mjs prettier.config.mjs scripts/*.mjs packages/eslint-config/index.mjs && turbo run lint --filter=!@stay-fable/consumer-miniapp",
     test: "node --test scripts/*.test.mjs && turbo run test --filter=!@stay-fable/consumer-miniapp",
     typecheck: "turbo run typecheck --filter=!@stay-fable/consumer-miniapp",
+    "prisma:generate": prismaGenerateCommand,
     "wx:check": "node scripts/check-wx-project.mjs",
     check:
-      "pnpm verify && pnpm wx:check && pnpm format:check && pnpm lint && pnpm typecheck && pnpm test && pnpm build",
+      "pnpm verify && pnpm wx:check && pnpm prisma:generate && pnpm format:check && pnpm lint && pnpm typecheck && pnpm test && pnpm build",
   };
   for (const [script, expected] of Object.entries(expectedScripts)) {
     assert.equal(root.scripts[script], expected, `${script} must match the approved command`);
   }
+
+  assert.deepEqual(
+    root.scripts.check.split(" && "),
+    [
+      "pnpm verify",
+      "pnpm wx:check",
+      "pnpm prisma:generate",
+      "pnpm format:check",
+      "pnpm lint",
+      "pnpm typecheck",
+      "pnpm test",
+      "pnpm build",
+    ],
+    "check must generate Prisma once before every quality and build gate",
+  );
+  assert.equal(
+    root.scripts.check.match(/\bpnpm prisma:generate\b/g)?.length,
+    1,
+    "check must generate Prisma exactly once",
+  );
+  assert.doesNotMatch(
+    root.scripts.check,
+    /\|\||continue-on-error/,
+    "check must not neutralize Prisma or quality gate failures",
+  );
 });
 
 test("includes phase zero verification entry points and evidence in the workspace contract", async () => {

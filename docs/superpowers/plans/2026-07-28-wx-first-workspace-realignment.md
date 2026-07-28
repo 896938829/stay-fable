@@ -313,10 +313,17 @@ git commit -m "test: verify native WeChat project"
 
 ```js
 assert.equal(root.scripts["wx:check"], "node scripts/check-wx-project.mjs");
+assert.equal(
+  root.scripts["prisma:generate"],
+  "node --env-file=.env.example -e \"const { spawnSync } = require('node:child_process'); const result = spawnSync('pnpm --filter @stay-fable/api-server prisma:generate', { stdio: 'inherit', shell: true, env: process.env }); if (result.error) throw result.error; process.exit(result.status ?? 1)\"",
+);
 for (const script of ["lint", "typecheck", "test", "build"]) {
   assert.match(root.scripts[script], /--filter=!@stay-fable\/consumer-miniapp/);
 }
-assert.match(root.scripts.check, /pnpm wx:check/);
+assert.equal(
+  root.scripts.check,
+  "pnpm verify && pnpm wx:check && pnpm prisma:generate && pnpm format:check && pnpm lint && pnpm typecheck && pnpm test && pnpm build",
+);
 ```
 
 - [x] **Step 2: 运行测试并确认失败**
@@ -341,8 +348,9 @@ Expected: FAIL，`wx:check` 为 `undefined`。
     "lint": "eslint eslint.config.mjs prettier.config.mjs scripts/*.mjs packages/eslint-config/index.mjs && turbo run lint --filter=!@stay-fable/consumer-miniapp",
     "test": "node --test scripts/*.test.mjs && turbo run test --filter=!@stay-fable/consumer-miniapp",
     "typecheck": "turbo run typecheck --filter=!@stay-fable/consumer-miniapp",
+    "prisma:generate": "node --env-file=.env.example -e \"const { spawnSync } = require('node:child_process'); const result = spawnSync('pnpm --filter @stay-fable/api-server prisma:generate', { stdio: 'inherit', shell: true, env: process.env }); if (result.error) throw result.error; process.exit(result.status ?? 1)\"",
     "wx:check": "node scripts/check-wx-project.mjs",
-    "check": "pnpm verify && pnpm wx:check && pnpm format:check && pnpm lint && pnpm typecheck && pnpm test && pnpm build"
+    "check": "pnpm verify && pnpm wx:check && pnpm prisma:generate && pnpm format:check && pnpm lint && pnpm typecheck && pnpm test && pnpm build"
   }
 }
 ```
@@ -357,8 +365,9 @@ Run:
 corepack pnpm check
 ```
 
-Expected: exit 0；Turbo 输出中不出现 `@stay-fable/consumer-miniapp` 任务，微信静态检查
-输出 `WeChat project verified: 2 pages`。
+Expected: exit 0；`check` 在所有 lint/typecheck/test/build 门禁前从根脚本生成 Prisma Client；
+Turbo 输出中不出现 `@stay-fable/consumer-miniapp` 任务，微信静态检查输出
+`WeChat project verified: 2 pages`。
 
 - [x] **Step 5: 提交**
 
