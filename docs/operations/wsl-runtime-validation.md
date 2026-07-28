@@ -31,8 +31,8 @@ wsl.exe -d Ubuntu-22.04 --cd (wsl.exe -d Ubuntu-22.04 -- wslpath -a $repo) bash
 记录验证前的完整清单：
 
 ```bash
-docker ps --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}'
-docker ps -a --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}'
+docker ps --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}' || true
+docker ps -a --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}' || true
 ```
 
 若 `stay-fable-wsl-validation-api` 或 `stay-fable-wsl-validation-worker` 已存在，
@@ -52,34 +52,31 @@ cleanup_validation() {
   local cleanup_repo_root cleanup_current_dir cleanup_runtime_dir
   trap - EXIT
 
-  docker rm -f stay-fable-wsl-validation-api stay-fable-wsl-validation-worker
-  if [ "$?" -ne 0 ]; then
-    cleanup_failed=1
-  fi
+  docker rm -f stay-fable-wsl-validation-api stay-fable-wsl-validation-worker >/dev/null 2>&1 || true
 
-  POSTGRES_PORT=55432 REDIS_PORT=56379 docker compose --project-name stay-fable-wsl-validation -f infrastructure/compose.yaml down
-  if [ "$?" -ne 0 ]; then
+  if ! POSTGRES_PORT=55432 REDIS_PORT=56379 docker compose --project-name stay-fable-wsl-validation -f infrastructure/compose.yaml down; then
     cleanup_failed=1
   fi
 
   if ! cleanup_repo_root="$(git rev-parse --show-toplevel 2>/dev/null)"; then
     echo '无法解析当前 worktree 顶层目录，拒绝删除验证产物' >&2
-    return 1
-  fi
-  if ! cleanup_repo_root="$(cd "$cleanup_repo_root" && pwd -P)"; then
+    cleanup_failed=1
+  elif ! cleanup_repo_root="$(cd "$cleanup_repo_root" && pwd -P)"; then
     echo '无法解析当前 worktree 物理路径，拒绝删除验证产物' >&2
-    return 1
-  fi
-  cleanup_current_dir="$(pwd -P)"
-  cleanup_runtime_dir="$cleanup_repo_root/.wsl-runtime"
-  if [ "$cleanup_current_dir" = "$cleanup_repo_root" ] && [ "$cleanup_runtime_dir" = "$cleanup_repo_root/.wsl-runtime" ]; then
-    rm -rf -- "$cleanup_runtime_dir"
-    if [ "$?" -ne 0 ]; then
+    cleanup_failed=1
+  elif ! cleanup_current_dir="$(pwd -P)"; then
+    echo '无法解析当前物理路径，拒绝删除验证产物' >&2
+    cleanup_failed=1
+  else
+    cleanup_runtime_dir="$cleanup_repo_root/.wsl-runtime"
+    if [ "$cleanup_current_dir" = "$cleanup_repo_root" ] && [ "$cleanup_runtime_dir" = "$cleanup_repo_root/.wsl-runtime" ]; then
+      if ! rm -rf -- "$cleanup_runtime_dir"; then
+        cleanup_failed=1
+      fi
+    else
+      echo '当前目录或验证产物路径不符合预期，拒绝删除' >&2
       cleanup_failed=1
     fi
-  else
-    echo '当前目录或验证产物路径不符合预期，拒绝删除' >&2
-    return 1
   fi
 
   if [ "$cleanup_failed" -ne 0 ]; then
@@ -88,10 +85,15 @@ cleanup_validation() {
   return "$validation_status"
 }
 trap 'cleanup_validation $?' EXIT
+set -Eeuo pipefail
 ```
 
 清理 Compose 时没有使用 `--volumes`，所以验证项目的数据卷会被保留。函数中的
-容器删除命令不得加入其他名称。
+容器删除命令不得加入其他名称。`set -Eeuo pipefail` 在 trap 之后启用：从步骤 3
+开始，Compose、构建、部署、容器启动、探测、`curl` 或 `inspect` 等普通命令只要
+返回非零状态，就会立即结束当前 Bash 并触发清理。盘点命令和“临时容器不存在”
+是允许失败的情况，已分别用 `|| true` 显式标注；日志关键字 grep 位于 `if`
+条件中，其非匹配状态不会触发误退出。
 
 ## 3. 用避让端口启动 Compose
 
@@ -210,8 +212,8 @@ for attempt in $(seq 1 20); do
 done
 if [ "$api_ready" != true ]; then
   echo 'API 未在 60 秒内就绪' >&2
-  docker logs stay-fable-wsl-validation-api >&2
-  docker logs stay-fable-wsl-validation-worker >&2
+  docker logs stay-fable-wsl-validation-api >&2 || true
+  docker logs stay-fable-wsl-validation-worker >&2 || true
   exit 1
 fi
 ```
@@ -253,7 +255,7 @@ for minute in $(seq 1 10); do
   echo "RestartCount=${restart_count}"
   if [ "$restart_count" -ne 0 ]; then
     echo 'Worker 在观察期间发生重启' >&2
-    docker logs stay-fable-wsl-validation-worker >&2
+    docker logs stay-fable-wsl-validation-worker >&2 || true
     exit 1
   fi
   worker_logs="$(docker logs --since 65s stay-fable-wsl-validation-worker 2>&1)"
@@ -274,7 +276,7 @@ final_restart_count="$(docker inspect --format '{{.RestartCount}}' stay-fable-ws
 echo "RestartCount=${final_restart_count}"
 if [ "$final_restart_count" -ne 0 ]; then
   echo 'Worker 最终重启次数非零' >&2
-  docker logs stay-fable-wsl-validation-worker >&2
+  docker logs stay-fable-wsl-validation-worker >&2 || true
   exit 1
 fi
 final_worker_logs="$(docker logs --since 10m stay-fable-wsl-validation-worker 2>&1)"
@@ -287,12 +289,18 @@ fi
 
 ## 9. 只清理命名的临时容器
 
-成功完成所有验证后，显式调用与失败路径相同的清理函数。参数 `0` 保留成功状态；
-函数会先解除 EXIT trap，再依次删除两个命名临时容器、关闭隔离 Compose 项目并
-删除受路径守卫保护的 `.wsl-runtime/`：
+成功完成所有验证后，在显式条件中调用与失败路径相同的清理函数。参数 `0` 保留
+成功状态；函数会先解除 EXIT trap，再依次删除两个命名临时容器、关闭隔离
+Compose 项目并删除受路径守卫保护的 `.wsl-runtime/`。清理失败必须在后续
+`git status` 之前报告并以非零状态退出：
 
 ```bash
-cleanup_validation 0
+if cleanup_validation 0; then
+  echo '验证资源清理完成'
+else
+  echo '验证资源清理失败' >&2
+  exit 1
+fi
 ```
 
 不得修改函数以处理其他容器。独立项目名确保 `down` 只作用于本次验收的 Compose
