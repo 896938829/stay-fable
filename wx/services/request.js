@@ -133,32 +133,32 @@ function createRequestClient(dependencies) {
     const settings = options || {};
     const auth = settings.auth !== false;
     const retry = settings.retry !== false;
+    const initialSession = auth ? await Promise.resolve(getSession()) : null;
+    let boundUserId = sessionUserId(initialSession);
     const requestId = await Promise.resolve(createRequestId());
     const runtime = getRuntimeConfig(wxApi);
-    let identityCaptured = false;
-    let initialAccessToken;
-    let initialUserId;
 
-    function assertInitialUser(session) {
-      if (initialUserId && sessionUserId(session) !== initialUserId) {
+    function assertBoundUser(session) {
+      if (boundUserId && sessionUserId(session) !== boundUserId) {
         throw requestError("AUTH_SESSION_CHANGED", "Session identity changed");
+      }
+    }
+
+    function bindRecoveredUser(session) {
+      assertBoundUser(session);
+      if (!boundUserId) {
+        boundUserId = sessionUserId(session);
       }
     }
 
     async function dispatch(hasRefreshed) {
       let networkAttempt = 0;
       let response;
+      let responseSession;
       let attemptedAccessToken;
       while (true) {
         const session = auth ? await Promise.resolve(getSession()) : null;
-        if (!identityCaptured) {
-          initialAccessToken =
-            session && typeof session.access_token === "string"
-              ? session.access_token
-              : undefined;
-          initialUserId = sessionUserId(session);
-          identityCaptured = true;
-        }
+        assertBoundUser(session);
         const header = {
           ...(settings.header || {}),
           "x-request-id": requestId,
@@ -176,9 +176,17 @@ function createRequestClient(dependencies) {
             data,
             header,
           });
+          responseSession = auth ? await Promise.resolve(getSession()) : null;
+          assertBoundUser(responseSession);
           break;
         } catch (error) {
-          if (method === "GET" && retry && networkAttempt === 0) {
+          if (
+            error &&
+            error.code === "NETWORK_REQUEST_FAILED" &&
+            method === "GET" &&
+            retry &&
+            networkAttempt === 0
+          ) {
             networkAttempt += 1;
             continue;
           }
@@ -192,19 +200,19 @@ function createRequestClient(dependencies) {
 
       const parsedError = apiError(response);
       if (response.statusCode === 401 && auth && !hasRefreshed) {
-        const latestSession = await Promise.resolve(getSession());
-        assertInitialUser(latestSession);
         const latestAccessToken =
-          latestSession && typeof latestSession.access_token === "string"
-            ? latestSession.access_token
+          responseSession && typeof responseSession.access_token === "string"
+            ? responseSession.access_token
             : undefined;
         const anotherRecoveryCompleted =
           typeof latestAccessToken === "string" &&
           latestAccessToken !== "" &&
-          latestAccessToken !== initialAccessToken;
+          latestAccessToken !== attemptedAccessToken;
         if (!anotherRecoveryCompleted) {
           await recoverOnce();
-          assertInitialUser(await Promise.resolve(getSession()));
+          bindRecoveredUser(await Promise.resolve(getSession()));
+        } else {
+          bindRecoveredUser(responseSession);
         }
         return dispatch(true);
       }

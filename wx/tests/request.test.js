@@ -630,4 +630,117 @@ describe("request client", () => {
     expect(reauthenticate).toHaveBeenCalledOnce();
     expect(request).toHaveBeenCalledTimes(2);
   });
+
+  it("does not dispatch again when the user changes after recovery validation", async () => {
+    const userA = "11111111-1111-4111-8111-111111111111";
+    const userB = "22222222-2222-4222-8222-222222222222";
+    let session = identitySession(userA, "token-old-a");
+    let recoveryFinished = false;
+    let switchScheduled = false;
+    const getSession = vi.fn(() => {
+      const current = session;
+      if (recoveryFinished && !switchScheduled) {
+        switchScheduled = true;
+        queueMicrotask(() => {
+          session = identitySession(userB, "token-b");
+        });
+      }
+      return current;
+    });
+    const request = vi.fn((options) =>
+      options.success(
+        options.header.Authorization === "Bearer token-old-a"
+          ? {
+              statusCode: 401,
+              data: {
+                error: { code: "UNAUTHORIZED", message: "Expired" },
+                request_id: "req_old",
+              },
+            }
+          : { statusCode: 200, data: { data: "wrong-user", request_id: "req_b" } },
+      ),
+    );
+    const refreshSession = vi.fn(async () => {
+      session = identitySession(userA, "token-new-a");
+      recoveryFinished = true;
+    });
+    const client = createClient(request, { getSession, refreshSession });
+
+    await expect(client.get("/private")).rejects.toMatchObject({
+      code: "AUTH_SESSION_CHANGED",
+      message: "Session identity changed",
+    });
+    expect(refreshSession).toHaveBeenCalledOnce();
+    expect(request).toHaveBeenCalledOnce();
+  });
+
+  it("discards a successful response when the user changes while it is in flight", async () => {
+    const userA = "11111111-1111-4111-8111-111111111111";
+    const userB = "22222222-2222-4222-8222-222222222222";
+    let session = identitySession(userA, "token-a");
+    let releaseResponse;
+    let markRequestStarted;
+    const requestStarted = new Promise((resolve) => {
+      markRequestStarted = resolve;
+    });
+    const request = vi.fn((options) => {
+      releaseResponse = () =>
+        options.success({
+          statusCode: 200,
+          data: { data: "user-a-data", request_id: "req_a" },
+        });
+      markRequestStarted();
+    });
+    const client = createClient(request, { getSession: () => session });
+
+    const result = client.get("/private");
+    await requestStarted;
+    session = identitySession(userB, "token-b");
+    releaseResponse();
+
+    await expect(result).rejects.toMatchObject({
+      code: "AUTH_SESSION_CHANGED",
+      message: "Session identity changed",
+    });
+    expect(request).toHaveBeenCalledOnce();
+  });
+
+  it("refreshes after a GET network retry receives 401 with its latest attempted token", async () => {
+    const userA = "11111111-1111-4111-8111-111111111111";
+    let session = identitySession(userA, "token-old-a");
+    const request = vi.fn((options) => {
+      if (options.header.Authorization === "Bearer token-old-a") {
+        session = identitySession(userA, "token-mid-a");
+        options.fail({ errMsg: "network failed" });
+      } else if (options.header.Authorization === "Bearer token-mid-a") {
+        options.success({
+          statusCode: 401,
+          data: {
+            error: { code: "UNAUTHORIZED", message: "Expired" },
+            request_id: "req_mid",
+          },
+        });
+      } else {
+        options.success({
+          statusCode: 200,
+          data: { data: "ok", request_id: "req_new" },
+        });
+      }
+    });
+    const refreshSession = vi.fn(async () => {
+      session = identitySession(userA, "token-new-a");
+    });
+    const client = createClient(request, {
+      getSession: () => session,
+      refreshSession,
+    });
+
+    await expect(client.get("/private")).resolves.toBe("ok");
+    expect(refreshSession).toHaveBeenCalledOnce();
+    expect(request.mock.calls.map(([options]) => options.header.Authorization)).toEqual([
+      "Bearer token-old-a",
+      "Bearer token-mid-a",
+      "Bearer token-new-a",
+    ]);
+  });
 });
