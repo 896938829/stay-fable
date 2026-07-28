@@ -10,6 +10,8 @@ test("pins the local PostgreSQL/PostGIS and Redis service contract", async () =>
 
   assert.match(compose, /^\s+image:\s+postgis\/postgis:17-3\.5$/m);
   assert.match(compose, /^\s+image:\s+redis:7\.4-alpine$/m);
+  assert.match(compose, /^\s+- "127\.0\.0\.1:\$\{POSTGRES_PORT:-5432\}:5432"$/m);
+  assert.match(compose, /^\s+- "127\.0\.0\.1:\$\{REDIS_PORT:-6379\}:6379"$/m);
   assert.match(
     compose,
     /^\s+test:\s+\["CMD-SHELL",\s*"pg_isready -U stay_fable -d stay_fable"\]$/m,
@@ -24,6 +26,8 @@ test("documents a bounded first-start health wait", async () => {
     guide,
     /docker compose -f infrastructure\/compose\.yaml up -d --wait --wait-timeout 120/,
   );
+  assert.match(guide, /\$env:POSTGRES_PORT\s*=\s*"55432"/);
+  assert.match(guide, /\$env:REDIS_PORT\s*=\s*"56379"/);
 });
 
 test("parses Docker Compose JSON array output", () => {

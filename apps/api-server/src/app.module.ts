@@ -6,6 +6,7 @@ import { validateRuntimeConfig } from "./config/runtime-config.js";
 import { DatabaseService } from "./database/database.service.js";
 import { HealthController } from "./health/health.controller.js";
 import { HealthService } from "./health/health.service.js";
+import { LOGGER_ROUTES } from "./logger-routes.js";
 
 @Module({
   imports: [
@@ -14,6 +15,7 @@ import { HealthService } from "./health/health.service.js";
       validate: validateRuntimeConfig,
     }),
     LoggerModule.forRoot({
+      forRoutes: LOGGER_ROUTES,
       pinoHttp: {
         redact: {
           paths: [

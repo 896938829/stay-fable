@@ -23,6 +23,17 @@ PostgreSQL/PostGIS and Redis are bound to `127.0.0.1` only. Their ports
 (`5432` and `6379`) are available to applications on this computer, not to
 other computers on the network.
 
+If another service already occupies either default port (a common case in
+WSL2), select unused host ports before starting Compose:
+
+```powershell
+$env:POSTGRES_PORT = "55432"
+$env:REDIS_PORT = "56379"
+docker compose -f infrastructure/compose.yaml up -d --wait --wait-timeout 120
+```
+
+Use the selected PostgreSQL and Redis ports in `.env` for that session.
+
 ## Stop
 
 Stop the local services without deleting their data:

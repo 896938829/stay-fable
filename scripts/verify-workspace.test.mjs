@@ -53,5 +53,6 @@ test("excludes approved generated and planning artifacts from Prettier", async (
 
   assert.match(prettierIgnore, /^pnpm-lock\.yaml$/m);
   assert.match(prettierIgnore, /^docs\/superpowers\/$/m);
+  assert.match(prettierIgnore, /^\.agents\/skills\/$/m);
   assert.match(prettierIgnore, /^wx\/$/m);
 });
