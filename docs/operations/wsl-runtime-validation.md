@@ -197,7 +197,8 @@ compose_mutation_started=false
 cleanup_validation() {
   local validation_status="$1"
   local cleanup_failed=0
-  local container_name listed_names cleanup_project_containers cleanup_project_networks
+  local container_name container_token listed_names
+  local cleanup_project_containers cleanup_project_networks
   local project_resource labels_safe marker_token
   trap - EXIT
 
@@ -210,6 +211,12 @@ cleanup_validation() {
     if [ -n "$listed_names" ]; then
       if [ "$listed_names" != "$container_name" ]; then
         echo "容器查询返回非预期名称，拒绝删除：${listed_names}" >&2
+        cleanup_failed=1
+      elif ! container_token="$(docker inspect --format '{{ index .Config.Labels "stay-fable.validation-token" }}' "$container_name")"; then
+        echo "无法读取验证容器所有权标签，拒绝删除：${container_name}" >&2
+        cleanup_failed=1
+      elif [ "$container_token" != "$validation_token" ]; then
+        echo "验证容器所有权标签不匹配，拒绝删除：${container_name}" >&2
         cleanup_failed=1
       elif ! docker rm -f "$container_name"; then
         cleanup_failed=1
@@ -334,6 +341,7 @@ POSTGRES_PORT=55432 REDIS_PORT=56379 docker compose --project-name stay-fable-ws
 
 docker run -d --name stay-fable-wsl-validation-api \
   --network stay-fable-wsl-validation_default \
+  --label "stay-fable.validation-token=$validation_token" \
   --user node --read-only --tmpfs /tmp \
   --workdir /app -v "$validation_root/api:/app:ro" \
   -p 127.0.0.1:53000:3000 \
@@ -344,6 +352,7 @@ docker run -d --name stay-fable-wsl-validation-api \
 
 docker run -d --name stay-fable-wsl-validation-worker \
   --network stay-fable-wsl-validation_default \
+  --label "stay-fable.validation-token=$validation_token" \
   --user node --read-only --tmpfs /tmp \
   --workdir /app -v "$validation_root/worker:/app:ro" \
   -e NODE_ENV=development \
@@ -374,7 +383,7 @@ docker inspect --format \
   'user={{.Config.User}} ReadonlyRootfs={{.HostConfig.ReadonlyRootfs}}' \
   stay-fable-wsl-validation-api stay-fable-wsl-validation-worker
 
-fatal_worker_log_pattern='("level"[[:space:]]*:[[:space:]]*60|"level"[[:space:]]*:[[:space:]]*"fatal"|(^|[[:space:]])FATAL([[:space:]]|:)|uncaught[[:space:]]*(exception)?|unhandled[[:space:]]*(rejection)?|ECONN[A-Z_]*|reconnect(ion)?[[:space:]]+loop)'
+worker_failure_log_pattern='("level" *: *(50|60)([,} ])|"level" *: *"(error|fatal)"|(^| )FATAL( |:)|uncaught *(exception)?|unhandled *(rejection)?|ECONN[A-Z_]*|reconnect(ion)? +loop)'
 for minute in $(seq 1 10); do
   echo "Worker observation minute ${minute}/10"
   worker_running="$(docker inspect --format '{{.State.Running}}' stay-fable-wsl-validation-worker)"
@@ -389,7 +398,7 @@ for minute in $(seq 1 10); do
   fi
   worker_logs="$(docker logs --since 65s stay-fable-wsl-validation-worker 2>&1)"
   printf '%s\n' "$worker_logs"
-  if printf '%s\n' "$worker_logs" | grep -Eiq "$fatal_worker_log_pattern"; then
+  if printf '%s\n' "$worker_logs" | grep -Eiq "$worker_failure_log_pattern"; then
     echo 'Worker 日志出现致命异常、连接失败或明确的重连循环' >&2
     exit 1
   fi
@@ -408,7 +417,7 @@ if [ "$final_worker_running" != true ] || [ "$final_restart_count" -ne 0 ]; then
 fi
 final_worker_logs="$(docker logs --since 10m stay-fable-wsl-validation-worker 2>&1)"
 printf '%s\n' "$final_worker_logs"
-if printf '%s\n' "$final_worker_logs" | grep -Eiq "$fatal_worker_log_pattern"; then
+if printf '%s\n' "$final_worker_logs" | grep -Eiq "$worker_failure_log_pattern"; then
   echo 'Worker 最终日志出现致命异常、连接失败或明确的重连循环' >&2
   exit 1
 fi

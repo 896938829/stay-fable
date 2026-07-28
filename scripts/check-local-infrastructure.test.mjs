@@ -146,6 +146,7 @@ test("documents the required WSL2 runtime verification", async () => {
     assert.match(runCommand, /--read-only/);
     assert.match(runCommand, /--tmpfs \/tmp/);
     assert.match(runCommand, /--network stay-fable-wsl-validation_default/);
+    assert.match(runCommand, /--label "stay-fable\.validation-token=\$validation_token"/);
     assert.match(runCommand, /-v "\$validation_root\/(?:api|worker):\/app:ro"/);
     assert.doesNotMatch(runCommand, /\.wsl-runtime|\/mnt\//);
   }
@@ -185,11 +186,30 @@ test("documents the required WSL2 runtime verification", async () => {
     guide,
     /final_worker_running=.*State\.Running[\s\S]*final_restart_count=.*RestartCount[\s\S]*if \[ "\$final_worker_running" != true \] \|\| \[ "\$final_restart_count" -ne 0 \]; then[\s\S]*docker inspect[\s\S]*State\.Status[\s\S]*docker logs stay-fable-wsl-validation-worker[\s\S]*exit 1[\s\S]*fi/,
   );
-  assert.match(
-    guide,
-    /fatal_worker_log_pattern=.*level.*60.*fatal.*uncaught.*unhandled.*ECONN.*reconnect.*loop/i,
-  );
-  assert.equal(guide.match(/grep -Eiq "\$fatal_worker_log_pattern"/g)?.length, 2);
+  const workerFailurePatternSource = guide.match(
+    /^worker_failure_log_pattern='([^'\r\n]+)'$/m,
+  )?.[1];
+  assert.ok(workerFailurePatternSource, "missing shared Worker failure-log pattern");
+  const workerFailurePattern = new RegExp(workerFailurePatternSource, "i");
+  for (const failureLog of [
+    '{"level":50,"msg":"Redis command failed"}',
+    '{"level":60,"msg":"Worker cannot continue"}',
+    '{"level":"error","msg":"Redis command failed"}',
+    '{"level":"fatal","msg":"Worker cannot continue"}',
+    "connect ECONNREFUSED 127.0.0.1:6379",
+    "Redis reconnect loop detected",
+    "uncaughtException: worker crashed",
+    "unhandledRejection: promise rejected",
+  ]) {
+    assert.match(failureLog, workerFailurePattern);
+  }
+  for (const benignLog of [
+    '{"level":30,"msg":"Worker started"}',
+    '{"level":30,"errorCount":0,"msg":"error budget remains healthy"}',
+  ]) {
+    assert.doesNotMatch(benignLog, workerFailurePattern);
+  }
+  assert.equal(guide.match(/grep -Eiq "\$worker_failure_log_pattern"/g)?.length, 2);
   assert.doesNotMatch(guide, /grep -Eiq '\(reconnect\|error\)'/);
   assert.match(guide, /不得(停止|删除).*无关容器/s);
   assert.deepEqual(guide.match(/docker (?:rm|stop|kill)[^\r\n]+/g), [
@@ -220,7 +240,7 @@ test("documents the required WSL2 runtime verification", async () => {
   assert.equal(exactContainerQueries?.length, 2);
   assert.match(
     cleanupFunction,
-    /if ! listed_names=.*docker ps -a[\s\S]*cleanup_failed=1[\s\S]*continue[\s\S]*if \[ -n "\$listed_names" \]; then[\s\S]*\[ "\$listed_names" != "\$container_name" \][\s\S]*docker rm -f "\$container_name"[\s\S]*cleanup_failed=1[\s\S]*fi[\s\S]*if ! listed_names=.*docker ps -a[\s\S]*cleanup_failed=1[\s\S]*elif \[ -n "\$listed_names" \]; then[\s\S]*cleanup_failed=1[\s\S]*fi[\s\S]*done/,
+    /if ! listed_names=.*docker ps -a[\s\S]*cleanup_failed=1[\s\S]*continue[\s\S]*if \[ -n "\$listed_names" \]; then[\s\S]*\[ "\$listed_names" != "\$container_name" \][\s\S]*docker inspect --format '\{\{ index \.Config\.Labels "stay-fable\.validation-token" \}\}'[\s\S]*\[ "\$container_token" != "\$validation_token" \][\s\S]*拒绝删除[\s\S]*docker rm -f "\$container_name"[\s\S]*cleanup_failed=1[\s\S]*fi[\s\S]*if ! listed_names=.*docker ps -a[\s\S]*cleanup_failed=1[\s\S]*elif \[ -n "\$listed_names" \]; then[\s\S]*cleanup_failed=1[\s\S]*fi[\s\S]*done/,
   );
   assert.doesNotMatch(cleanupFunction, /docker rm[^\r\n]*\|\| true/);
   assert.match(
