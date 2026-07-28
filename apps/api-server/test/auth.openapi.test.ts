@@ -10,6 +10,7 @@ interface TestSchema {
   format?: string;
   properties?: Record<string, TestSchema>;
   required?: string[];
+  type?: string;
   $ref?: string;
 }
 
@@ -85,6 +86,8 @@ describe("AuthController OpenAPI", () => {
     expect(schemas?.AuthSessionResponseDto?.properties?.user).toEqual({
       $ref: "#/components/schemas/AuthSessionUserDto",
     });
+    expect(schemas?.AuthSessionResponseDto?.properties?.access_expires_in?.type).toBe("integer");
+    expect(schemas?.AuthSessionResponseDto?.properties?.refresh_expires_in?.type).toBe("integer");
     expect(schemas?.AuthSessionUserDto?.required).toEqual(["id"]);
     expect(schemas?.AuthSessionUserDto?.properties?.id?.format).toBe("uuid");
   });
