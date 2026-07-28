@@ -59,6 +59,7 @@ describe("location contracts", () => {
     expect(resolvedLocationSchema.safeParse({ ...resolved, distance_meters: 1.5 }).success).toBe(
       false,
     );
+    expect(resolvedLocationSchema.safeParse({ city: resolved.city }).success).toBe(false);
   });
 
   it("publishes a stable ./location package export", async () => {
