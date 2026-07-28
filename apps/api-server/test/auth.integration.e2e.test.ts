@@ -187,7 +187,7 @@ describeDatabase(suiteName, () => {
     }
   });
 
-  it("redacts login codes and refresh tokens from request logs", async () => {
+  it("does not serialize identity request bodies into request logs", async () => {
     const session = await login(codeB);
     await request(server)
       .post("/api/v1/auth/session/refresh")

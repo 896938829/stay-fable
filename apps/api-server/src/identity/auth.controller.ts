@@ -3,6 +3,7 @@ import { ApiCreatedResponse, ApiOperation, ApiTags } from "@nestjs/swagger";
 import type { AuthSession } from "@stay-fable/api-contracts/auth";
 
 import { AuthService } from "./auth.service.js";
+import { AuthSessionEnvelopeDto } from "./dto/auth-session-response.dto.js";
 import { RefreshSessionDto } from "./dto/refresh-session.dto.js";
 import { WechatLoginDto } from "./dto/wechat-login.dto.js";
 
@@ -13,14 +14,14 @@ export class AuthController {
 
   @Post("wechat/login")
   @ApiOperation({ summary: "Exchange a WeChat login code for a session" })
-  @ApiCreatedResponse({ description: "Session issued" })
+  @ApiCreatedResponse({ description: "Session issued", type: AuthSessionEnvelopeDto })
   login(@Body() body: WechatLoginDto): Promise<AuthSession> {
     return this.auth.login(body.code);
   }
 
   @Post("session/refresh")
   @ApiOperation({ summary: "Rotate a refresh token and session" })
-  @ApiCreatedResponse({ description: "Session rotated" })
+  @ApiCreatedResponse({ description: "Session rotated", type: AuthSessionEnvelopeDto })
   refresh(@Body() body: RefreshSessionDto): Promise<AuthSession> {
     return this.auth.refresh(body.refresh_token);
   }

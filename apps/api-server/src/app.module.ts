@@ -8,6 +8,7 @@ import { HealthController } from "./health/health.controller.js";
 import { HealthService } from "./health/health.service.js";
 import { IdentityModule } from "./identity/identity.module.js";
 import { RedisModule } from "./infrastructure/redis/redis.module.js";
+import { LOGGER_REDACTION } from "./logger-redaction.js";
 import { LOGGER_ROUTES } from "./logger-routes.js";
 
 @Module({
@@ -19,17 +20,7 @@ import { LOGGER_ROUTES } from "./logger-routes.js";
     LoggerModule.forRoot({
       forRoutes: LOGGER_ROUTES,
       pinoHttp: {
-        redact: {
-          paths: [
-            "req.headers.authorization",
-            "req.headers.cookie",
-            "req.body.code",
-            "req.body.password",
-            "req.body.idCardNumber",
-            "req.body.refresh_token",
-          ],
-          censor: "[REDACTED]",
-        },
+        redact: LOGGER_REDACTION,
       },
     }),
     RedisModule,
