@@ -92,6 +92,27 @@ test("models Prisma generation as an API package Turbo prerequisite", async () =
   }
 });
 
+test("tracks PostgreSQL as the Prisma migration history provider", async () => {
+  const migrationLock = await readFile(
+    new URL("apps/api-server/prisma/migrations/migration_lock.toml", rootUrl),
+    "utf8",
+  ).catch((error) => {
+    if (error?.code === "ENOENT") {
+      return "";
+    }
+    throw error;
+  });
+
+  assert.equal(migrationLock.trim(), 'provider = "postgresql"');
+
+  const prismaConfig = await readFile(new URL("apps/api-server/prisma.config.ts", rootUrl), "utf8");
+  assert.match(
+    prismaConfig,
+    /shadowDatabaseUrl:\s*process\.env\.SHADOW_DATABASE_URL/,
+    "Prisma 7 migration history diffs must receive an optional shadow database URL from config",
+  );
+});
+
 test("passes database integration inputs through the Turbo test task", async () => {
   const rootTurbo = JSON.parse(await readFile(new URL("turbo.json", rootUrl), "utf8"));
 

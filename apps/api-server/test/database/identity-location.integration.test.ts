@@ -2,8 +2,9 @@ import { PrismaPg } from "@prisma/adapter-pg";
 import { Pool } from "pg";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 
-import { runSeed } from "../../prisma/seed.js";
+import { CITY_SEED_IDENTITY_CONFLICT_ERROR, runSeed } from "../../prisma/seed.js";
 import { PrismaClient } from "../../src/generated/prisma/client.js";
+import { requireSafeDatabaseIntegrationUrl } from "./database-integration-guard.js";
 
 const runDatabaseIntegration = process.env.RUN_DATABASE_INTEGRATION === "true";
 const describeDatabase = runDatabaseIntegration ? describe : describe.skip;
@@ -15,7 +16,7 @@ describeDatabase(suiteName, () => {
   let prisma: PrismaClient;
 
   beforeAll(() => {
-    const connectionString = process.env.DATABASE_URL;
+    const connectionString = requireSafeDatabaseIntegrationUrl(process.env.DATABASE_URL);
     pool = new Pool({
       connectionString,
     });
@@ -93,5 +94,64 @@ describeDatabase(suiteName, () => {
 
     const afterSecondSeed = await pool.query<{ count: string }>("SELECT COUNT(*) FROM city");
     expect(afterSecondSeed.rows).toEqual([{ count: "2" }]);
+  });
+
+  test("seed rejects a city code mapped to a different UUID without changing it", async () => {
+    const conflictingId = "20000000-0000-4000-8000-000000000001";
+
+    await pool.query("DELETE FROM city WHERE code = $1", ["330100"]);
+    await pool.query(
+      `
+        INSERT INTO city (
+          id,
+          code,
+          name_zh,
+          center,
+          enabled,
+          display_order,
+          updated_at
+        )
+        VALUES (
+          $1::uuid,
+          '330100',
+          '冲突占位',
+          ST_SetSRID(ST_MakePoint(120, 30), 4326)::geography,
+          false,
+          999,
+          CURRENT_TIMESTAMP
+        )
+      `,
+      [conflictingId],
+    );
+
+    try {
+      await expect(runSeed(prisma)).rejects.toThrowError(CITY_SEED_IDENTITY_CONFLICT_ERROR);
+
+      const conflict = await pool.query<{ id: string; name_zh: string }>(
+        "SELECT id::text, name_zh FROM city WHERE code = $1",
+        ["330100"],
+      );
+      expect(conflict.rows).toEqual([{ id: conflictingId, name_zh: "冲突占位" }]);
+    } finally {
+      await pool.query("DELETE FROM city WHERE code = $1", ["330100"]);
+      await runSeed(prisma);
+    }
+  });
+
+  test("concurrent seeds serialize successfully and preserve two cities", async () => {
+    const secondPrisma = new PrismaClient({
+      adapter: new PrismaPg({
+        connectionString: process.env.DATABASE_URL,
+      }),
+    });
+
+    try {
+      await Promise.all([runSeed(prisma), runSeed(secondPrisma)]);
+    } finally {
+      await secondPrisma.$disconnect();
+    }
+
+    const cities = await pool.query<{ count: string }>("SELECT COUNT(*) FROM city");
+    expect(cities.rows).toEqual([{ count: "2" }]);
   });
 });
