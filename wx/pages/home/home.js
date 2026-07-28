@@ -19,17 +19,34 @@ function modalResult(wxApi) {
   });
 }
 
-function currentLocation(wxApi) {
+function currentLocation(wxApi, setTimer, clearTimer) {
   return new Promise((resolve, reject) => {
+    let settled = false;
+    const settle = (callback, value) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      clearTimer(timer);
+      callback(value);
+    };
+    const timer = setTimer(
+      () =>
+        settle(reject, {
+          code: "LOCATION_TIMEOUT",
+          errMsg: "getLocation:fail timeout",
+        }),
+      8000,
+    );
+
     try {
       wxApi.getLocation({
         type: "gcj02",
-        timeout: 8000,
-        success: resolve,
-        fail: reject,
+        success: (value) => settle(resolve, value),
+        fail: (error) => settle(reject, error),
       });
     } catch (error) {
-      reject(error);
+      settle(reject, error);
     }
   });
 }
@@ -66,18 +83,49 @@ function createHomePage(dependencies = {}) {
   const wxApi = dependencies.wxApi || globalThis.wx;
   const getApplication = dependencies.getApp || globalThis.getApp;
   const locationService = dependencies.locationService || require("../../services/location");
+  const setTimer = dependencies.setTimeout || globalThis.setTimeout;
+  const clearTimer = dependencies.clearTimeout || globalThis.clearTimeout;
+
+  function readSearch(app) {
+    try {
+      const search = app.globalData.searchStore.get();
+      app.globalData.searchInitializationError = null;
+      return { search, error: null };
+    } catch {
+      const error = { code: "SEARCH_INITIALIZATION_FAILED" };
+      app.globalData.searchInitializationError = error;
+      return { search: null, error };
+    }
+  }
 
   function render(page, options = {}) {
     const app = getApplication();
-    const search = app.globalData.searchStore.get();
+    const searchResult = readSearch(app);
     page.setData(
       toHomeView({
         session: options.session ?? app.globalData.sessionStore.get(),
         loading: Boolean(options.loading),
-        error: options.error || null,
-        search,
+        error: searchResult.error || options.error || null,
+        search: searchResult.search,
       }),
     );
+  }
+
+  function recoverSearch(app) {
+    try {
+      app.globalData.searchStore.initializeDefaults();
+    } catch {
+      try {
+        app.globalData.searchStore.clear();
+      } catch {
+        app.globalData.searchInitializationError = {
+          code: "SEARCH_INITIALIZATION_FAILED",
+        };
+        return false;
+      }
+    }
+    app.globalData.searchInitializationError = null;
+    return true;
   }
 
   async function waitForSession(page) {
@@ -118,7 +166,14 @@ function createHomePage(dependencies = {}) {
 
     async retrySession() {
       const app = getApplication();
+      const hadSearchError = Boolean(app.globalData.searchInitializationError);
       render(this, { loading: true, session: null });
+      if (hadSearchError) {
+        recoverSearch(app);
+        const result = await safeSessionResult(app.globalData.sessionReady);
+        render(this, result);
+        return;
+      }
       let sessionAttempt;
       try {
         sessionAttempt = app.globalData.sessionStore.ensureSession();
@@ -154,7 +209,7 @@ function createHomePage(dependencies = {}) {
           return;
         }
 
-        const position = await currentLocation(wxApi);
+        const position = await currentLocation(wxApi, setTimer, clearTimer);
         const resolved = await locationService.resolve({
           longitude: position.longitude,
           latitude: position.latitude,

@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import homeLogic from "../pages/home/home.logic.js";
 import homePage from "../pages/home/home.js";
@@ -116,6 +116,37 @@ describe("application launch", () => {
     });
     expect(JSON.stringify(await definition.globalData.sessionReady)).not.toContain("private");
   });
+
+  it("starts the session even when search initialization fails", async () => {
+    const search = {
+      initializeDefaults: vi.fn(() => {
+        throw Object.assign(new Error("private storage failure"), {
+          details: "secret",
+        });
+      }),
+    };
+    const sessions = {
+      ensureSession: vi.fn(async () => session),
+    };
+    const appModule = await import("../app.js");
+    const definition = appModule.default.createAppDefinition({
+      searchStore: search,
+      sessionStore: sessions,
+    });
+
+    expect(() => definition.onLaunch()).not.toThrow();
+    expect(sessions.ensureSession).toHaveBeenCalledOnce();
+    expect(definition.globalData.searchInitializationError).toEqual({
+      code: "SEARCH_INITIALIZATION_FAILED",
+    });
+    expect(JSON.stringify(definition.globalData.searchInitializationError)).not.toContain(
+      "private",
+    );
+    await expect(definition.globalData.sessionReady).resolves.toEqual({
+      session,
+      error: null,
+    });
+  });
 });
 
 describe("home page interactions", () => {
@@ -148,6 +179,7 @@ describe("home page interactions", () => {
         searchStore,
         sessionStore,
         sessionReady: Promise.resolve({ session, error: null }),
+        searchInitializationError: null,
       },
     };
   });
@@ -227,6 +259,76 @@ describe("home page interactions", () => {
     expect(JSON.stringify(searchStore.set.mock.calls)).not.toContain("120.1");
   });
 
+  describe("bounded location wait", () => {
+    beforeEach(() => {
+      vi.useFakeTimers();
+      wxApi.showModal.mockImplementation(({ success }) => success({ confirm: true }));
+    });
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it("times out after eight seconds, routes to manual selection, and unlocks", async () => {
+      wxApi.getLocation.mockImplementation(() => {});
+      const page = pageContext(
+        createHomePage({ getApp: () => app, locationService, wxApi }),
+      );
+
+      page.useCurrentLocation.call(page);
+      expect(page.data.locating).toBe(true);
+      await vi.advanceTimersByTimeAsync(8000);
+
+      expect(wxApi.getLocation.mock.calls[0][0]).not.toHaveProperty("timeout");
+      expect(wxApi.navigateTo).toHaveBeenCalledWith({
+        url: "/pages/city-select/city-select?reason=location_timeout",
+      });
+      expect(page.data.locating).toBe(false);
+    });
+
+    it("ignores a success callback that arrives after the timeout", async () => {
+      let locationCallbacks;
+      wxApi.getLocation.mockImplementation((options) => {
+        locationCallbacks = options;
+      });
+      const page = pageContext(
+        createHomePage({ getApp: () => app, locationService, wxApi }),
+      );
+
+      page.useCurrentLocation.call(page);
+      await vi.advanceTimersByTimeAsync(8000);
+      locationCallbacks.success({ longitude: 120.1, latitude: 30.2 });
+      await Promise.resolve();
+
+      expect(locationService.resolve).not.toHaveBeenCalled();
+      expect(searchStore.set).not.toHaveBeenCalled();
+    });
+
+    it.each(["success", "fail"])("clears the deadline timer after %s", async (outcome) => {
+      const clearTimer = vi.fn((timer) => globalThis.clearTimeout(timer));
+      wxApi.getLocation.mockImplementation((options) => {
+        if (outcome === "success") {
+          options.success({ longitude: 120.1, latitude: 30.2 });
+        } else {
+          options.fail({ errMsg: "getLocation:fail network" });
+        }
+      });
+      const page = pageContext(
+        createHomePage({
+          clearTimeout: clearTimer,
+          getApp: () => app,
+          locationService,
+          setTimeout: globalThis.setTimeout,
+          wxApi,
+        }),
+      );
+
+      await page.useCurrentLocation.call(page);
+
+      expect(clearTimer).toHaveBeenCalledOnce();
+    });
+  });
+
   it("falls back to manual selection on location failure and prevents duplicate taps", async () => {
     let resolveModal;
     wxApi.showModal.mockImplementation(
@@ -301,6 +403,62 @@ describe("home page interactions", () => {
       error: { code: "NETWORK_REQUEST_FAILED" },
     });
     expect(JSON.stringify(await app.globalData.sessionReady)).not.toContain("private");
+  });
+
+  it("shows a distinct safe search error and recovers it without relogin", async () => {
+    const storageFailure = Object.assign(new Error("private search storage"), {
+      details: "secret",
+    });
+    searchStore.get.mockImplementation(() => {
+      throw storageFailure;
+    });
+    searchStore.initializeDefaults = vi.fn(() => search);
+    searchStore.clear = vi.fn(() => search);
+    app.globalData.searchInitializationError = {
+      code: "SEARCH_INITIALIZATION_FAILED",
+    };
+    const page = pageContext(
+      createHomePage({ getApp: () => app, locationService, wxApi }),
+    );
+
+    await expect(page.onLoad.call(page)).resolves.toBeUndefined();
+    expect(page.data).toMatchObject({
+      status: "error",
+      errorMessage: "搜索条件读取失败，请重试",
+    });
+    expect(JSON.stringify(page.data)).not.toContain("private");
+
+    searchStore.get.mockReturnValue(search);
+    await page.retrySession.call(page);
+
+    expect(searchStore.initializeDefaults).toHaveBeenCalledOnce();
+    expect(sessionStore.ensureSession).not.toHaveBeenCalled();
+    expect(app.globalData.searchInitializationError).toBeNull();
+    expect(page.data.status).toBe("ready");
+  });
+
+  it("clears search defaults when retry initialization still fails", async () => {
+    searchStore.get.mockImplementation(() => {
+      throw new Error("private storage read");
+    });
+    searchStore.initializeDefaults = vi.fn(() => {
+      throw new Error("private initialization");
+    });
+    searchStore.clear = vi.fn(() => search);
+    app.globalData.searchInitializationError = {
+      code: "SEARCH_INITIALIZATION_FAILED",
+    };
+    const page = pageContext(
+      createHomePage({ getApp: () => app, locationService, wxApi }),
+    );
+    await page.onLoad.call(page);
+
+    searchStore.get.mockReturnValue(search);
+    await page.retrySession.call(page);
+
+    expect(searchStore.clear).toHaveBeenCalledOnce();
+    expect(app.globalData.searchInitializationError).toBeNull();
+    expect(page.data.status).toBe("ready");
   });
 
   it("does not invent property results when search is tapped", () => {

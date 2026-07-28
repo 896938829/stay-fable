@@ -9,6 +9,7 @@ const SAFE_ERROR_MESSAGES = {
   CITY_NOT_SUPPORTED: "当前位置暂未开通，请手动选择城市",
   NETWORK: "网络连接不稳定，请重试",
   NETWORK_REQUEST_FAILED: "网络连接不稳定，请重试",
+  SEARCH_INITIALIZATION_FAILED: "搜索条件读取失败，请重试",
 };
 
 function safeErrorMessage(error) {

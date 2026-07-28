@@ -13,13 +13,24 @@ function safeSessionError(error) {
   };
 }
 
+function safeSearchInitializationError() {
+  return {
+    code: "SEARCH_INITIALIZATION_FAILED",
+  };
+}
+
 function createAppDefinition(dependencies = {}) {
   const sessionStore = dependencies.sessionStore || require("./stores/session");
   const searchStore = dependencies.searchStore || require("./stores/search");
 
   return {
     onLaunch() {
-      searchStore.initializeDefaults();
+      try {
+        searchStore.initializeDefaults();
+        this.globalData.searchInitializationError = null;
+      } catch {
+        this.globalData.searchInitializationError = safeSearchInitializationError();
+      }
       let sessionAttempt;
       try {
         sessionAttempt = sessionStore.ensureSession();
@@ -35,6 +46,7 @@ function createAppDefinition(dependencies = {}) {
       sessionStore,
       searchStore,
       sessionReady: null,
+      searchInitializationError: null,
     },
   };
 }
