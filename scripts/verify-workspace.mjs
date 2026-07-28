@@ -12,8 +12,12 @@ const requiredPaths = [
   "apps/job-worker/package.json",
   "apps/management-web/package.json",
   "apps/consumer-miniapp/package.json",
+  "wx/project.config.json",
+  "wx/app.json",
   "packages/api-contracts/package.json",
   "packages/validation/package.json",
+  "scripts/check-wx-project.mjs",
+  "scripts/check-wx-project.test.mjs",
   "scripts/verify-phase-0.mjs",
   "scripts/verify-phase-0.test.mjs",
   "scripts/api-runtime-child.mjs",
@@ -22,6 +26,7 @@ const requiredPaths = [
   "docs/operations/phase-0-verification.md",
   "infrastructure/cloud/cloudbase-run.md",
   "infrastructure/runbooks/backup-restore.md",
+  "AGENTS.md",
 ];
 
 await Promise.all(requiredPaths.map((path) => access(new URL(path, rootUrl))));
