@@ -42,7 +42,7 @@ test("documents the required WSL2 runtime verification", async () => {
     /POSTGRES_PORT=55432 REDIS_PORT=56379 docker compose --project-name stay-fable-wsl-validation -f infrastructure\/compose\.yaml up -d --wait --wait-timeout 120/,
   );
   const composeCommands =
-    guide.match(/^(?:POSTGRES_PORT=55432 REDIS_PORT=56379 )?docker compose [^\r\n]+$/gm) ?? [];
+    guide.match(/^\s*(?:POSTGRES_PORT=55432 REDIS_PORT=56379 )?docker compose [^\r\n]+$/gm) ?? [];
   assert.ok(composeCommands.length >= 5, "expected executable Compose verification commands");
   for (const command of composeCommands) {
     assert.match(command, /--project-name stay-fable-wsl-validation/);
@@ -66,9 +66,15 @@ test("documents the required WSL2 runtime verification", async () => {
     assert.match(runCommand, /--tmpfs \/tmp/);
     assert.match(runCommand, /--network stay-fable-wsl-validation_default/);
   }
+  const curlCommands = guide.match(/^\s*(?:if )?curl --fail[^\r\n]+/gm) ?? [];
+  assert.equal(curlCommands.length, 3);
+  for (const command of curlCommands) {
+    assert.match(command, /--connect-timeout 1/);
+    assert.match(command, /--max-time 2/);
+  }
   assert.match(
     guide,
-    /for attempt in \$\(seq 1 30\); do[\s\S]*curl --fail[\s\S]*health\/ready[\s\S]*sleep 2[\s\S]*done[\s\S]*if \[ "\$api_ready" != true \]; then[\s\S]*docker logs stay-fable-wsl-validation-api[\s\S]*docker logs stay-fable-wsl-validation-worker[\s\S]*exit 1[\s\S]*fi/,
+    /20 次[\s\S]*每次.*2 秒[\s\S]*间隔 1 秒[\s\S]*最长 60 秒[\s\S]*for attempt in \$\(seq 1 20\); do[\s\S]*curl --fail[\s\S]*health\/ready[\s\S]*sleep 1[\s\S]*done[\s\S]*if \[ "\$api_ready" != true \]; then[\s\S]*docker logs stay-fable-wsl-validation-api[\s\S]*docker logs stay-fable-wsl-validation-worker[\s\S]*exit 1[\s\S]*fi/,
   );
   assert.match(guide, /health\/live[\s\S]*HTTP 200[\s\S]*health\/ready[\s\S]*HTTP 200/i);
   assert.match(
@@ -88,12 +94,13 @@ test("documents the required WSL2 runtime verification", async () => {
     /final_restart_count=.*RestartCount[\s\S]*if \[ "\$final_restart_count" -ne 0 \]; then[\s\S]*docker logs stay-fable-wsl-validation-worker[\s\S]*exit 1[\s\S]*fi[\s\S]*final_worker_logs=.*docker logs --since 10m[\s\S]*if printf[\s\S]*grep -Eiq '\(reconnect\|error\)'[\s\S]*exit 1[\s\S]*fi/,
   );
   assert.match(guide, /不得(停止|删除).*无关容器/s);
-  assert.deepEqual(guide.match(/^docker (?:rm|stop|kill)[^\r\n]+/gm), [
-    "docker rm -f stay-fable-wsl-validation-api stay-fable-wsl-validation-worker",
-  ]);
+  assert.deepEqual(
+    (guide.match(/^\s*docker (?:rm|stop|kill)[^\r\n]+/gm) ?? []).map((command) => command.trim()),
+    ["docker rm -f stay-fable-wsl-validation-api stay-fable-wsl-validation-worker"],
+  );
   assert.match(
     guide,
-    /^POSTGRES_PORT=55432 REDIS_PORT=56379 docker compose --project-name stay-fable-wsl-validation -f infrastructure\/compose\.yaml down$/m,
+    /^\s*POSTGRES_PORT=55432 REDIS_PORT=56379 docker compose --project-name stay-fable-wsl-validation -f infrastructure\/compose\.yaml down[^\r\n]*$/m,
   );
   assert.doesNotMatch(guide, /docker compose[^\r\n]*(down|rm)[^\r\n]*--volumes/);
   assert.doesNotMatch(guide, /test -d \.git/);
@@ -103,12 +110,42 @@ test("documents the required WSL2 runtime verification", async () => {
   );
   assert.match(
     guide,
-    /repo_root="\$\(git rev-parse --show-toplevel\)"[\s\S]*current_dir="\$\(pwd -P\)"[\s\S]*if \[ "\$current_dir" = "\$repo_root" \].*&&.*\[ "\$runtime_dir" = "\$repo_root\/\.wsl-runtime" \]; then[\s\S]*rm -rf -- "\$runtime_dir"[\s\S]*else[\s\S]*exit 1[\s\S]*fi[\s\S]*git status --short/,
-  );
-  assert.match(
-    guide,
     /删除 `.wsl-runtime\/`[\s\S]*git status --short[\s\S]*(保留|不会删除).*Compose.*数据卷/s,
   );
+  const cleanupFunction = guide.match(/^cleanup_validation\(\) \{[\s\S]*?^\}$/m)?.[0];
+  assert.ok(cleanupFunction, "missing validation cleanup function");
+  assert.match(cleanupFunction, /trap - EXIT/);
+  assert.match(
+    cleanupFunction,
+    /docker rm -f stay-fable-wsl-validation-api stay-fable-wsl-validation-worker/,
+  );
+  assert.match(
+    cleanupFunction,
+    /docker compose --project-name stay-fable-wsl-validation[\s\S]* down(?![^\r\n]*--volumes)/,
+  );
+  assert.match(
+    cleanupFunction,
+    /git rev-parse --show-toplevel[\s\S]*pwd -P[\s\S]*\[ "\$cleanup_current_dir" = "\$cleanup_repo_root" \].*&&.*\[ "\$cleanup_runtime_dir" = "\$cleanup_repo_root\/\.wsl-runtime" \][\s\S]*rm -rf -- "\$cleanup_runtime_dir"/,
+  );
+  const trapCommand = "trap 'cleanup_validation $?' EXIT";
+  const trapIndex = guide.indexOf(trapCommand);
+  const successfulCleanupIndex = guide.indexOf("cleanup_validation 0");
+  assert.ok(trapIndex >= 0);
+  assert.ok(successfulCleanupIndex > trapIndex);
+  for (const match of guide.matchAll(/^\s+exit 1$/gm)) {
+    assert.ok(match.index > trapIndex, "exit 1 appears before the EXIT cleanup trap");
+    assert.ok(
+      match.index < successfulCleanupIndex,
+      "exit 1 appears after successful cleanup disarms the EXIT trap",
+    );
+  }
+  assert.ok(
+    trapIndex <
+      guide.indexOf(
+        "POSTGRES_PORT=55432 REDIS_PORT=56379 docker compose --project-name stay-fable-wsl-validation -f infrastructure/compose.yaml up",
+      ),
+  );
+  assert.match(guide, /cleanup_validation 0[\s\S]*git status --short/);
 });
 
 test("parses Docker Compose JSON array output", () => {

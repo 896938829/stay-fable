@@ -40,6 +40,59 @@ docker ps -a --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}'
 清单中的无关容器；端口冲突时应更换本流程的临时 API 端口，而不是处理占用端口
 的其他容器。
 
+盘点并确认边界后，在**当前这个 WSL Bash** 中注册清理函数。步骤 3–10 必须继续
+在同一个 Bash 会话中执行，不要另开 shell。任何后续 `exit 1` 或会话退出都会触发
+同一清理函数；它先解除 trap 防止递归，只处理两个命名验证容器、隔离 Compose
+项目和通过 worktree 路径守卫的 `.wsl-runtime/`：
+
+```bash
+cleanup_validation() {
+  local validation_status="$1"
+  local cleanup_failed=0
+  local cleanup_repo_root cleanup_current_dir cleanup_runtime_dir
+  trap - EXIT
+
+  docker rm -f stay-fable-wsl-validation-api stay-fable-wsl-validation-worker
+  if [ "$?" -ne 0 ]; then
+    cleanup_failed=1
+  fi
+
+  POSTGRES_PORT=55432 REDIS_PORT=56379 docker compose --project-name stay-fable-wsl-validation -f infrastructure/compose.yaml down
+  if [ "$?" -ne 0 ]; then
+    cleanup_failed=1
+  fi
+
+  if ! cleanup_repo_root="$(git rev-parse --show-toplevel 2>/dev/null)"; then
+    echo '无法解析当前 worktree 顶层目录，拒绝删除验证产物' >&2
+    return 1
+  fi
+  if ! cleanup_repo_root="$(cd "$cleanup_repo_root" && pwd -P)"; then
+    echo '无法解析当前 worktree 物理路径，拒绝删除验证产物' >&2
+    return 1
+  fi
+  cleanup_current_dir="$(pwd -P)"
+  cleanup_runtime_dir="$cleanup_repo_root/.wsl-runtime"
+  if [ "$cleanup_current_dir" = "$cleanup_repo_root" ] && [ "$cleanup_runtime_dir" = "$cleanup_repo_root/.wsl-runtime" ]; then
+    rm -rf -- "$cleanup_runtime_dir"
+    if [ "$?" -ne 0 ]; then
+      cleanup_failed=1
+    fi
+  else
+    echo '当前目录或验证产物路径不符合预期，拒绝删除' >&2
+    return 1
+  fi
+
+  if [ "$cleanup_failed" -ne 0 ]; then
+    return 1
+  fi
+  return "$validation_status"
+}
+trap 'cleanup_validation $?' EXIT
+```
+
+清理 Compose 时没有使用 `--volumes`，所以验证项目的数据卷会被保留。函数中的
+容器删除命令不得加入其他名称。
+
 ## 3. 用避让端口启动 Compose
 
 为本次验收固定独立 Compose 项目名 `stay-fable-wsl-validation`。这会把数据库、
@@ -142,17 +195,18 @@ docker run -d --name stay-fable-wsl-validation-worker \
 
 ## 7. 验证 API 健康端点和容器限制
 
-API 启动和依赖连接需要短暂时间。先进行最多 30 次、间隔 2 秒的就绪探测，总等待
-时间有界；超时必须打印 API 和 Worker 日志并以非零状态退出：
+API 启动和依赖连接需要短暂时间。进行 20 次就绪探测，每次请求最长 2 秒，连接
+超时 1 秒，失败后间隔 1 秒，因此最坏情况下最长 60 秒。超时必须打印 API 和
+Worker 日志并以非零状态退出：
 
 ```bash
 api_ready=false
-for attempt in $(seq 1 30); do
-  if curl --fail --silent --show-error http://127.0.0.1:53000/health/ready >/dev/null; then
+for attempt in $(seq 1 20); do
+  if curl --fail --silent --show-error --connect-timeout 1 --max-time 2 http://127.0.0.1:53000/health/ready >/dev/null; then
     api_ready=true
     break
   fi
-  sleep 2
+  sleep 1
 done
 if [ "$api_ready" != true ]; then
   echo 'API 未在 60 秒内就绪' >&2
@@ -165,9 +219,9 @@ fi
 就绪后记录两个健康端点和容器限制证据：
 
 ```bash
-curl --fail --silent --show-error -o /dev/null -w '/health/live HTTP %{http_code}\n' \
+curl --fail --silent --show-error --connect-timeout 1 --max-time 2 -o /dev/null -w '/health/live HTTP %{http_code}\n' \
   http://127.0.0.1:53000/health/live
-curl --fail --silent --show-error -o /dev/null -w '/health/ready HTTP %{http_code}\n' \
+curl --fail --silent --show-error --connect-timeout 1 --max-time 2 -o /dev/null -w '/health/ready HTTP %{http_code}\n' \
   http://127.0.0.1:53000/health/ready
 
 docker inspect --format \
@@ -233,33 +287,25 @@ fi
 
 ## 9. 只清理命名的临时容器
 
-仅删除本指南创建的两个明确命名容器，然后关闭本仓库的 Compose 项目：
+成功完成所有验证后，显式调用与失败路径相同的清理函数。参数 `0` 保留成功状态；
+函数会先解除 EXIT trap，再依次删除两个命名临时容器、关闭隔离 Compose 项目并
+删除受路径守卫保护的 `.wsl-runtime/`：
 
 ```bash
-docker rm -f stay-fable-wsl-validation-api stay-fable-wsl-validation-worker
-POSTGRES_PORT=55432 REDIS_PORT=56379 docker compose --project-name stay-fable-wsl-validation -f infrastructure/compose.yaml down
+cleanup_validation 0
 ```
 
-不得把任何其他容器名加入清理命令。独立项目名确保 `down` 只作用于本次验收的
-Compose 项目；该命令不带卷删除参数，因此命名 Compose 数据卷会被保留，
-PostgreSQL 和 Redis 数据不会因本次验证而删除。
+不得修改函数以处理其他容器。独立项目名确保 `down` 只作用于本次验收的 Compose
+项目；该函数不带卷删除参数，因此命名 Compose 数据卷会被保留，PostgreSQL 和
+Redis 数据不会因本次验证而删除。若清理本身失败，函数返回非零状态。
 
-## 10. 删除临时产物并检查工作树
+## 10. 确认临时产物已删除并检查工作树
 
-再次解析当前 linked worktree 顶层目录和物理路径。只有当前目录相等且目标精确为
-该顶层目录下的 `.wsl-runtime/` 时，才执行删除：
+清理函数已经在通过 worktree 守卫后删除 `.wsl-runtime/`。确认该路径不存在，再
+检查工作树：
 
 ```bash
-repo_root="$(git rev-parse --show-toplevel)"
-repo_root="$(cd "$repo_root" && pwd -P)"
-current_dir="$(pwd -P)"
-runtime_dir="$repo_root/.wsl-runtime"
-if [ "$current_dir" = "$repo_root" ] && [ "$runtime_dir" = "$repo_root/.wsl-runtime" ]; then
-  rm -rf -- "$runtime_dir"
-else
-  echo "拒绝清理：当前目录或验证产物路径不符合预期" >&2
-  exit 1
-fi
+test ! -e "$runtime_dir"
 git status --short
 ```
 
