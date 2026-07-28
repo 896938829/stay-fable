@@ -2,74 +2,73 @@ Status: Blocked
 Owner role: Engineering Owner
 Review cadence: At every Phase 0 verification run and weekly while any gate is blocked
 
-# Phase 0 verification evidence
+# Phase 0 验证证据
 
-Verification date: 2026-07-27
+状态释义：阻断
+负责人角色：工程负责人
+复审周期：每次执行 Phase 0 验证时复审；存在未解除门禁期间每周复审
 
-Task 11 parent/input evidence commit: `058735e2f0f464f03bb334c015d86ece567b7e74`
+验证日期：2026-07-27
 
-Verification implementation commit: `ea77dbfe11269ad9778ee6054cadffd24fbe2b0a`
+任务 11 父提交／输入证据提交：`058735e2f0f464f03bb334c015d86ece567b7e74`
 
-Quality-remediation input commit: `6bf55d4341ea03bfea4e8dbf8832d30ef681f55b`
+验证实现提交：`ea77dbfe11269ad9778ee6054cadffd24fbe2b0a`
 
-The verifier and this evidence page were introduced by the verification implementation commit.
-The readiness and repeatable-smoke remediation is introduced by the commit containing this page.
-Its recorded commands were executed against the quality-remediation input plus the complete
-remediation working state. The containing commit, rather than either earlier input, is the
-reproducible source for the final verifier and smoke scripts.
+质量整改输入提交：`6bf55d4341ea03bfea4e8dbf8832d30ef681f55b`
 
-This record separates deterministic repository checks from runtime and organizational checks that
-need systems or accountable reviewers outside this workstation. The release status is **Blocked**:
-repository quality checks do not override a failing dependency gate or missing external evidence.
-The launch evidence index is the authoritative cross-reference for retained external artifacts:
-[`launch-evidence-index.md`](../compliance/launch-evidence-index.md).
+验证器和本证据页由“验证实现提交”首次引入。本页所在提交引入 readiness 和可重复冒烟测试整改。
+本文记录的命令针对“质量整改输入提交 + 完整整改工作状态”执行。最终验证器和冒烟测试应以
+本页所在提交为可复现来源，而不是以上两个较早的输入提交。
 
-## Automated repository checks
+本记录将确定性的仓库检查，与必须依赖本工作站之外的系统或责任人完成的运行和组织检查分开。
+发布状态为 **Blocked（阻断）**：仓库质量检查通过，不能覆盖依赖门禁失败或外部证据缺失。
+外部材料的权威交叉索引为
+[`launch-evidence-index.md`](../compliance/launch-evidence-index.md)。
 
-| Evidence                                  | Result                           | Scope and limitation                                                                                                                                                                |
-| ----------------------------------------- | -------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `corepack pnpm check` and its components  | Passed locally on 2026-07-27     | Workspace contract, formatting, lint, typecheck, tests, and builds completed with exit code 0. This is repository evidence, not a hosted CI run.                                    |
-| Corepack pnpm version gate                | Passed locally: exactly 11.17.0  | The verifier invokes every pnpm command through Corepack and fails before other checks if the resolved version differs.                                                             |
-| Static local-infrastructure contract test | Passed locally                   | Validates Compose configuration and health-check parsing only; it does not start PostgreSQL/PostGIS or Redis.                                                                       |
-| Static container contract test            | Passed locally                   | Validates pinned images, non-root `USER node`, build stages, and runtime commands as text. No image was built, inspected, scanned, or run because Docker is unavailable.            |
-| Static CI contract test                   | Passed locally                   | Validates workflow structure, immutable action pins, Gitleaks invocation, and Trivy gates as repository configuration. GitHub Actions has not executed it.                          |
-| Phase 0 document contract test            | Passed locally                   | Validates required controls, owner roles, evidence links, and auditable status values.                                                                                              |
-| Built API runtime smoke                   | Passed locally                   | [`smoke-api-runtime.mjs`](../../scripts/smoke-api-runtime.mjs) starts built code with safe unreachable URLs, checks live 200, ready 503/down, live-after 200, and bounded shutdown. |
-| Management web artifact smoke             | Passed locally                   | [`smoke-frontend-artifacts.mjs`](../../scripts/smoke-frontend-artifacts.mjs) serves the built index over ephemeral local HTTP and checks status, title, and root mount point.       |
-| Mini-program artifact smoke               | Passed locally                   | The same script checks all three emitted targets and loads WeChat bundles in a VM, where exactly one App registration occurs. Official vendor GUI previews remain blocked.          |
-| `pnpm verify:phase-0`                     | **Blocked as designed**          | All repository checks run in deterministic order, then the final dependency audit exits non-zero. The verifier stops and returns non-zero; it never reports Phase 0 as passed.      |
-| `pnpm audit --audit-level high`           | **Blocked: 2 CRITICAL, 11 HIGH** | The current machine-readable and reviewed findings are documented in [`dependency-audit.md`](dependency-audit.md). No threshold reduction or ignored exit code is permitted.        |
+## 自动化仓库检查
 
-The static contract tests intentionally run before the aggregate `pnpm test`: the early copies fail
-fast before expensive builds, while the aggregate run proves the root test contract still includes
-them.
+| 证据                             | 结果                          | 范围与限制                                                                                                                                                                           |
+| -------------------------------- | ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `corepack pnpm check` 及其子检查 | 2026-07-27 本地通过           | 工作区契约、格式、代码检查、类型检查、测试和构建均以退出码 0 完成。这是仓库证据，不是托管 CI 执行证据。                                                                              |
+| Corepack pnpm 版本门禁           | 本地通过：精确版本 11.17.0    | 验证器通过 Corepack 调用每条 pnpm 命令；解析版本不符时，会在执行其他检查前失败。                                                                                                     |
+| 本地基础设施静态契约测试         | 本地通过                      | 只验证 Compose 配置和健康检查解析，不会启动 PostgreSQL/PostGIS 或 Redis。                                                                                                            |
+| 容器静态契约测试                 | 本地通过                      | 以文本方式验证固定镜像、非 root 的 `USER node`、构建阶段和运行命令。由于没有 Docker，本地未构建、检查、扫描或运行镜像。                                                              |
+| CI 静态契约测试                  | 本地通过                      | 将工作流结构、不可变 Action 固定版本、Gitleaks 调用和 Trivy 门禁作为仓库配置验证；GitHub Actions 尚未执行。                                                                          |
+| Phase 0 文档契约测试             | 本地通过                      | 验证必需控制项、负责人角色、证据链接和可审计状态值。                                                                                                                                 |
+| 已构建 API 运行冒烟测试          | 本地通过                      | [`smoke-api-runtime.mjs`](../../scripts/smoke-api-runtime.mjs) 使用安全且不可达的连接地址启动构建产物，验证 liveness 200、readiness 503/down、随后 liveness 仍为 200，以及有界关闭。 |
+| 管理后台产物冒烟测试             | 本地通过                      | [`smoke-frontend-artifacts.mjs`](../../scripts/smoke-frontend-artifacts.mjs) 通过临时本地 HTTP 服务提供构建产物，并检查状态码、标题和根挂载节点。                                    |
+| 小程序产物冒烟测试               | 本地通过                      | 同一脚本检查三个平台产物，并在虚拟机环境加载微信产物，确认只发生一次 App 注册；官方厂商 GUI 预览仍处于阻断状态。                                                                     |
+| `pnpm verify:phase-0`            | **按设计阻断**                | 所有仓库检查按确定顺序执行，最后的依赖审计以非零状态退出；验证器随即停止并返回非零，绝不会报告 Phase 0 已通过。                                                                      |
+| `pnpm audit --audit-level high`  | **阻断：2 个严重、11 个高危** | 当前机器可读且已复核的发现记录在 [`dependency-audit.md`](dependency-audit.md)。不得降低阈值或忽略退出码。                                                                            |
 
-## Runtime evidence
+静态契约测试有意安排在聚合的 `pnpm test` 之前：前置测试可在昂贵构建开始前快速失败，
+聚合测试则用于证明根级测试契约仍然包含这些测试。
 
-| Component          | Evidence observed                                                                                                                                                                                               | Status    |
-| ------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------- |
-| API liveness       | A real built API process returned HTTP 200 at `/health/live` without a database connection.                                                                                                                     | In review |
-| API readiness      | The repeatable built-code smoke receives HTTP 503 with `status: unavailable` and both dependency checks `down`; a following `/health/live` remains HTTP 200. Live PostgreSQL/Redis readiness is still external. | Blocked   |
-| API health routing | The application contract and HTTP smoke test use root `/health/live` and `/health/ready`; `/api/v1/health/live` and `/api/v1/health/ready` return 404 because health is excluded from the global API prefix.    | In review |
-| Worker             | Unit tests cover configuration, startup failure handling, worker errors, and graceful shutdown. A ten-minute live run against Redis has not been performed.                                                     | Blocked   |
-| Management web     | Repository smoke covers built-index HTTP 200, expected title, and root element. It does not execute the React bundle in a browser or exercise official hosting.                                                 | In review |
-| Mini-program       | Repository smoke covers three emitted targets and WeChat VM App registration. WeChat, Alipay, and Douyin official GUI previews were not performed.                                                              | Blocked   |
-| Containers         | Dockerfile static contracts verify `USER node`; `docker image inspect`, real builds, and non-root runtime checks were not executed.                                                                             | Blocked   |
+## 运行证据
 
-## External runtime checks
+| 组件         | 已观察证据                                                                                                                                                                             | 状态      |
+| ------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------- |
+| API 存活检查 | 真实 API 构建进程在未连接数据库时，通过 `/health/live` 返回 HTTP 200。                                                                                                                 | In review |
+| API 就绪检查 | 可重复构建产物冒烟测试收到 HTTP 503，响应中 `status: unavailable`，数据库和 Redis 检查均为 `down`；随后 `/health/live` 仍返回 HTTP 200。真实 PostgreSQL/Redis 就绪验证仍属于外部检查。 | Blocked   |
+| API 健康路由 | 应用契约和 HTTP 冒烟测试使用根路径 `/health/live` 与 `/health/ready`；健康路由排除在全局 API 前缀之外，因此 `/api/v1/health/live` 与 `/api/v1/health/ready` 返回 404。                 | In review |
+| 任务消费者   | 单元测试覆盖配置、启动失败处理、消费者错误和优雅关闭；尚未针对真实 Redis 连续运行十分钟。                                                                                              | Blocked   |
+| 管理后台     | 仓库冒烟测试覆盖构建后首页 HTTP 200、预期标题和根节点；尚未在浏览器中执行 React 产物，也未验证正式托管环境。                                                                           | In review |
+| 小程序       | 仓库冒烟测试覆盖三个平台产物和微信虚拟机 App 注册；尚未执行微信、支付宝和抖音官方 GUI 预览。                                                                                           | Blocked   |
+| 容器         | Dockerfile 静态契约验证了 `USER node`；尚未执行 `docker image inspect`、真实构建和非 root 运行检查。                                                                                   | Blocked   |
 
-The deterministic verifier intentionally does not fake or silently skip these gates:
+## 外部运行检查
 
-| Required gate                                  | Required retained evidence                                                                                                            | Status      |
-| ---------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- | ----------- |
-| Docker Compose PostgreSQL 17/PostGIS and Redis | Bounded startup logs, `pg_isready`, PostGIS query, Redis ping, API readiness, and teardown record                                     | Blocked     |
-| API and worker images                          | Successful builds, immutable image digests, `docker image inspect` user, non-root runtime identity, API probes, and worker Redis soak | Blocked     |
-| GitHub Actions                                 | Hosted verify-job URL for the exact commit, including PostgreSQL/Redis service evidence                                               | Not started |
-| Gitleaks and Trivy                             | Full-history secret-scan result plus API/worker image scan reports and digests                                                        | Not started |
-| Official mini-program tools                    | WeChat, Alipay, and Douyin GUI preview screenshots/logs tied to the commit                                                            | Blocked     |
-| Cloud resources and accounts                   | Environment-isolation checklist, least-privilege accounts, KMS/CLS/WAF evidence, domain/ICP filing, and payment-provider readiness    | Not started |
-| Legal, privacy, and penetration testing        | Approved processor terms, privacy/legal sign-off, payment/legal review, and scoped penetration-test report                            | Not started |
+确定性验证器不会伪造或静默跳过以下门禁：
 
-Phase 0 cannot move to `Accepted` until the dependency audit is cleared or a permitted
-time-bounded exception is jointly approved, and every applicable external gate has immutable
-evidence linked from the launch evidence index.
+| 必需门禁                                      | 必须留存的证据                                                                                                     | 状态        |
+| --------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ | ----------- |
+| Docker Compose PostgreSQL 17/PostGIS 与 Redis | 有界启动日志、`pg_isready`、PostGIS 查询、Redis ping、API readiness 和销毁记录                                     | Blocked     |
+| API 与任务消费者镜像                          | 成功构建记录、不可变镜像摘要、`docker image inspect` 用户、非 root 运行身份、API 探针和任务消费者 Redis 稳定性观察 | Blocked     |
+| GitHub Actions                                | 精确提交对应的托管验证任务链接，并包含 PostgreSQL/Redis 服务证据                                                   | Not started |
+| Gitleaks 与 Trivy                             | 完整历史秘密扫描结果，以及 API/任务消费者镜像扫描报告和摘要                                                        | Not started |
+| 官方小程序工具                                | 与提交绑定的微信、支付宝、抖音 GUI 预览截图或日志                                                                  | Blocked     |
+| 云资源与账号                                  | 环境隔离清单、最小权限账号、KMS/CLS/WAF 证据、域名/ICP备案及支付渠道就绪证据                                       | Not started |
+| 法律、隐私与渗透测试                          | 已批准的处理方条款、隐私/法律签署、支付法律复核及限定范围的渗透测试报告                                            | Not started |
+
+在依赖审计清零或获得许可且有期限的联合批准例外，并且所有适用外部门禁均已在上线证据索引中
+链接不可变证据之前，Phase 0 不得进入 `Accepted（已接受）` 状态。
