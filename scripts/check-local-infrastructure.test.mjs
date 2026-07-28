@@ -60,6 +60,31 @@ test("documents the required WSL2 runtime verification", async () => {
     /\[StringComparer\]::OrdinalIgnoreCase\.Equals\(\$currentPath, \$repoRoot\)/,
   );
   assert.match(windowsPhase, /\$runtimeDir = Join-Path \$repoRoot '\.wsl-runtime'/);
+  assert.match(windowsPhase, /\$validationToken = /);
+  assert.match(
+    windowsPhase,
+    /\$runtimeOwnerMarker = Join-Path \$runtimeDir '\.stay-fable-validation-owner'/,
+  );
+  assert.match(
+    windowsPhase,
+    /if \(Test-Path -LiteralPath \$runtimeDir\) \{[\s\S]*throw '.*\.wsl-runtime.*拒绝.*'/,
+  );
+  assert.match(
+    windowsPhase,
+    /New-Item -ItemType Directory -Path \$runtimeDir[\s\S]*Set-Content -LiteralPath \$runtimeOwnerMarker -Value \$validationToken/,
+  );
+  assert.match(
+    windowsPhase,
+    /\$runtimeOwned = \$false[\s\S]*try \{[\s\S]*wsl\.exe -d Ubuntu-22\.04 -- env "VALIDATION_TOKEN=\$validationToken" "LIFECYCLE_SCRIPT=\$lifecycleScript" bash/,
+  );
+  assert.match(
+    windowsPhase,
+    /New-Item -ItemType Directory -Path \$runtimeDir[\s\S]*\$runtimeOwned = \$true/,
+  );
+  assert.match(
+    windowsPhase,
+    /bash -c 'set -eu; script="\/tmp\/stay-fable-wsl-validation-\$\{VALIDATION_TOKEN\}\.sh"; marker="\$\{script\}\.owner"; \[ "\$1" = "\$script" \]; \[ -f "\$script" \]; \[ -f "\$marker" \]; \[ "\$\(cat -- "\$marker"\)" = "\$VALIDATION_TOKEN" \]' -- \$lifecycleScript/,
+  );
   const prismaGenerateIndex = windowsPhase.indexOf(
     "corepack pnpm --filter @stay-fable/api-server prisma:generate",
   );
@@ -78,13 +103,29 @@ test("documents the required WSL2 runtime verification", async () => {
   assert.match(windowsPhase, /wslpath -a/);
   assert.match(
     windowsPhase,
-    /finally \{[\s\S]*\[StringComparer\]::OrdinalIgnoreCase\.Equals[\s\S]*Remove-Item -LiteralPath \$runtimeDir -Recurse -Force/,
+    /finally \{[\s\S]*if \(\$runtimeOwned\) \{[\s\S]*Get-Content -LiteralPath \$runtimeOwnerMarker[\s\S]*\[StringComparer\]::Ordinal\.Equals\(\$cleanupMarkerToken, \$validationToken\)[\s\S]*Remove-Item -LiteralPath \$runtimeDir -Recurse -Force/,
+  );
+  assert.match(
+    windowsPhase,
+    /\$lifecycleScript = "\/tmp\/stay-fable-wsl-validation-\$validationToken\.sh"/,
+  );
+  assert.match(
+    windowsPhase,
+    /env "VALIDATION_TOKEN=\$validationToken"[\s\S]*bash \$lifecycleScript/,
+  );
+  assert.match(
+    windowsPhase,
+    /finally \{[\s\S]*wsl\.exe -d Ubuntu-22\.04 -- env "VALIDATION_TOKEN=\$validationToken" bash -c [^\r\n]*rm/,
+  );
+  assert.match(
+    windowsPhase,
+    /if \(\$runtimeOwned\) \{[\s\S]*try \{[\s\S]*Get-Content -LiteralPath \$runtimeOwnerMarker[\s\S]*Remove-Item -LiteralPath \$runtimeDir -Recurse -Force[\s\S]*\}\s*catch \{[\s\S]*\$cleanupFailed = \$true[\s\S]*\}[\s\S]*wsl\.exe/,
   );
   assert.doesNotMatch(windowsPhase, /\bcorepack enable\b/);
   assert.doesNotMatch(wslPhase, /\bcorepack\b|\bpnpm\b/);
   assert.match(
     guide,
-    /\/tmp\/stay-fable-wsl-validation\.sh[\s\S]*(禁止|不得|不要).*(管道|stdin|标准输入)[\s\S]*docker compose exec -T/is,
+    /\/tmp\/stay-fable-wsl-validation-\$validationToken\.sh[\s\S]*(禁止|不得|不要).*(管道|stdin|标准输入)[\s\S]*docker compose exec -T/is,
   );
   assert.doesNotMatch(guide, /\|\s*(?:bash|sh)\b/);
   assert.match(

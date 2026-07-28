@@ -17,11 +17,17 @@ async function createFixture() {
     path.join(root, "project.config.json"),
     JSON.stringify({ compileType: "miniprogram" }),
   );
-  await writeFile(path.join(root, "app.json"), JSON.stringify({ pages: ["pages/index/index"] }));
+  await writeFile(
+    path.join(root, "app.json"),
+    JSON.stringify({ pages: ["pages/index/index"], sitemapLocation: "sitemap.json" }),
+  );
+  await writeFile(path.join(root, "app.js"), "App({});");
+  await writeFile(path.join(root, "sitemap.json"), JSON.stringify({ rules: [] }));
 
-  for (const extension of [".js", ".json", ".wxml", ".wxss"]) {
-    await writeFile(path.join(root, "pages", "index", `index${extension}`), "");
-  }
+  await writeFile(path.join(root, "pages", "index", "index.js"), "Page({});");
+  await writeFile(path.join(root, "pages", "index", "index.json"), "{}");
+  await writeFile(path.join(root, "pages", "index", "index.wxml"), "<view />");
+  await writeFile(path.join(root, "pages", "index", "index.wxss"), "");
 
   return root;
 }
@@ -52,9 +58,19 @@ test("rejects a directory in place of a required page file", async () => {
   await assert.rejects(() => validateWxProject(root), /Missing WeChat page file:.*index\.wxml/);
 });
 
+test("rejects a directory in place of the optional app stylesheet", async () => {
+  const root = await createFixture();
+  await mkdir(path.join(root, "app.wxss"));
+
+  await assert.rejects(() => validateWxProject(root), /Missing WeChat WXSS file: app\.wxss/);
+});
+
 test("rejects a traversal page path", async () => {
   const root = await createFixture();
-  await writeFile(path.join(root, "app.json"), JSON.stringify({ pages: ["../outside"] }));
+  await writeFile(
+    path.join(root, "app.json"),
+    JSON.stringify({ pages: ["../outside"], sitemapLocation: "sitemap.json" }),
+  );
 
   await assert.rejects(() => validateWxProject(root), /Invalid WeChat page path/);
 });
@@ -78,4 +94,222 @@ test("requires app JSON to have an object root", async () => {
   await writeFile(path.join(root, "app.json"), "null");
 
   await assert.rejects(() => validateWxProject(root), /app\.json.*JSON object/i);
+});
+
+test("requires every page JSON to contain an object", async () => {
+  const root = await createFixture();
+  await writeFile(path.join(root, "pages", "index", "index.json"), "[]");
+
+  await assert.rejects(() => validateWxProject(root), /pages\/index\/index\.json.*JSON object/i);
+});
+
+test("identifies malformed page JSON by file", async () => {
+  const root = await createFixture();
+  await writeFile(path.join(root, "pages", "index", "index.json"), "{");
+
+  await assert.rejects(() => validateWxProject(root), /pages\/index\/index\.json.*valid JSON/i);
+});
+
+test("requires a declared component four-file bundle", async () => {
+  const root = await createFixture();
+  await writeFile(
+    path.join(root, "pages", "index", "index.json"),
+    JSON.stringify({ usingComponents: { card: "/components/card/card" } }),
+  );
+
+  await assert.rejects(() => validateWxProject(root), /Missing WeChat component file:.*card\.js/i);
+});
+
+test("requires component JSON to declare component true", async () => {
+  const root = await createFixture();
+  const componentDir = path.join(root, "components", "card");
+  await mkdir(componentDir, { recursive: true });
+  await writeFile(
+    path.join(root, "pages", "index", "index.json"),
+    JSON.stringify({ usingComponents: { card: "/components/card/card" } }),
+  );
+  await writeFile(path.join(componentDir, "card.js"), "Component({});");
+  await writeFile(path.join(componentDir, "card.json"), JSON.stringify({ component: false }));
+  await writeFile(path.join(componentDir, "card.wxml"), "<view />");
+  await writeFile(path.join(componentDir, "card.wxss"), "");
+
+  await assert.rejects(() => validateWxProject(root), /card\.json.*component.*true/i);
+});
+
+test("rejects traversal in a component reference", async () => {
+  const root = await createFixture();
+  await writeFile(
+    path.join(root, "pages", "index", "index.json"),
+    JSON.stringify({ usingComponents: { card: "../../../outside/card" } }),
+  );
+
+  await assert.rejects(() => validateWxProject(root), /Unsafe WeChat component reference.*\.\./i);
+});
+
+test("allows plugin components without checking local files", async () => {
+  const root = await createFixture();
+  await writeFile(
+    path.join(root, "pages", "index", "index.json"),
+    JSON.stringify({ usingComponents: { map: "plugin://provider/map" } }),
+  );
+
+  assert.deepEqual(await validateWxProject(root), { pageCount: 1 });
+});
+
+test("requires sitemapLocation to resolve to a valid object JSON file", async () => {
+  const root = await createFixture();
+  await unlink(path.join(root, "sitemap.json"));
+
+  await assert.rejects(() => validateWxProject(root), /sitemap\.json/i);
+
+  await writeFile(path.join(root, "sitemap.json"), "[]");
+  await assert.rejects(() => validateWxProject(root), /sitemap\.json.*JSON object/i);
+});
+
+test("rejects unsafe sitemap traversal", async () => {
+  const root = await createFixture();
+  await writeFile(
+    path.join(root, "app.json"),
+    JSON.stringify({ pages: ["pages/index/index"], sitemapLocation: "../sitemap.json" }),
+  );
+
+  await assert.rejects(() => validateWxProject(root), /Unsafe WeChat sitemap reference/i);
+});
+
+test("checks local WXML src, import, and include resources", async () => {
+  const root = await createFixture();
+  await writeFile(
+    path.join(root, "pages", "index", "index.wxml"),
+    '<image src="/assets/missing.png" /><import src="/templates/card.wxml"/><include src="./row.wxml"/>',
+  );
+
+  await assert.rejects(
+    () => validateWxProject(root),
+    /Missing WeChat WXML resource:.*missing\.png/i,
+  );
+});
+
+test("checks local icon configuration and WXSS url resources", async () => {
+  const root = await createFixture();
+  await writeFile(
+    path.join(root, "app.json"),
+    JSON.stringify({
+      pages: ["pages/index/index"],
+      sitemapLocation: "sitemap.json",
+      tabBar: { list: [{ iconPath: "assets/missing.png" }] },
+    }),
+  );
+
+  await assert.rejects(
+    () => validateWxProject(root),
+    /Missing WeChat config resource:.*missing\.png/i,
+  );
+
+  await writeFile(
+    path.join(root, "app.json"),
+    JSON.stringify({ pages: ["pages/index/index"], sitemapLocation: "sitemap.json" }),
+  );
+  await writeFile(
+    path.join(root, "pages", "index", "index.wxss"),
+    'view { background-image: url("/assets/missing.png"); }',
+  );
+  await assert.rejects(
+    () => validateWxProject(root),
+    /Missing WeChat WXSS resource:.*missing\.png/i,
+  );
+});
+
+test("rejects dangerous local resource references", async () => {
+  const root = await createFixture();
+  await writeFile(
+    path.join(root, "pages", "index", "index.wxml"),
+    '<image src="javascript:alert(1)" />',
+  );
+
+  await assert.rejects(() => validateWxProject(root), /Unsafe WeChat WXML reference.*javascript/i);
+
+  await writeFile(
+    path.join(root, "pages", "index", "index.wxml"),
+    '<include src="../../../outside.wxml" />',
+  );
+  await assert.rejects(() => validateWxProject(root), /Unsafe WeChat WXML reference.*\.\./i);
+
+  await writeFile(
+    path.join(root, "pages", "index", "index.wxml"),
+    '<image src="javascript:{{payload}}" />',
+  );
+  await assert.rejects(() => validateWxProject(root), /Unsafe WeChat WXML reference.*javascript/i);
+});
+
+test("reports JavaScript syntax errors in app, page, and component scripts", async () => {
+  const root = await createFixture();
+  await writeFile(path.join(root, "app.js"), "App({");
+
+  await assert.rejects(() => validateWxProject(root), /app\.js.*JavaScript syntax/i);
+
+  await writeFile(path.join(root, "app.js"), "App({});");
+  await writeFile(path.join(root, "pages", "index", "index.js"), "Page({");
+  await assert.rejects(
+    () => validateWxProject(root),
+    /pages\/index\/index\.js.*JavaScript syntax/i,
+  );
+
+  const componentDir = path.join(root, "components", "card");
+  await mkdir(componentDir, { recursive: true });
+  await writeFile(path.join(root, "pages", "index", "index.js"), "Page({});");
+  await writeFile(
+    path.join(root, "pages", "index", "index.json"),
+    JSON.stringify({ usingComponents: { card: "/components/card/card" } }),
+  );
+  await writeFile(path.join(componentDir, "card.js"), "Component({");
+  await writeFile(path.join(componentDir, "card.json"), JSON.stringify({ component: true }));
+  await writeFile(path.join(componentDir, "card.wxml"), "<view />");
+  await writeFile(path.join(componentDir, "card.wxss"), "");
+  await assert.rejects(
+    () => validateWxProject(root),
+    /components\/card\/card\.js.*JavaScript syntax/i,
+  );
+});
+
+test("accepts safe component and local resource references", async () => {
+  const root = await createFixture();
+  const componentDir = path.join(root, "components", "card");
+  await mkdir(componentDir, { recursive: true });
+  await mkdir(path.join(root, "assets"), { recursive: true });
+  await mkdir(path.join(root, "templates"), { recursive: true });
+  await writeFile(path.join(root, "assets", "icon.png"), "image");
+  await writeFile(path.join(root, "templates", "card.wxml"), '<template name="card" />');
+  await writeFile(path.join(root, "pages", "index", "row.wxml"), "<view />");
+  await writeFile(path.join(componentDir, "card.js"), "Component({});");
+  await writeFile(
+    path.join(componentDir, "card.json"),
+    JSON.stringify({ component: true, usingComponents: {} }),
+  );
+  await writeFile(
+    path.join(componentDir, "card.wxml"),
+    '<image src="/assets/icon.png" /><include src="/templates/card.wxml" />',
+  );
+  await writeFile(
+    path.join(componentDir, "card.wxss"),
+    'view { background: url("/assets/icon.png"); }',
+  );
+  await writeFile(
+    path.join(root, "app.json"),
+    JSON.stringify({
+      pages: ["pages/index/index"],
+      sitemapLocation: "sitemap.json",
+      usingComponents: { card: "/components/card/card" },
+      tabBar: { list: [{ iconPath: "assets/icon.png", selectedIconPath: "/assets/icon.png" }] },
+    }),
+  );
+  await writeFile(
+    path.join(root, "pages", "index", "index.wxml"),
+    '<image src="https://example.com/a.png"/><image src="{{avatar}}"/><import src="/templates/card.wxml"/><include src="./row.wxml"/>',
+  );
+  await writeFile(
+    path.join(root, "pages", "index", "index.wxss"),
+    'view { background: url("data:image/svg+xml;base64,AA=="); }',
+  );
+
+  assert.deepEqual(await validateWxProject(root), { pageCount: 1 });
 });

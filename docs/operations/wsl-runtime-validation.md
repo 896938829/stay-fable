@@ -18,24 +18,26 @@ wsl.exe -l -v
 
 预期列表中存在 `Ubuntu-22.04`，且 `VERSION` 为 `2`（即 WSL 2）。
 
-## 2. 保存生命周期脚本
+## 2. 保存带所有权标记的生命周期脚本
 
-先打开交互式 WSL Bash：
-
-```powershell
-wsl.exe -d Ubuntu-22.04 -- bash
-```
-
-在该交互式 shell 中，用编辑器把“WSL 阶段”下的完整 Bash 代码块保存为
-`/tmp/stay-fable-wsl-validation.sh`，然后运行：
+在后续“Windows PowerShell 阶段”的同一个 PowerShell 会话中生成
+`$validationToken` 和 `$lifecycleScript` 后，命令会打开交互式 WSL Bash。用编辑器
+把“WSL 阶段”下的完整 Bash 代码块保存到终端输出的精确路径
+`/tmp/stay-fable-wsl-validation-$validationToken.sh`，然后在该 WSL shell 中运行：
 
 ```bash
-chmod 700 /tmp/stay-fable-wsl-validation.sh
+test "$LIFECYCLE_SCRIPT" = "/tmp/stay-fable-wsl-validation-${VALIDATION_TOKEN}.sh"
+test ! -e "$LIFECYCLE_SCRIPT" && test ! -e "$LIFECYCLE_SCRIPT.owner"
+umask 077
+printf '%s\n' "$VALIDATION_TOKEN" > "$LIFECYCLE_SCRIPT.owner"
+${EDITOR:-vi} "$LIFECYCLE_SCRIPT"
+chmod 700 "$LIFECYCLE_SCRIPT"
 exit
 ```
 
-生命周期必须从这个已保存的 Bash 脚本文件运行；也可以在交互式 shell 中逐行
-执行。禁止通过管道或 stdin（标准输入）把整个生命周期送给 Bash。原因是
+若任一 `test` 失败，停止验证并人工确认冲突来源，不得覆盖或删除已有文件。生命周期
+必须从这个带随机 token、已保存且有匹配 owner 标记的 Bash 脚本运行。禁止通过管道
+或 stdin（标准输入）把整个生命周期送给 Bash。原因是
 `docker compose exec -T` 可能消费剩余标准输入，使后续命令静默丢失。尤其不要把
 本指南代码块接到 Bash 或 `sh` 的标准输入。
 
@@ -46,10 +48,11 @@ Git 能正确解析 linked worktree `.git` 文件中的 Windows `gitdir:`；不�
 守卫改回 WSL Git。所有构建和部署命令都通过仓库锁定的 Corepack 入口运行，因为
 此 Ubuntu 环境不假定安装原生 Node 或 Corepack。
 
-脚本先解析实际仓库根目录和当前物理路径，只有两者相同时才允许重建该 worktree
-自己的 `.wsl-runtime/`。它随后生成生产部署产物，将两个明确路径转换为 WSL 路径，
-并启动已保存的生命周期脚本。无论 WSL 验证成功还是失败，`finally` 都用同样的
-路径守卫清理 Windows 侧产物。
+脚本先解析实际仓库根目录和当前物理路径，只有两者相同时才允许创建该 worktree
+自己的 `.wsl-runtime/`。目录若已存在会立即失败，绝不接管或删除。新目录和 WSL
+生命周期脚本都写入同一个随机 token 的所有权标记。脚本随后生成生产部署产物，
+将两个明确路径转换为 WSL 路径，并启动已保存的生命周期脚本。无论验证成功还是
+失败，`finally` 都只在标记仍匹配时清理 Windows 产物和精确的 WSL 脚本路径。
 
 ```powershell
 $ErrorActionPreference = 'Stop'
@@ -60,12 +63,24 @@ if (-not [StringComparer]::OrdinalIgnoreCase.Equals($currentPath, $repoRoot)) {
 }
 
 $runtimeDir = Join-Path $repoRoot '.wsl-runtime'
+$validationToken = [Guid]::NewGuid().ToString('N')
+$runtimeOwnerMarker = Join-Path $runtimeDir '.stay-fable-validation-owner'
+$lifecycleScript = "/tmp/stay-fable-wsl-validation-$validationToken.sh"
+$runtimeOwned = $false
 
 try {
+  # 在返回此 PowerShell 会话前，按“保存带所有权标记的生命周期脚本”步骤编辑脚本。
+  wsl.exe -d Ubuntu-22.04 -- env "VALIDATION_TOKEN=$validationToken" "LIFECYCLE_SCRIPT=$lifecycleScript" bash
+  if ($LASTEXITCODE -ne 0) { throw '生命周期脚本准备失败' }
+  wsl.exe -d Ubuntu-22.04 -- env "VALIDATION_TOKEN=$validationToken" bash -c 'set -eu; script="/tmp/stay-fable-wsl-validation-${VALIDATION_TOKEN}.sh"; marker="${script}.owner"; [ "$1" = "$script" ]; [ -f "$script" ]; [ -f "$marker" ]; [ "$(cat -- "$marker")" = "$VALIDATION_TOKEN" ]' -- $lifecycleScript
+  if ($LASTEXITCODE -ne 0) { throw '生命周期脚本或所有权标记无效' }
+
   if (Test-Path -LiteralPath $runtimeDir) {
-    Remove-Item -LiteralPath $runtimeDir -Recurse -Force
+    throw '检测到预先存在的 .wsl-runtime；拒绝接管或删除'
   }
   New-Item -ItemType Directory -Path $runtimeDir | Out-Null
+  $runtimeOwned = $true
+  Set-Content -LiteralPath $runtimeOwnerMarker -Value $validationToken -NoNewline
 
   corepack pnpm --filter @stay-fable/api-server prisma:generate
   if ($LASTEXITCODE -ne 0) { throw 'Prisma 客户端生成失败' }
@@ -85,22 +100,44 @@ try {
     throw '部署产物路径无法安全转换为当前仓库下的 WSL 路径'
   }
 
-  wsl.exe -d Ubuntu-22.04 -- env "REPO_ROOT=$repoWsl" "ARTIFACT_ROOT=$runtimeWsl" bash /tmp/stay-fable-wsl-validation.sh
+  wsl.exe -d Ubuntu-22.04 -- env "VALIDATION_TOKEN=$validationToken" "REPO_ROOT=$repoWsl" "ARTIFACT_ROOT=$runtimeWsl" bash $lifecycleScript
   if ($LASTEXITCODE -ne 0) { throw 'WSL 运行时验证失败' }
 }
 finally {
-  $cleanupCurrentPath = (Resolve-Path -LiteralPath (Get-Location).ProviderPath).Path
-  $cleanupRuntimeDir = Join-Path $repoRoot '.wsl-runtime'
-  if (
-    [StringComparer]::OrdinalIgnoreCase.Equals($cleanupCurrentPath, $repoRoot) -and
-    [StringComparer]::OrdinalIgnoreCase.Equals($cleanupRuntimeDir, $runtimeDir)
-  ) {
-    if (Test-Path -LiteralPath $runtimeDir) {
+  $cleanupFailed = $false
+  if ($runtimeOwned) {
+    try {
+      $cleanupCurrentPath = (Resolve-Path -LiteralPath (Get-Location).ProviderPath).Path
+      $cleanupRuntimeDir = Join-Path $repoRoot '.wsl-runtime'
+      if (
+        -not [StringComparer]::OrdinalIgnoreCase.Equals($cleanupCurrentPath, $repoRoot) -or
+        -not [StringComparer]::OrdinalIgnoreCase.Equals($cleanupRuntimeDir, $runtimeDir)
+      ) {
+        throw '当前目录或验证产物路径不符合预期，拒绝清理 .wsl-runtime'
+      }
+      if (-not (Test-Path -LiteralPath $runtimeOwnerMarker -PathType Leaf)) {
+        throw '.wsl-runtime 所有权标记缺失，拒绝清理'
+      }
+      $cleanupMarkerToken = Get-Content -LiteralPath $runtimeOwnerMarker -Raw
+      if (-not [StringComparer]::Ordinal.Equals($cleanupMarkerToken, $validationToken)) {
+        throw '.wsl-runtime 所有权标记不匹配，拒绝清理'
+      }
       Remove-Item -LiteralPath $runtimeDir -Recurse -Force
     }
+    catch {
+      Write-Warning $_
+      $cleanupFailed = $true
+    }
   }
-  else {
-    Write-Error '当前目录或验证产物路径不符合预期，拒绝清理 .wsl-runtime'
+
+  # 只删除本次 token 对应且 owner 标记仍匹配的两个精确 WSL 临时文件。
+  wsl.exe -d Ubuntu-22.04 -- env "VALIDATION_TOKEN=$validationToken" bash -c 'set -eu; script="/tmp/stay-fable-wsl-validation-${VALIDATION_TOKEN}.sh"; marker="${script}.owner"; [ "$1" = "$script" ]; if [ -e "$script" ] || [ -e "$marker" ]; then [ -f "$script" ] && [ -f "$marker" ] && [ "$(cat -- "$marker")" = "$VALIDATION_TOKEN" ]; rm -- "$script" "$marker"; fi' -- $lifecycleScript
+  if ($LASTEXITCODE -ne 0) {
+    Write-Warning '生命周期脚本所有权不匹配或清理失败，未删除未知文件'
+    $cleanupFailed = $true
+  }
+  if ($cleanupFailed) {
+    throw '验证清理未完整完成；未知或所有权不匹配的文件均已保留'
   }
 }
 
