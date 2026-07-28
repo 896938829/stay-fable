@@ -2,6 +2,8 @@
 
 const { locationFailureToAction, toHomeView } = require("./home.logic");
 
+const CANCELLED_LOCATION_OPERATION = Symbol("cancelled-location-operation");
+
 function modalResult(wxApi) {
   return new Promise((resolve) => {
     try {
@@ -19,7 +21,7 @@ function modalResult(wxApi) {
   });
 }
 
-function currentLocation(wxApi, setTimer, clearTimer) {
+function currentLocation(wxApi) {
   return new Promise((resolve, reject) => {
     let settled = false;
     const settle = (callback, value) => {
@@ -27,17 +29,8 @@ function currentLocation(wxApi, setTimer, clearTimer) {
         return;
       }
       settled = true;
-      clearTimer(timer);
       callback(value);
     };
-    const timer = setTimer(
-      () =>
-        settle(reject, {
-          code: "LOCATION_TIMEOUT",
-          errMsg: "getLocation:fail timeout",
-        }),
-      8000,
-    );
 
     try {
       wxApi.getLocation({
@@ -48,6 +41,85 @@ function currentLocation(wxApi, setTimer, clearTimer) {
     } catch (error) {
       settle(reject, error);
     }
+  });
+}
+
+function beginLocationOperation(page) {
+  const operation = {
+    cancelled: false,
+    finish: null,
+    timer: null,
+  };
+  operation.cancellation = new Promise((resolve) => {
+    operation.resolveCancellation = resolve;
+  });
+  page._locationOperation = operation;
+  return operation;
+}
+
+function cancelLocationOperation(page, clearTimer) {
+  const operation = page._locationOperation;
+  if (!operation || operation.cancelled) {
+    return;
+  }
+  operation.cancelled = true;
+  operation.resolveCancellation(CANCELLED_LOCATION_OPERATION);
+  if (operation.finish) {
+    operation.finish(CANCELLED_LOCATION_OPERATION);
+  } else if (operation.timer !== null) {
+    clearTimer(operation.timer);
+    operation.timer = null;
+  }
+}
+
+function operationIsCurrent(page, operation) {
+  return (
+    page._locationActive !== false &&
+    page._locationOperation === operation &&
+    !operation.cancelled &&
+    !operation.finished
+  );
+}
+
+function runWithDeadline(page, operation, task, setTimer, clearTimer) {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const finish = (value, isError = false) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      operation.finished = true;
+      if (operation.timer !== null) {
+        clearTimer(operation.timer);
+        operation.timer = null;
+      }
+      operation.finish = null;
+      if (isError) {
+        reject(value);
+      } else {
+        resolve(value);
+      }
+    };
+    operation.finish = (value) => finish(value);
+    operation.timer = setTimer(
+      () =>
+        finish(
+          {
+            code: "LOCATION_TIMEOUT",
+            errMsg: "getLocation:fail timeout",
+          },
+          true,
+        ),
+      8000,
+    );
+
+    Promise.resolve()
+      .then(task)
+      .then(
+        (value) => finish(value),
+        (error) => finish(error, true),
+      );
   });
 }
 
@@ -101,11 +173,23 @@ function createHomePage(dependencies = {}) {
   function render(page, options = {}) {
     const app = getApplication();
     const searchResult = readSearch(app);
+    let session;
+    let sessionError = null;
+    if (Object.prototype.hasOwnProperty.call(options, "session")) {
+      session = options.session;
+    } else {
+      try {
+        session = app.globalData.sessionStore.get();
+      } catch {
+        session = null;
+        sessionError = { code: "AUTH_LOGIN_FAILED" };
+      }
+    }
     page.setData(
       toHomeView({
-        session: options.session ?? app.globalData.sessionStore.get(),
+        session,
         loading: Boolean(options.loading),
-        error: searchResult.error || options.error || null,
+        error: searchResult.error || options.error || sessionError,
         search: searchResult.search,
       }),
     );
@@ -139,6 +223,7 @@ function createHomePage(dependencies = {}) {
     data: {
       status: "loading",
       errorMessage: "",
+      errorTitle: "",
       search: null,
       cityLabel: "请选择城市",
       dateLabel: "日期待选择",
@@ -149,19 +234,44 @@ function createHomePage(dependencies = {}) {
     },
 
     onLoad() {
+      this._locationActive = true;
       return waitForSession(this);
     },
 
     onShow() {
+      this._locationActive = true;
+      this._locationOperation = null;
+      if (this.data.locating) {
+        this.setData({ locating: false });
+      }
       const app = getApplication();
       if (this.data.search) {
-        const session = app.globalData.sessionStore.get();
+        let session;
+        try {
+          session = app.globalData.sessionStore.get();
+        } catch {
+          render(this, {
+            session: null,
+            error: { code: "AUTH_LOGIN_FAILED" },
+          });
+          return;
+        }
         if (session) {
           render(this, { session });
           return;
         }
         return waitForSession(this);
       }
+    },
+
+    onHide() {
+      this._locationActive = false;
+      cancelLocationOperation(this, clearTimer);
+    },
+
+    onUnload() {
+      this._locationActive = false;
+      cancelLocationOperation(this, clearTimer);
     },
 
     async retrySession() {
@@ -195,13 +305,21 @@ function createHomePage(dependencies = {}) {
     },
 
     async useCurrentLocation() {
-      if (this.data.locating) {
+      if (this.data.locating || this._locationActive === false) {
         return;
       }
+      const operation = beginLocationOperation(this);
       this.setData({ locating: true });
 
       try {
-        const choice = await modalResult(wxApi);
+        const choice = await Promise.race([modalResult(wxApi), operation.cancellation]);
+        if (
+          choice === CANCELLED_LOCATION_OPERATION ||
+          this._locationActive === false ||
+          this._locationOperation !== operation
+        ) {
+          return;
+        }
         if (!choice.confirm) {
           wxApi.navigateTo({
             url: "/pages/city-select/city-select?reason=location_cancelled",
@@ -209,21 +327,57 @@ function createHomePage(dependencies = {}) {
           return;
         }
 
-        const position = await currentLocation(wxApi, setTimer, clearTimer);
-        const resolved = await locationService.resolve({
-          longitude: position.longitude,
-          latitude: position.latitude,
-        });
+        const resolved = await runWithDeadline(
+          this,
+          operation,
+          async () => {
+            const position = await currentLocation(wxApi);
+            if (!operationIsCurrent(this, operation)) {
+              return CANCELLED_LOCATION_OPERATION;
+            }
+            const result = await locationService.resolve({
+              longitude: position.longitude,
+              latitude: position.latitude,
+            });
+            return operationIsCurrent(this, operation)
+              ? result
+              : CANCELLED_LOCATION_OPERATION;
+          },
+          setTimer,
+          clearTimer,
+        );
+        if (
+          resolved === CANCELLED_LOCATION_OPERATION ||
+          this._locationActive === false ||
+          this._locationOperation !== operation ||
+          operation.cancelled
+        ) {
+          return;
+        }
         const app = getApplication();
         app.globalData.searchStore.set({ city: resolved.city });
-        render(this, { session: app.globalData.sessionStore.get() });
+        render(this);
         wxApi.showToast({ title: `已选择${resolved.city.name}`, icon: "none" });
       } catch (error) {
+        if (
+          this._locationActive === false ||
+          this._locationOperation !== operation ||
+          operation.cancelled
+        ) {
+          return;
+        }
         const action = locationFailureToAction(error);
         wxApi.showToast({ title: action.toast, icon: "none" });
         wxApi.navigateTo({ url: action.url });
       } finally {
-        this.setData({ locating: false });
+        if (
+          this._locationActive !== false &&
+          this._locationOperation === operation &&
+          !operation.cancelled
+        ) {
+          this._locationOperation = null;
+          this.setData({ locating: false });
+        }
       }
     },
 

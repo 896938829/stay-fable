@@ -11,6 +11,12 @@
     "backgroundColor": "#F7F1EB",
     "backgroundTextStyle": "dark"
   },
+  "requiredPrivateInfos": ["getLocation"],
+  "permission": {
+    "scope.userLocation": {
+      "desc": "位置信息仅用于匹配附近已开通城市"
+    }
+  },
   "style": "v2",
   "renderer": "skyline",
   "rendererOptions": {

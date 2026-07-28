@@ -1,4 +1,6 @@
 {
   "navigationBarTitleText": "日期与人数",
-  "usingComponents": {}
+  "usingComponents": {
+    "error-state": "/components/error-state/error-state"
+  }
 }

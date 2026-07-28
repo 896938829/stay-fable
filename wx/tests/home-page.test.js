@@ -33,6 +33,16 @@ function flush() {
   return new Promise((resolve) => setTimeout(resolve, 0));
 }
 
+function deferred() {
+  let resolve;
+  let reject;
+  const promise = new Promise((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, reject, resolve };
+}
+
 describe("home view logic", () => {
   it("returns stable loading, error, and ready states with search context preserved", () => {
     expect(toHomeView({ loading: true, session: null, error: null, search })).toMatchObject({
@@ -48,6 +58,7 @@ describe("home view logic", () => {
       }),
     ).toEqual({
       status: "error",
+      errorTitle: "暂时无法登录",
       errorMessage: "登录暂时失败，请重试",
       search,
       cityLabel: "杭州",
@@ -72,6 +83,21 @@ describe("home view logic", () => {
         }),
       ),
     ).not.toContain("secret");
+  });
+
+  it("uses a distinct title for search-context errors", () => {
+    expect(
+      toHomeView({
+        loading: false,
+        session,
+        error: { code: "SEARCH_INITIALIZATION_FAILED" },
+        search: null,
+      }),
+    ).toMatchObject({
+      status: "error",
+      errorTitle: "搜索条件不可用",
+      errorMessage: "搜索条件读取失败，请重试",
+    });
   });
 
   it.each([
@@ -225,6 +251,50 @@ describe("home page interactions", () => {
     expect(page.data.errorMessage).toBe("");
   });
 
+  it("does not reread a failed session when sessionReady explicitly resolves null", async () => {
+    sessionStore.get.mockImplementation(() => {
+      throw Object.assign(new Error("private legacy cleanup"), {
+        code: "AUTH_SESSION_STORAGE_CLEANUP_FAILED",
+        details: "secret",
+      });
+    });
+    app.globalData.sessionReady = Promise.resolve({
+      session: null,
+      error: { code: "AUTH_LOGIN_FAILED" },
+    });
+    const page = pageContext(
+      createHomePage({ getApp: () => app, locationService, wxApi }),
+    );
+
+    await expect(page.onLoad.call(page)).resolves.toBeUndefined();
+
+    expect(page.data).toMatchObject({
+      status: "error",
+      errorTitle: "暂时无法登录",
+      errorMessage: "登录暂时失败，请重试",
+    });
+    expect(sessionStore.get).not.toHaveBeenCalled();
+    expect(JSON.stringify(page.data)).not.toContain("private");
+  });
+
+  it("maps an onShow session read failure to a safe auth error", async () => {
+    sessionStore.get.mockImplementation(() => {
+      throw new Error("private session read");
+    });
+    const page = pageContext(
+      createHomePage({ getApp: () => app, locationService, wxApi }),
+    );
+    page.data.search = search;
+
+    expect(() => page.onShow.call(page)).not.toThrow();
+
+    expect(page.data).toMatchObject({
+      status: "error",
+      errorTitle: "暂时无法登录",
+    });
+    expect(JSON.stringify(page.data)).not.toContain("private");
+  });
+
   it("does not request location after the explanation is cancelled", async () => {
     wxApi.showModal.mockImplementation(({ success }) => success({ confirm: false, cancel: true }));
     const page = pageContext(
@@ -257,6 +327,29 @@ describe("home page interactions", () => {
     expect(searchStore.set).toHaveBeenCalledWith({ city });
     expect(JSON.stringify(page.data)).not.toContain("120.1");
     expect(JSON.stringify(searchStore.set.mock.calls)).not.toContain("120.1");
+  });
+
+  it("maps a session read failure after location success without misrouting it", async () => {
+    wxApi.showModal.mockImplementation(({ success }) => success({ confirm: true }));
+    wxApi.getLocation.mockImplementation(({ success }) =>
+      success({ longitude: 120.1, latitude: 30.2 }),
+    );
+    sessionStore.get.mockImplementation(() => {
+      throw new Error("private session read");
+    });
+    const page = pageContext(
+      createHomePage({ getApp: () => app, locationService, wxApi }),
+    );
+
+    await page.useCurrentLocation.call(page);
+
+    expect(searchStore.set).toHaveBeenCalledWith({ city });
+    expect(page.data).toMatchObject({
+      status: "error",
+      errorTitle: "暂时无法登录",
+    });
+    expect(wxApi.navigateTo).not.toHaveBeenCalled();
+    expect(JSON.stringify(page.data)).not.toContain("private");
   });
 
   describe("bounded location wait", () => {
@@ -302,6 +395,147 @@ describe("home page interactions", () => {
 
       expect(locationService.resolve).not.toHaveBeenCalled();
       expect(searchStore.set).not.toHaveBeenCalled();
+    });
+
+    it("applies one shared deadline while city resolution is pending", async () => {
+      wxApi.getLocation.mockImplementation(({ success }) =>
+        success({ longitude: 120.1, latitude: 30.2 }),
+      );
+      locationService.resolve.mockImplementation(() => new Promise(() => {}));
+      const page = pageContext(
+        createHomePage({ getApp: () => app, locationService, wxApi }),
+      );
+
+      page.useCurrentLocation.call(page);
+      await Promise.resolve();
+      await vi.advanceTimersByTimeAsync(8000);
+
+      expect(locationService.resolve).toHaveBeenCalledOnce();
+      expect(wxApi.navigateTo).toHaveBeenCalledTimes(1);
+      expect(wxApi.navigateTo).toHaveBeenCalledWith({
+        url: "/pages/city-select/city-select?reason=location_timeout",
+      });
+      expect(page.data.locating).toBe(false);
+    });
+
+    it("does not store a city when resolution returns after the deadline", async () => {
+      const resolution = deferred();
+      wxApi.getLocation.mockImplementation(({ success }) =>
+        success({ longitude: 120.1, latitude: 30.2 }),
+      );
+      locationService.resolve.mockReturnValue(resolution.promise);
+      const page = pageContext(
+        createHomePage({ getApp: () => app, locationService, wxApi }),
+      );
+
+      page.useCurrentLocation.call(page);
+      await Promise.resolve();
+      await vi.advanceTimersByTimeAsync(8000);
+      resolution.resolve({ city, distance_meters: 12 });
+      await Promise.resolve();
+      await Promise.resolve();
+
+      expect(searchStore.set).not.toHaveBeenCalled();
+      expect(wxApi.navigateTo).toHaveBeenCalledTimes(1);
+    });
+
+    it("silences a modal callback after the page is hidden and reactivates on show", async () => {
+      let modalCallbacks;
+      wxApi.showModal.mockImplementation((options) => {
+        modalCallbacks = options;
+      });
+      const page = pageContext(
+        createHomePage({ getApp: () => app, locationService, wxApi }),
+      );
+      const setData = vi.spyOn(page, "setData");
+
+      page.useCurrentLocation.call(page);
+      expect(page.onHide).toBeTypeOf("function");
+      page.onHide.call(page);
+      setData.mockClear();
+      modalCallbacks.success({ confirm: true });
+      await Promise.resolve();
+
+      expect(wxApi.getLocation).not.toHaveBeenCalled();
+      expect(wxApi.navigateTo).not.toHaveBeenCalled();
+      expect(wxApi.showToast).not.toHaveBeenCalled();
+      expect(setData).not.toHaveBeenCalled();
+
+      page.onShow.call(page);
+      wxApi.showModal.mockImplementation(({ success }) => success({ confirm: false }));
+      await page.useCurrentLocation.call(page);
+      expect(wxApi.navigateTo).toHaveBeenCalledWith({
+        url: "/pages/city-select/city-select?reason=location_cancelled",
+      });
+    });
+
+    it("silences a getLocation callback after unload and clears its timer", async () => {
+      let locationCallbacks;
+      const clearTimer = vi.fn((timer) => globalThis.clearTimeout(timer));
+      wxApi.getLocation.mockImplementation((options) => {
+        locationCallbacks = options;
+      });
+      const page = pageContext(
+        createHomePage({
+          clearTimeout: clearTimer,
+          getApp: () => app,
+          locationService,
+          setTimeout: globalThis.setTimeout,
+          wxApi,
+        }),
+      );
+      const setData = vi.spyOn(page, "setData");
+
+      page.useCurrentLocation.call(page);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(locationCallbacks).toBeDefined();
+      expect(page.onUnload).toBeTypeOf("function");
+      page.onUnload.call(page);
+      setData.mockClear();
+      locationCallbacks.success({ longitude: 120.1, latitude: 30.2 });
+      await Promise.resolve();
+
+      expect(clearTimer).toHaveBeenCalledOnce();
+      expect(locationService.resolve).not.toHaveBeenCalled();
+      expect(searchStore.set).not.toHaveBeenCalled();
+      expect(wxApi.navigateTo).not.toHaveBeenCalled();
+      expect(wxApi.showToast).not.toHaveBeenCalled();
+      expect(setData).not.toHaveBeenCalled();
+    });
+
+    it("silences a resolve result after hide and clears its timer", async () => {
+      const resolution = deferred();
+      const clearTimer = vi.fn((timer) => globalThis.clearTimeout(timer));
+      wxApi.getLocation.mockImplementation(({ success }) =>
+        success({ longitude: 120.1, latitude: 30.2 }),
+      );
+      locationService.resolve.mockReturnValue(resolution.promise);
+      const page = pageContext(
+        createHomePage({
+          clearTimeout: clearTimer,
+          getApp: () => app,
+          locationService,
+          setTimeout: globalThis.setTimeout,
+          wxApi,
+        }),
+      );
+      const setData = vi.spyOn(page, "setData");
+
+      page.useCurrentLocation.call(page);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(locationService.resolve).toHaveBeenCalledOnce();
+      expect(page.onHide).toBeTypeOf("function");
+      page.onHide.call(page);
+      setData.mockClear();
+      resolution.resolve({ city, distance_meters: 12 });
+      await Promise.resolve();
+      await Promise.resolve();
+
+      expect(clearTimer).toHaveBeenCalledOnce();
+      expect(searchStore.set).not.toHaveBeenCalled();
+      expect(wxApi.navigateTo).not.toHaveBeenCalled();
+      expect(wxApi.showToast).not.toHaveBeenCalled();
+      expect(setData).not.toHaveBeenCalled();
     });
 
     it.each(["success", "fail"])("clears the deadline timer after %s", async (outcome) => {

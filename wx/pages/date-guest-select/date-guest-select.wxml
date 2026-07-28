@@ -4,7 +4,15 @@
     <text class="page-heading__description">最多连续入住 30 晚，可选择 1 至 10 位住客。</text>
   </view>
 
-  <view class="surface-card selection-card">
+  <error-state
+    wx:if="{{status === 'error'}}"
+    title="搜索条件不可用"
+    message="{{errorMessage}}"
+    bind:retry="retry"
+  ></error-state>
+
+  <block wx:else>
+    <view class="surface-card selection-card">
     <picker mode="date" value="{{checkin}}" start="{{today}}" bindchange="changeCheckin">
       <view class="selection-row">
         <view>
@@ -63,14 +71,15 @@
         </button>
       </view>
     </view>
-  </view>
+    </view>
 
-  <button
-    class="primary-button save-button"
-    loading="{{saving}}"
-    disabled="{{saving}}"
-    bindtap="save"
-  >
-    保存日期与人数
-  </button>
+    <button
+      class="primary-button save-button"
+      loading="{{saving}}"
+      disabled="{{saving}}"
+      bindtap="save"
+    >
+      保存日期与人数
+    </button>
+  </block>
 </view>

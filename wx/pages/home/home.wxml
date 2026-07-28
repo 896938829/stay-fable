@@ -10,7 +10,7 @@
   <view wx:else class="surface-card search-card">
     <error-state
       wx:if="{{status === 'error'}}"
-      title="暂时无法登录"
+      title="{{errorTitle}}"
       message="{{errorMessage}}"
       bind:retry="retrySession"
     ></error-state>

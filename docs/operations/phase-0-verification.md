@@ -41,6 +41,10 @@ Review cadence: At every Phase 0 verification run and weekly while any gate is b
 才能为当前 tree 采集新的不可变 input、tree ID、编译摘要和预览结果；在此之前不得沿用历史结果，也不得声称
 当前 tree 已通过官方工具验证。当前微信官方工具证据状态为 **Blocked**。
 
+公众平台隐私保护指引声明位置信息是当前微信上线范围的独立外部门禁，状态为
+**Blocked**。仓库中的 `requiredPrivateInfos` 和授权用途文案不能替代公众平台后台声明；
+在 Task 8 留存后台声明证据前，不得声称该配置已经完成。
+
 ## 2026-07-28 历史微信官方工具证据
 
 本节是 **historical / superseded** 证据，只绑定到当时的原生微信项目输入，不代表当前 HEAD，
@@ -106,6 +110,7 @@ HEAD 已完成微信开发者工具编译或官方预览的证据。
 | GitHub Actions                                | 精确提交对应的托管验证任务链接，并包含 PostgreSQL/Redis 服务证据                                                                     | Not started |
 | Gitleaks 与 Trivy                             | 完整历史秘密扫描结果，以及 API/任务消费者镜像扫描报告和摘要                                                                          | Not started |
 | 官方微信小程序工具（当前范围）                | 当前 `/wx` 的 **official validation pending**；Task 8 后采集新的输入提交、tree ID、AppID、WXML/WXSS 编译摘要和 `auto_preview` 包大小 | Blocked     |
+| 公众平台隐私保护指引                          | 公众平台隐私保护指引声明位置信息，并留存与当前 AppID 绑定的后台配置证据                                                              | Blocked     |
 | 云资源与账号                                  | 环境隔离清单、最小权限账号、KMS/CLS/WAF 证据、域名/ICP备案及支付渠道就绪证据                                                         | Not started |
 | 法律、隐私与渗透测试                          | 已批准的处理方条款、隐私/法律签署、支付法律复核及限定范围的渗透测试报告                                                              | Not started |
 

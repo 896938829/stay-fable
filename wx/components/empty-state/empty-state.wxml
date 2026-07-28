@@ -1,4 +1,4 @@
-<view class="state" role="status">
+<view class="state" aria-role="status">
   <view class="state__mark">⌂</view>
   <text class="state__title">{{title}}</text>
   <text wx:if="{{description}}" class="state__description">{{description}}</text>

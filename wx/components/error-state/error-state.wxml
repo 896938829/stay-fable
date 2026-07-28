@@ -1,4 +1,4 @@
-<view class="state" role="alert">
+<view class="state" aria-role="alert">
   <view class="state__mark">!</view>
   <text class="state__title">{{title}}</text>
   <text wx:if="{{message}}" class="state__message">{{message}}</text>

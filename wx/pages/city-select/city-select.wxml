@@ -19,7 +19,7 @@
   ></empty-state>
 
   <view wx:else class="city-list">
-    <view wx:if="{{notice}}" class="notice" role="alert">
+    <view wx:if="{{notice}}" class="notice" aria-role="alert">
       <text>{{notice}}</text>
       <button class="notice__retry" bindtap="retry">重试</button>
     </view>

@@ -59,6 +59,12 @@ function toHomeView({ session, loading, error, search }) {
 
   return {
     status,
+    errorTitle:
+      status === "error"
+        ? error && error.code === "SEARCH_INITIALIZATION_FAILED"
+          ? "搜索条件不可用"
+          : "暂时无法登录"
+        : "",
     errorMessage: status === "error" ? safeErrorMessage(error) : "",
     search: safeSearch,
     cityLabel: safeSearch.city ? safeSearch.city.name : "请选择城市",

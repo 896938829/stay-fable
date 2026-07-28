@@ -27,6 +27,8 @@ function createDateGuestPage(dependencies = {}) {
 
   return {
     data: {
+      status: "loading",
+      errorMessage: "",
       today: "",
       checkin: "",
       checkout: "",
@@ -37,9 +39,34 @@ function createDateGuestPage(dependencies = {}) {
     },
 
     onLoad() {
-      const context = getApplication().globalData.searchStore.get();
       this.setData({ today: formatDate(clock()) });
-      updateContext(this, context);
+      return this.loadContext();
+    },
+
+    loadContext() {
+      try {
+        const context = getApplication().globalData.searchStore.get();
+        updateContext(this, context);
+        this.setData({ status: "ready", errorMessage: "" });
+      } catch {
+        this.setData({
+          status: "error",
+          errorMessage: "搜索条件读取失败，请重试",
+        });
+      }
+    },
+
+    retry() {
+      try {
+        getApplication().globalData.searchStore.clear();
+      } catch {
+        this.setData({
+          status: "error",
+          errorMessage: "搜索条件读取失败，请重试",
+        });
+        return;
+      }
+      this.loadContext();
     },
 
     changeCheckin(event) {
@@ -108,7 +135,7 @@ function createDateGuestPage(dependencies = {}) {
     },
 
     save() {
-      if (this.data.saving) {
+      if (this.data.saving || this.data.status !== "ready") {
         return;
       }
       this.setData({ saving: true });

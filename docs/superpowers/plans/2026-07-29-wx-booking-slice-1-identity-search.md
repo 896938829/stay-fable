@@ -900,6 +900,8 @@ git commit -m "feat(wx): add login and search context experience"
 2. 使用 `initializer` 打开当前 worktree 的 `/wx` 项目。
 3. 使用 `compiler` 执行官方编译并检查 console/network。
 4. 编译错误使用 `debugger` 定位，回到对应任务补测试后修复。
+5. 将“公众平台隐私保护指引声明位置信息”作为独立外部门禁核验并留存后台证据；
+   仓库 manifest 声明不代表公众平台后台已经配置完成。
 
 证据文档记录开发者工具版本、基础库版本、编译时间、结果和截图路径；不得写登录 token。
 

@@ -1,3 +1,5 @@
+import { readFile } from "node:fs/promises";
+
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 function loadDefinition(modulePath) {
@@ -44,4 +46,17 @@ describe("state components", () => {
     definition.methods.handleRetry.call({ triggerEvent });
     expect(triggerEvent).toHaveBeenCalledWith("retry");
   });
+
+  it.each(["loading-state", "empty-state", "error-state"])(
+    "uses WeChat aria-role in %s",
+    async (name) => {
+      const wxml = await readFile(
+        new URL(`../components/${name}/${name}.wxml`, import.meta.url),
+        "utf8",
+      );
+
+      expect(wxml).toContain("aria-role=");
+      expect(wxml).not.toMatch(/\srole=/);
+    },
+  );
 });

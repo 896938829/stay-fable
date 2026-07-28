@@ -118,4 +118,95 @@ describe("date and guest page", () => {
     });
     expect(JSON.stringify(page.data)).not.toContain("private");
   });
+
+  it("shows a safe error state when canonical context cannot be loaded", () => {
+    const searchStore = {
+      clear: vi.fn(),
+      get: vi.fn(() => {
+        throw Object.assign(new Error("private storage read"), {
+          details: "secret",
+        });
+      }),
+      set: vi.fn(),
+    };
+    const wxApi = { navigateBack: vi.fn(), showToast: vi.fn() };
+    const page = pageContext(
+      createDateGuestPage({
+        clock: () => new Date(2026, 6, 29, 18),
+        getApp: () => ({ globalData: { searchStore } }),
+        wxApi,
+      }),
+    );
+
+    expect(() => page.onLoad.call(page)).not.toThrow();
+    expect(page.data).toMatchObject({
+      status: "error",
+      errorMessage: "搜索条件读取失败，请重试",
+    });
+    expect(JSON.stringify(page.data)).not.toContain("private");
+
+    page.save.call(page);
+    expect(searchStore.set).not.toHaveBeenCalled();
+    expect(wxApi.navigateBack).not.toHaveBeenCalled();
+  });
+
+  it("clears and reloads canonical context when retrying", () => {
+    const searchStore = {
+      clear: vi.fn(() => context),
+      get: vi
+        .fn()
+        .mockImplementationOnce(() => {
+          throw new Error("private initial read");
+        })
+        .mockReturnValue(context),
+      set: vi.fn(),
+    };
+    const page = pageContext(
+      createDateGuestPage({
+        clock: () => new Date(2026, 6, 29, 18),
+        getApp: () => ({ globalData: { searchStore } }),
+        wxApi: { navigateBack: vi.fn(), showToast: vi.fn() },
+      }),
+    );
+    page.onLoad.call(page);
+
+    page.retry.call(page);
+
+    expect(searchStore.clear).toHaveBeenCalledOnce();
+    expect(searchStore.get).toHaveBeenCalledTimes(2);
+    expect(page.data).toMatchObject({
+      status: "ready",
+      checkin: context.checkin,
+      checkout: context.checkout,
+      guests: context.guests,
+    });
+  });
+
+  it("keeps the safe error state when clearing on retry fails", () => {
+    const searchStore = {
+      clear: vi.fn(() => {
+        throw new Error("private clear failure");
+      }),
+      get: vi.fn(() => {
+        throw new Error("private read failure");
+      }),
+      set: vi.fn(),
+    };
+    const page = pageContext(
+      createDateGuestPage({
+        clock: () => new Date(2026, 6, 29, 18),
+        getApp: () => ({ globalData: { searchStore } }),
+        wxApi: { navigateBack: vi.fn(), showToast: vi.fn() },
+      }),
+    );
+    page.onLoad.call(page);
+
+    expect(() => page.retry.call(page)).not.toThrow();
+
+    expect(page.data).toMatchObject({
+      status: "error",
+      errorMessage: "搜索条件读取失败，请重试",
+    });
+    expect(JSON.stringify(page.data)).not.toContain("private");
+  });
 });

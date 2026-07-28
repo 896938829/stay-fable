@@ -1,4 +1,4 @@
-<view class="state state--loading" role="status">
+<view class="state state--loading" aria-role="status">
   <view class="spinner"></view>
   <text class="state__message">{{text}}</text>
 </view>
