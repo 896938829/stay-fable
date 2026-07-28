@@ -16,8 +16,8 @@
 - Task 1–9 均已完成。实施收尾时，`main`、`dev`、`release` 及对应远端分支均对齐到**实施基线** `5a7ba6f1800c26569e2cb41679c3f8cc26ede22d`；该 SHA 是实施基线，而不是本计划后续文档提交产生的当前 `HEAD`。旧工作树和已完成功能分支已清理。
 - 微信官方验证绑定不可变 input `deb274c58f64b6259e89d19a582200182126d770` 与 `wx` tree `021ed57a0b3b1e876123befad4f375446621fb42`：WXML 32400，WXSS 2/3398，preview 11626 bytes。未调用 `upload`，证据状态保持 **In review**。
 - WSL2 实机验证已完成：PostGIS 查询成功、Redis 返回 `PONG`、API live/ready 返回 HTTP 200，API 与 Worker 均为非 root 且只读根文件系统；Worker 观察超过 10 分钟后 `RestartCount=0`，无重连循环。
-- 依赖审计仍报告 29 项：2 Critical、11 High、14 Moderate、2 Low。`dev` 阶段只报告；`release/main` 继续阻断 Critical/High，除非存在正式批准的风险例外。
-- Taro、支付宝、抖音和多语言均已搁置，不属于当前开发与上线门禁。本计划仅记录工作区重整的完成状态，不是后续产品功能开发计划。
+- 依赖审计仍报告 29 项：2 Critical、11 High、14 Moderate、2 Low。`dev` 阶段漏洞只报告、不阻断功能开发；`release/main` 继续阻断 Critical/High，除非存在正式批准的风险例外。
+- Taro、支付宝、抖音和多语言均已搁置，不属于当前开发与上线门禁。本计划仅记录工作区重整的完成状态，不代表酒店产品功能完成；酒店产品功能仍属后续开发。
 
 ---
 

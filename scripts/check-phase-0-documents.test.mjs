@@ -329,6 +329,56 @@ test("WeChat-first workspace plan records the completed implementation baseline"
       `completion summary must mark ${deferred} as deferred`,
     );
   }
+  assert.match(
+    completionSummary,
+    /未(?:曾)?调用\s*`?upload`?/i,
+    "completion summary must state that upload was not called",
+  );
+  assert.match(
+    completionSummary,
+    /证据状态[^。\r\n]*\bIn\s+review\b/i,
+    "completion summary must keep WeChat evidence In review",
+  );
+  assert.doesNotMatch(
+    completionSummary,
+    /证据状态[^。\r\n]*\bAccepted\b/i,
+    "completion summary must not claim that WeChat evidence is Accepted",
+  );
+  assert.match(
+    completionSummary,
+    /`?dev`?[^。\r\n]*漏洞[^。\r\n]*只报告/i,
+    "completion summary must state that dev vulnerabilities are report-only",
+  );
+  assert.match(
+    completionSummary,
+    /`?dev`?[^。\r\n]*不阻断/i,
+    "completion summary must state that dev vulnerabilities do not block development",
+  );
+  assert.match(
+    completionSummary,
+    /`?release(?:\/|、|和|与)main`?[^。\r\n]*(?:(?:阻断|门禁)[^。\r\n]*(?:Critical\s*\/\s*High|Critical[^。\r\n]*High)|(?:Critical\s*\/\s*High|Critical[^。\r\n]*High)[^。\r\n]*(?:阻断|门禁))/i,
+    "completion summary must state that release/main block Critical and High findings",
+  );
+  assert.match(
+    completionSummary,
+    /旧工作树[^。\r\n]*(?:已清理|已删除)/,
+    "completion summary must state that old worktrees were cleaned",
+  );
+  assert.match(
+    completionSummary,
+    /已完成[^。\r\n]*功能分支[^。\r\n]*(?:已清理|已删除)/,
+    "completion summary must state that completed feature branches were cleaned",
+  );
+  assert.match(
+    completionSummary,
+    /本计划[^。\r\n]*工作区重整[^。\r\n]*(?:完成|完成状态)/,
+    "completion summary must scope completion to workspace realignment",
+  );
+  assert.match(
+    completionSummary,
+    /酒店产品功能[^。\r\n]*(?:尚未完成|未完成|仍属后续|后续开发)/,
+    "completion summary must state that hotel product features remain future work",
+  );
 });
 
 test("status parser validates every status-bearing table column", () => {
