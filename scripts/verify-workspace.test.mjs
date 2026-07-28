@@ -92,6 +92,16 @@ test("models Prisma generation as an API package Turbo prerequisite", async () =
   }
 });
 
+test("passes database integration inputs through the Turbo test task", async () => {
+  const rootTurbo = JSON.parse(await readFile(new URL("turbo.json", rootUrl), "utf8"));
+
+  assert.deepEqual(
+    rootTurbo.tasks.test.env,
+    ["DATABASE_URL", "NODE_ENV", "RUN_DATABASE_INTEGRATION"],
+    "database integration enablement and connection inputs must reach tests and participate in caching",
+  );
+});
+
 test("activates reproducible pnpm project settings", async () => {
   const workspace = await readFile(new URL("pnpm-workspace.yaml", rootUrl), "utf8");
   const lockfile = await readFile(new URL("pnpm-lock.yaml", rootUrl), "utf8");

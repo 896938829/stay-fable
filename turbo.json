@@ -14,6 +14,7 @@
     },
     "test": {
       "dependsOn": ["^build"],
+      "env": ["DATABASE_URL", "NODE_ENV", "RUN_DATABASE_INTEGRATION"],
       "outputs": ["coverage/**"]
     },
     "typecheck": {
