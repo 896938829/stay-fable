@@ -6,6 +6,8 @@ export const LOGGER_REDACTION = {
     "req.body.password",
     "req.body.idCardNumber",
     "req.body.refresh_token",
+    "req.body.longitude",
+    "req.body.latitude",
   ],
   censor: "[REDACTED]",
 };

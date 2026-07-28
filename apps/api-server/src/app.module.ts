@@ -10,6 +10,7 @@ import { IdentityModule } from "./identity/identity.module.js";
 import { RedisModule } from "./infrastructure/redis/redis.module.js";
 import { LOGGER_REDACTION } from "./logger-redaction.js";
 import { LOGGER_ROUTES } from "./logger-routes.js";
+import { LocationModule } from "./location/location.module.js";
 
 @Module({
   imports: [
@@ -26,6 +27,7 @@ import { LOGGER_ROUTES } from "./logger-routes.js";
     RedisModule,
     DatabaseModule,
     IdentityModule,
+    LocationModule,
   ],
   controllers: [HealthController],
   providers: [HealthService],

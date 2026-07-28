@@ -11,6 +11,10 @@
     "./health": {
       "types": "./src/health.ts",
       "default": "./dist/src/health.js"
+    },
+    "./location": {
+      "types": "./src/location.ts",
+      "default": "./dist/src/location.js"
     }
   },
   "scripts": {

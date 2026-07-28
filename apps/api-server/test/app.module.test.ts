@@ -8,7 +8,7 @@ describe("AppModule logging middleware", () => {
     expect(LOGGER_ROUTES).toEqual([{ path: "{*path}", method: RequestMethod.ALL }]);
   });
 
-  it("redacts WeChat codes and refresh tokens from request bodies", async () => {
+  it("redacts identity secrets and exact coordinates from request bodies", async () => {
     process.env.NODE_ENV = "test";
     process.env.DATABASE_URL = "postgresql://localhost:5432/stay_fable";
     process.env.REDIS_URL = "redis://localhost:6379";
@@ -29,6 +29,13 @@ describe("AppModule logging middleware", () => {
       .map((provider) => provider.useValue?.pinoHttp?.redact?.paths)
       .find((value): value is string[] => value !== undefined);
 
-    expect(paths).toEqual(expect.arrayContaining(["req.body.code", "req.body.refresh_token"]));
+    expect(paths).toEqual(
+      expect.arrayContaining([
+        "req.body.code",
+        "req.body.refresh_token",
+        "req.body.longitude",
+        "req.body.latitude",
+      ]),
+    );
   });
 });
