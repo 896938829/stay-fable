@@ -278,6 +278,85 @@ function parseLabeledCompletionSummary(section) {
   return Object.fromEntries(entries);
 }
 
+function assertCompletionSummaryFacts(summary) {
+  function match(label, pattern, fact) {
+    assert.match(summary[label], pattern, `${label} must record ${fact}`);
+  }
+
+  match("实施基线", /^Task 1–9 均已完成。/, "Task 1–9 completion");
+  match(
+    "实施基线",
+    /5a7ba6f1800c26569e2cb41679c3f8cc26ede22d/,
+    "the implementation baseline commit",
+  );
+  match(
+    "实施基线",
+    /`main`、`dev`、`release` 及对应远端分支均对齐到\*\*实施基线\*\*/,
+    "local and remote baseline alignment",
+  );
+  match("实施基线", /该 SHA 是实施基线，而不是.*当前 `HEAD`/, "baseline-not-HEAD scope");
+  match("实施基线", /旧工作树和已完成功能分支已清理。$/, "worktree and branch cleanup");
+
+  match(
+    "微信证据",
+    /不可变 input `deb274c58f64b6259e89d19a582200182126d770`/,
+    "immutable input commit",
+  );
+  match("微信证据", /`wx` tree `021ed57a0b3b1e876123befad4f375446621fb42`/, "immutable wx tree");
+  for (const [pattern, fact] of [
+    [/WXML 32400/, "WXML 32400"],
+    [/WXSS 2\/3398/, "WXSS 2/3398"],
+    [/preview 11626 bytes/, "preview 11626 bytes"],
+    [/未调用 `upload`/, "no upload"],
+    [/证据状态保持 \*\*In review\*\*。$/, "In review status"],
+  ]) {
+    match("微信证据", pattern, fact);
+  }
+  assert.doesNotMatch(
+    summary.微信证据,
+    /\bAccepted\b|已调用 `upload`|已发布体验版/i,
+    "微信证据 must not claim Accepted, upload, or release",
+  );
+
+  match("WSL2 验证", /^WSL2 实机验证已完成：/, "completed WSL2 validation");
+  match("WSL2 验证", /PostGIS 查询成功/, "PostGIS success");
+  match("WSL2 验证", /Redis 返回 `PONG`/, "Redis PONG");
+  match("WSL2 验证", /API live\/ready 返回 HTTP 200/, "API live/ready HTTP 200");
+  match(
+    "WSL2 验证",
+    /API 与 Worker 均为非 root 且只读根文件系统/,
+    "non-root read-only API and Worker",
+  );
+  match(
+    "WSL2 验证",
+    /Worker 观察超过 10 分钟后 `RestartCount=0`，无重连循环。$/,
+    "10-minute stable Worker observation",
+  );
+
+  match(
+    "漏洞策略",
+    /^依赖审计仍报告 29 项：2 Critical、11 High、14 Moderate、2 Low。/,
+    "all dependency audit counts",
+  );
+  match("漏洞策略", /`dev` 阶段漏洞只报告、不阻断功能开发/, "dev report-only policy");
+  match("漏洞策略", /`release\/main` 继续阻断 Critical\/High/, "protected branch blocking");
+  match("漏洞策略", /正式批准的风险例外。$/, "approved risk exception requirement");
+
+  match("延期范围", /^Taro、支付宝、抖音和多语言均已搁置/, "all deferred targets");
+  match("延期范围", /不属于当前开发与上线门禁/, "current gate exclusion");
+  match(
+    "延期范围",
+    /本计划仅记录工作区重整的完成状态，不代表酒店产品功能完成/,
+    "workspace-only completion scope",
+  );
+  match("延期范围", /酒店产品功能仍属后续开发。$/, "future hotel product development");
+  assert.doesNotMatch(
+    summary.延期范围,
+    /酒店产品功能(?:已经|已)完成|当前开发与上线门禁包含(?:Taro|支付宝|抖音|多语言)/,
+    "延期范围 must not reverse the product or gate boundary",
+  );
+}
+
 function assertDependencyAuditEvidenceConsistent(evidenceIndex, dependencyAudit) {
   const summaries = [
     ...dependencyAudit.matchAll(/^Current audit summary: (\d+) CRITICAL, (\d+) HIGH$/gm),
@@ -459,6 +538,28 @@ test("completion summary parser rejects prose, unknown, extra, and duplicate lab
   }
 });
 
+test("completion evidence must remain bound to its labeled section", async () => {
+  const markdown = await readFile(path.join(root, wxFirstPlanPath), "utf8");
+  const completionSummary = markdown.match(
+    /^##\s+完成摘要\s*$([\s\S]*?)(?=^##\s+|(?![\s\S]))/m,
+  )?.[1];
+  assert.ok(completionSummary, "fixture plan must include a completion summary");
+
+  const summary = parseLabeledCompletionSummary(completionSummary);
+  const input = "deb274c58f64b6259e89d19a582200182126d770";
+  const misplacedInput = {
+    ...summary,
+    实施基线: summary.实施基线.replace("旧工作树", `${input}。旧工作树`),
+    微信证据: summary.微信证据.replace(input, ""),
+  };
+
+  assert.throws(
+    () => assertCompletionSummaryFacts(misplacedInput),
+    /微信证据.*input/i,
+    "moving WeChat input evidence to another label must fail",
+  );
+});
+
 test("WeChat-first workspace plan records the completed implementation baseline", async () => {
   const markdown = await readFile(path.join(root, wxFirstPlanPath), "utf8");
   const topMatter = markdown.split(/^##\s+/m, 1)[0];
@@ -477,49 +578,7 @@ test("WeChat-first workspace plan records the completed implementation baseline"
   assert.ok(completionSummary, "plan must include a 完成摘要 section");
 
   const summary = parseLabeledCompletionSummary(completionSummary);
-  const allSummaryValues = Object.values(summary).join("\n");
-  for (const evidence of [
-    "5a7ba6f1800c26569e2cb41679c3f8cc26ede22d",
-    "deb274c58f64b6259e89d19a582200182126d770",
-    "021ed57a0b3b1e876123befad4f375446621fb42",
-    "WXML 32400",
-    "WXSS 2/3398",
-    "preview 11626",
-    "WSL2",
-    "PostGIS",
-    "PONG",
-    "HTTP 200",
-    "RestartCount=0",
-  ]) {
-    assert.ok(allSummaryValues.includes(evidence), `completion summary must include ${evidence}`);
-  }
-
-  assert.match(summary.实施基线, /^Task 1–9 均已完成。/);
-  assert.match(summary.实施基线, /`main`、`dev`、`release` 及对应远端分支均对齐到/);
-  assert.match(summary.实施基线, /该 SHA 是实施基线，而不是.*当前 `HEAD`/);
-  assert.match(summary.实施基线, /旧工作树和已完成功能分支已清理。$/);
-
-  assert.match(summary.微信证据, /未调用 `upload`，证据状态保持 \*\*In review\*\*。$/);
-  assert.doesNotMatch(summary.微信证据, /\bAccepted\b|已调用 `upload`|已发布体验版/i);
-
-  assert.match(summary["WSL2 验证"], /^WSL2 实机验证已完成：/);
-  assert.match(summary["WSL2 验证"], /API 与 Worker 均为非 root 且只读根文件系统/);
-  assert.match(summary["WSL2 验证"], /Worker 观察超过 10 分钟后 `RestartCount=0`，无重连循环。$/);
-
-  assert.match(
-    summary.漏洞策略,
-    /^依赖审计仍报告 29 项：2 Critical、11 High、14 Moderate、2 Low。/,
-  );
-  assert.match(summary.漏洞策略, /`dev` 阶段漏洞只报告、不阻断功能开发/);
-  assert.match(summary.漏洞策略, /`release\/main` 继续阻断 Critical\/High/);
-
-  assert.match(summary.延期范围, /^Taro、支付宝、抖音和多语言均已搁置/);
-  assert.match(summary.延期范围, /本计划仅记录工作区重整的完成状态，不代表酒店产品功能完成/);
-  assert.match(summary.延期范围, /酒店产品功能仍属后续开发。$/);
-  assert.doesNotMatch(
-    summary.延期范围,
-    /酒店产品功能(?:已经|已)完成|当前开发与上线门禁包含(?:Taro|支付宝|抖音|多语言)/,
-  );
+  assertCompletionSummaryFacts(summary);
 });
 
 test("status parser validates every status-bearing table column", () => {
