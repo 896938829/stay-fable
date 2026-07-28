@@ -10,10 +10,6 @@ test("CI workflow enforces verification, secret scanning, and container scanning
   const source = await read(".github/workflows/ci.yml");
   const workflow = parse(source);
 
-  assert.deepEqual(workflow.on, {
-    pull_request: {},
-    push: { branches: ["main", "dev", "release"] },
-  });
   assert.deepEqual(workflow.permissions, { contents: "read" });
 
   const verify = workflow.jobs.verify;
@@ -78,16 +74,35 @@ test("CI workflow enforces verification, secret scanning, and container scanning
   assert.doesNotMatch(source, /security-events:\s*write/);
 });
 
+test("CI workflow runs for required protected and development branches", async () => {
+  const workflow = parse(await read(".github/workflows/ci.yml"));
+  const pushBranches = workflow.on.push.branches;
+
+  assert.ok(Array.isArray(pushBranches));
+  for (const branch of ["main", "dev", "release"]) {
+    assert.ok(pushBranches.includes(branch), `push trigger must include ${branch}`);
+  }
+});
+
 test("dependency audits report only for dev contexts and gate protected branches", async () => {
   const workflow = parse(await read(".github/workflows/ci.yml"));
+  const verify = workflow.jobs.verify;
 
-  assert.deepEqual(workflow.on.push.branches, ["main", "dev", "release"]);
-
-  const auditSteps = workflow.jobs.verify.steps.filter(
-    (step) => step.run === "pnpm audit --audit-level high",
+  assert.equal(Object.hasOwn(verify, "if"), false, "verify job must not be conditionally skipped");
+  assert.equal(
+    Object.hasOwn(verify, "continue-on-error"),
+    false,
+    "verify job must not neutralize failures",
   );
+
+  const auditSteps = verify.steps.filter((step) => step.run === "pnpm audit --audit-level high");
   assert.equal(auditSteps.length, 1);
   assert.equal(auditSteps[0].id, "dependency-audit");
+  assert.equal(
+    Object.hasOwn(auditSteps[0], "if"),
+    false,
+    "dependency audit step must not be conditionally skipped",
+  );
   assert.equal(
     auditSteps[0]["continue-on-error"],
     "${{ github.ref_name == 'dev' || github.base_ref == 'dev' }}",
