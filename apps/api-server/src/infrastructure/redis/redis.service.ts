@@ -9,6 +9,7 @@ export interface RedisClient {
   set: (key: string, value: string, expiryMode: "EX", ttlSeconds: number) => Promise<unknown>;
   eval: (script: string, numberOfKeys: number, ...arguments_: string[]) => Promise<unknown>;
   del: (key: string) => Promise<unknown>;
+  pttl: (key: string) => Promise<number>;
 }
 
 const CONSUME_JSON_SCRIPT = `
@@ -118,6 +119,14 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
   async delete(key: string): Promise<void> {
     try {
       await this.redis.del(key);
+    } catch {
+      throw new Error("Redis operation failed");
+    }
+  }
+
+  async ttlMilliseconds(key: string): Promise<number> {
+    try {
+      return await this.redis.pttl(key);
     } catch {
       throw new Error("Redis operation failed");
     }

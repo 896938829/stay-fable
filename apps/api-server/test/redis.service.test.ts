@@ -26,6 +26,7 @@ const createRedisClient = (): RedisClient => ({
   set: vi.fn(() => Promise.resolve("OK")),
   eval: vi.fn(() => Promise.resolve(null)),
   del: vi.fn(() => Promise.resolve(1)),
+  pttl: vi.fn(() => Promise.resolve(60_000)),
 });
 
 describe("systemClock", () => {
@@ -134,6 +135,16 @@ describe("RedisService", () => {
     await service.delete("session:1");
 
     expect(client.del).toHaveBeenCalledWith("session:1");
+  });
+
+  it("reads key TTL in milliseconds through a safe wrapper", async () => {
+    vi.mocked(client.pttl).mockResolvedValueOnce(59_876);
+
+    await expect(service.ttlMilliseconds("session:1")).resolves.toBe(59_876);
+    expect(client.pttl).toHaveBeenCalledWith("session:1");
+
+    vi.mocked(client.pttl).mockRejectedValueOnce(new Error("secret redis detail"));
+    await expect(service.ttlMilliseconds("session:1")).rejects.toThrow("Redis operation failed");
   });
 
   it("throws a fixed safe error for malformed stored JSON", async () => {

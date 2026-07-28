@@ -3,15 +3,18 @@ import { createHash, randomBytes } from "node:crypto";
 import { Controller, Get, type INestApplication, UseGuards } from "@nestjs/common";
 import { Test } from "@nestjs/testing";
 import { Redis } from "ioredis";
+import { Client } from "pg";
 import request from "supertest";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 
 import { configureApplication } from "../src/application-configuration.js";
+import { DatabaseModule } from "../src/database/database.module.js";
 import { DatabaseService } from "../src/database/database.service.js";
-import { REDIS_CLIENT } from "../src/infrastructure/redis/redis.service.js";
+import { REDIS_CLIENT, RedisService } from "../src/infrastructure/redis/redis.service.js";
 import { CurrentUser, type AuthenticatedUser } from "../src/identity/current-user.js";
 import { IdentityModule } from "../src/identity/identity.module.js";
 import { SessionAuthGuard } from "../src/identity/session-auth.guard.js";
+import { ROTATE_SESSION_SCRIPT } from "../src/identity/session-scripts.js";
 import { requireSafeDatabaseIntegrationUrl } from "./database/database-integration-guard.js";
 
 const runDatabaseIntegration = process.env.RUN_DATABASE_INTEGRATION === "true";
@@ -68,7 +71,7 @@ describeDatabase(suiteName, () => {
       });
     restoreStdout = () => writeSpy.mockRestore();
     const module = await Test.createTestingModule({
-      imports: [AppModule, IdentityModule],
+      imports: [AppModule, IdentityModule, DatabaseModule],
       controllers: [IdentityProbeController],
     }).compile();
     app = module.createNestApplication();
@@ -203,6 +206,10 @@ describeDatabase(suiteName, () => {
     keysToClean.add(`session:refresh:${hash(rotated.refresh_token)}`);
     expect(rotated.access_token).not.toBe(session.access_token);
     expect(rotated.refresh_token).not.toBe(session.refresh_token);
+    await request(server)
+      .get("/api/v1/identity-test/current-user")
+      .set("Authorization", `Bearer ${rotated.access_token}`)
+      .expect(200);
 
     await request(server)
       .post("/api/v1/auth/session/refresh")
@@ -211,6 +218,24 @@ describeDatabase(suiteName, () => {
       .expect((response) => {
         expect((response.body as ErrorEnvelope).error.code).toBe("AUTH_REFRESH_REJECTED");
       });
+    await request(server)
+      .get("/api/v1/identity-test/current-user")
+      .set("Authorization", `Bearer ${rotated.access_token}`)
+      .expect(401);
+    await request(server)
+      .post("/api/v1/auth/session/refresh")
+      .send({ refresh_token: rotated.refresh_token })
+      .expect(401)
+      .expect((response) => {
+        expect((response.body as ErrorEnvelope).error.code).toBe("AUTH_REFRESH_REJECTED");
+      });
+    await expect(
+      redis.mget(
+        `session:access:${hash(rotated.access_token)}`,
+        `session:refresh:${hash(rotated.refresh_token)}`,
+        `session:family:${hash(session.refresh_token)}`,
+      ),
+    ).resolves.toEqual([null, null, null]);
     await request(server)
       .get("/api/v1/identity-test/current-user")
       .set("Authorization", `Bearer ${session.access_token}`)
@@ -247,6 +272,98 @@ describeDatabase(suiteName, () => {
         `session:family:${familyId}`,
       ),
     ).resolves.toEqual([null, null, null]);
+  });
+
+  it("keeps disable ordered after an in-flight locked refresh and rejects its new access", async () => {
+    const session = await login(`mock:disable-race-${suffix}`);
+    const connectionString = process.env.DATABASE_URL;
+    if (connectionString === undefined) {
+      throw new Error("DATABASE_URL is required");
+    }
+    const disableClient = new Client({ connectionString });
+    const observerClient = new Client({ connectionString });
+    await Promise.all([disableClient.connect(), observerClient.connect()]);
+    const redisService = app.get(RedisService);
+    const originalExecute = redisService.executeSessionScript.bind(redisService);
+    let releaseRotation: (() => void) | undefined;
+    let rotationReached: (() => void) | undefined;
+    const rotationGate = new Promise<void>((resolve) => {
+      releaseRotation = resolve;
+    });
+    const reachedRotation = new Promise<void>((resolve) => {
+      rotationReached = resolve;
+    });
+    const executeSpy = vi
+      .spyOn(redisService, "executeSessionScript")
+      .mockImplementation(async (script, keys, arguments_) => {
+        if (script === ROTATE_SESSION_SCRIPT) {
+          rotationReached?.();
+          await rotationGate;
+        }
+        return originalExecute(script, keys, arguments_);
+      });
+
+    try {
+      const refreshPromise = request(server)
+        .post("/api/v1/auth/session/refresh")
+        .send({ refresh_token: session.refresh_token })
+        .then((response) => response);
+      await reachedRotation;
+
+      const pidResult = await disableClient.query<{ pid: number }>(
+        "SELECT pg_backend_pid() AS pid",
+      );
+      const disablePid = pidResult.rows[0]?.pid;
+      expect(disablePid).toBeTypeOf("number");
+      const disablePromise = disableClient.query(
+        'UPDATE "user" SET status = $1::"UserStatus" WHERE id = $2::uuid',
+        ["DISABLED", session.user.id],
+      );
+      let observedLockWait = false;
+      const lockDeadline = Date.now() + 5_000;
+      while (!observedLockWait && Date.now() < lockDeadline) {
+        const activity = await observerClient.query<{ wait_event_type: string | null }>(
+          "SELECT wait_event_type FROM pg_stat_activity WHERE pid = $1",
+          [disablePid],
+        );
+        observedLockWait = activity.rows[0]?.wait_event_type === "Lock";
+        if (!observedLockWait) {
+          await new Promise((resolve) => setTimeout(resolve, 10));
+        }
+      }
+      expect(observedLockWait).toBe(true);
+
+      releaseRotation?.();
+      const refreshResponse = await refreshPromise;
+      expect(refreshResponse.status).toBe(201);
+      const rotated = (refreshResponse.body as { data: TestSession }).data;
+      keysToClean.add(`session:access:${hash(rotated.access_token)}`);
+      keysToClean.add(`session:refresh:${hash(rotated.refresh_token)}`);
+      await disablePromise;
+
+      await request(server)
+        .get("/api/v1/identity-test/current-user")
+        .set("Authorization", `Bearer ${rotated.access_token}`)
+        .expect(403)
+        .expect((response) => {
+          expect((response.body as ErrorEnvelope).error.code).toBe("AUTH_USER_DISABLED");
+        });
+      await request(server)
+        .post("/api/v1/auth/session/refresh")
+        .send({ refresh_token: rotated.refresh_token })
+        .expect(401);
+      await expect(
+        redis.mget(
+          `session:access:${hash(rotated.access_token)}`,
+          `session:refresh:${hash(rotated.refresh_token)}`,
+          `session:family:${hash(session.refresh_token)}`,
+        ),
+      ).resolves.toEqual([null, null, null]);
+    } finally {
+      releaseRotation?.();
+      executeSpy.mockRestore();
+      await Promise.all([disableClient.end(), observerClient.end()]);
+    }
   });
 
   it("returns stable session expiry for missing and invalid access", async () => {

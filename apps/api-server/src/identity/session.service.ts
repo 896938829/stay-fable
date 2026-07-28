@@ -10,6 +10,7 @@ import { RedisService } from "../infrastructure/redis/redis.service.js";
 import {
   INSPECT_REFRESH_SCRIPT,
   ISSUE_SESSION_SCRIPT,
+  REVOKE_FAMILY_BY_ID_SCRIPT,
   REVOKE_FAMILY_SCRIPT,
   ROTATE_SESSION_SCRIPT,
 } from "./session-scripts.js";
@@ -275,7 +276,22 @@ export class SessionService {
     }
   }
 
-  async resolveAccess(token: string): Promise<{ userId: string }> {
+  async revokeFamily(familyId: string): Promise<void> {
+    try {
+      const result = await this.redis.executeSessionScript(
+        REVOKE_FAMILY_BY_ID_SCRIPT,
+        [familyKey(familyId)],
+        [String(this.clock.now().getTime())],
+      );
+      if (result !== "REVOKED") {
+        throw sessionUnavailable();
+      }
+    } catch {
+      throw sessionUnavailable();
+    }
+  }
+
+  async resolveAccess(token: string): Promise<{ userId: string; familyId: string }> {
     const key = accessKey(token);
     let record: unknown;
     try {
@@ -293,7 +309,7 @@ export class SessionService {
       throw accessExpired();
     }
 
-    return { userId: record.userId };
+    return { userId: record.userId, familyId: record.familyId };
   }
 
   private response(accessToken: string, refreshToken: string, userId: string): AuthSession {

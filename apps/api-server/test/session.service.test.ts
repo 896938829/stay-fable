@@ -176,6 +176,18 @@ describe("SessionService atomic state transitions", () => {
     );
   });
 
+  it("revokes the active access and refresh records by family id", async () => {
+    const { service, redis } = createHarness();
+    vi.mocked(redis.executeSessionScript).mockResolvedValueOnce("REVOKED");
+
+    await expect(service.revokeFamily(familyId)).resolves.toBeUndefined();
+    expect(redis.executeSessionScript).toHaveBeenCalledWith(
+      expect.any(String),
+      [`session:family:${familyId}`],
+      [String(now.getTime())],
+    );
+  });
+
   it("resolves active access and distinguishes dependency faults from expiry", async () => {
     const { service, redis } = createHarness();
     const record: StoredAccessSession = {
@@ -186,7 +198,7 @@ describe("SessionService atomic state transitions", () => {
       expiresAt: now.getTime() + 120_000,
     };
     vi.mocked(redis.getJson).mockResolvedValueOnce(record);
-    await expect(service.resolveAccess(accessToken)).resolves.toEqual({ userId });
+    await expect(service.resolveAccess(accessToken)).resolves.toEqual({ userId, familyId });
 
     vi.mocked(redis.getJson).mockResolvedValueOnce(null);
     await expect(service.resolveAccess(accessToken)).rejects.toMatchObject({

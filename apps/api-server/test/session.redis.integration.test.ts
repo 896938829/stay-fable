@@ -123,8 +123,67 @@ describeRedis(suiteName, () => {
       service.refresh(refresh, inspected),
     ]);
 
-    expect(results.filter(({ status }) => status === "fulfilled")).toHaveLength(1);
+    const fulfilled = results.filter(
+      (result): result is PromiseFulfilledResult<Awaited<ReturnType<SessionService["refresh"]>>> =>
+        result.status === "fulfilled",
+    );
+    expect(fulfilled).toHaveLength(1);
     expect(results.filter(({ status }) => status === "rejected")).toHaveLength(1);
+    const winningSession = fulfilled[0]?.value;
+    expect(winningSession).toBeDefined();
+    await expect(service.resolveAccess(winningSession?.access_token ?? "")).rejects.toMatchObject({
+      code: "AUTH_SESSION_EXPIRED",
+      status: 401,
+    });
+    await expect(service.inspectRefresh(winningSession?.refresh_token ?? "")).rejects.toMatchObject(
+      {
+        code: "AUTH_REFRESH_REJECTED",
+        status: 401,
+      },
+    );
+    await expect(client.get(`session:family:${familyId}`)).resolves.toBeNull();
+  });
+
+  it("keeps millisecond TTLs bounded across multiple rotations", async () => {
+    const access = token("ttl-access");
+    const refresh = token("ttl-refresh");
+    const nextAccess = token("ttl-next-access");
+    const nextRefresh = token("ttl-next-refresh");
+    const finalAccess = token("ttl-final-access");
+    const finalRefresh = token("ttl-final-refresh");
+    const familyId = hash(refresh);
+    const family = `session:family:${familyId}`;
+    const oldRefresh = `session:refresh:${hash(refresh)}`;
+    const nextRefreshKey = `session:refresh:${hash(nextRefresh)}`;
+    const finalRefreshKey = `session:refresh:${hash(finalRefresh)}`;
+    const oldTombstone = `session:used-refresh:${hash(refresh)}`;
+    const nextTombstone = `session:used-refresh:${hash(nextRefresh)}`;
+    cleanupKeys.add(family);
+    const redis = new RedisService(client);
+    const service = createService(
+      [access, refresh, nextAccess, nextRefresh, finalAccess, finalRefresh],
+      redis,
+    );
+
+    await service.issue(userId);
+    const oldRemaining = await redis.ttlMilliseconds(oldRefresh);
+    expect(oldRemaining).toBeGreaterThan(3_595_000);
+    expect(oldRemaining).toBeLessThanOrEqual(3_600_000);
+
+    await service.refresh(refresh, await service.inspectRefresh(refresh));
+    for (const key of [family, nextRefreshKey]) {
+      const ttl = await redis.ttlMilliseconds(key);
+      expect(ttl).toBeGreaterThan(3_595_000);
+      expect(ttl).toBeLessThanOrEqual(3_600_000);
+    }
+    expect(await redis.ttlMilliseconds(oldTombstone)).toBeGreaterThanOrEqual(oldRemaining - 1_000);
+
+    await service.refresh(nextRefresh, await service.inspectRefresh(nextRefresh));
+    for (const key of [family, finalRefreshKey, nextTombstone]) {
+      const ttl = await redis.ttlMilliseconds(key);
+      expect(ttl).toBeGreaterThan(3_595_000);
+      expect(ttl).toBeLessThanOrEqual(3_600_000);
+    }
   });
 
   it("revokes the active family when an old refresh is replayed", async () => {
@@ -182,6 +241,7 @@ describeRedis(suiteName, () => {
       set: (key, value, expiryMode, ttlSeconds) => client.set(key, value, expiryMode, ttlSeconds),
       eval: () => Promise.reject(new Error("injected eval failure")),
       del: (key) => client.del(key),
+      pttl: (key) => client.pttl(key),
     };
     const failing = createService([nextAccess, nextRefresh], new RedisService(failingClient));
 

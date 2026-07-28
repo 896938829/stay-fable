@@ -193,3 +193,16 @@ end
 redis.call("DEL", active.accessKey, active.refreshKey, family_key, KEYS[1])
 return "REVOKED"
 `.trim();
+
+export const REVOKE_FAMILY_BY_ID_SCRIPT = `
+${luaHelpers}
+local now = tonumber(ARGV[1])
+if not now then return "INVALID" end
+
+local active = decode(redis.call("GET", KEYS[1]))
+if not active then return "REVOKED" end
+if not valid_family(active) then return "INVALID" end
+
+redis.call("DEL", active.accessKey, active.refreshKey, KEYS[1])
+return "REVOKED"
+`.trim();

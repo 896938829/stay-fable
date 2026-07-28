@@ -1,12 +1,18 @@
 /* eslint-disable @typescript-eslint/unbound-method */
 import { describe, expect, it, vi } from "vitest";
 
+import { BusinessException } from "../src/common/http/business.exception.js";
 import type { DatabaseService } from "../src/database/database.service.js";
 import { AuthService } from "../src/identity/auth.service.js";
 import type { SessionService } from "../src/identity/session.service.js";
 import type { WechatIdentityProvider } from "../src/identity/wechat-identity.provider.js";
 
-const activeUser = {
+interface HarnessUser {
+  id: string;
+  status: "ACTIVE" | "DISABLED";
+}
+
+const activeUser: HarnessUser = {
   id: "018f47b6-0f58-7f52-8a35-3f92a6f34762",
   status: "ACTIVE",
 };
@@ -18,7 +24,7 @@ const session = {
   user: { id: activeUser.id },
 };
 
-const createHarness = (existingUser: typeof activeUser | null = activeUser) => {
+const createHarness = (existingUser: HarnessUser | null = activeUser) => {
   const provider = {
     exchange: vi.fn(() =>
       Promise.resolve({
@@ -28,6 +34,10 @@ const createHarness = (existingUser: typeof activeUser | null = activeUser) => {
     ),
   } satisfies WechatIdentityProvider;
   const transaction = {
+    $queryRaw: vi.fn((query: unknown) => {
+      void query;
+      return Promise.resolve<Array<{ id: string; status: "ACTIVE" | "DISABLED" }>>([activeUser]);
+    }),
     userIdentity: {
       findUnique: vi.fn(() =>
         Promise.resolve(existingUser === null ? null : { user: existingUser }),
@@ -37,9 +47,6 @@ const createHarness = (existingUser: typeof activeUser | null = activeUser) => {
       create: vi.fn(() => Promise.resolve(activeUser)),
     },
   };
-  const databaseUserFindUnique = vi.fn(() =>
-    Promise.resolve<{ status: "ACTIVE" | "DISABLED" } | null>({ status: "ACTIVE" }),
-  );
   const database = {
     $transaction: vi.fn((callback: (tx: typeof transaction) => unknown) =>
       Promise.resolve(callback(transaction)),
@@ -48,7 +55,7 @@ const createHarness = (existingUser: typeof activeUser | null = activeUser) => {
       findUnique: vi.fn(() => Promise.resolve({ user: activeUser })),
     },
     user: {
-      findUnique: databaseUserFindUnique,
+      findUnique: vi.fn(),
     },
   } as unknown as DatabaseService;
   const sessions = {
@@ -59,7 +66,7 @@ const createHarness = (existingUser: typeof activeUser | null = activeUser) => {
   } as unknown as SessionService;
   const service = new AuthService(provider, database, sessions);
 
-  return { service, provider, database, databaseUserFindUnique, transaction, sessions };
+  return { service, provider, database, transaction, sessions };
 };
 
 describe("AuthService", () => {
@@ -125,15 +132,11 @@ describe("AuthService", () => {
   });
 
   it("inspects an enabled user before rotating the same family", async () => {
-    const { service, database, sessions } = createHarness();
+    const { service, sessions } = createHarness();
     vi.mocked(sessions.refresh).mockResolvedValueOnce(session);
 
     await expect(service.refresh("r".repeat(32))).resolves.toEqual(session);
     expect(sessions.inspectRefresh).toHaveBeenCalledWith("r".repeat(32));
-    expect(database.user.findUnique).toHaveBeenCalledWith({
-      where: { id: activeUser.id },
-      select: { status: true },
-    });
     expect(sessions.refresh).toHaveBeenCalledWith("r".repeat(32), {
       userId: activeUser.id,
       familyId: "family-id",
@@ -141,11 +144,44 @@ describe("AuthService", () => {
     expect(sessions.revokeFamilyByRefresh).not.toHaveBeenCalled();
   });
 
+  it("holds a parameterized shared user-row lock while rotating an active family", async () => {
+    const { service, transaction, sessions } = createHarness();
+    vi.mocked(sessions.refresh).mockResolvedValueOnce(session);
+
+    await expect(service.refresh("r".repeat(32))).resolves.toEqual(session);
+
+    expect(transaction.$queryRaw).toHaveBeenCalledTimes(1);
+    const query = transaction.$queryRaw.mock.calls[0]?.[0] as
+      { strings?: readonly string[]; values?: readonly unknown[] } | undefined;
+    expect(query?.strings?.join("?").replaceAll(/\s+/g, " ").trim()).toBe(
+      'SELECT id, status FROM "user" WHERE id = ?::uuid FOR SHARE',
+    );
+    expect(query?.values).toEqual([activeUser.id]);
+    expect(transaction.$queryRaw.mock.invocationCallOrder[0]).toBeLessThan(
+      vi.mocked(sessions.refresh).mock.invocationCallOrder[0] ?? 0,
+    );
+  });
+
+  it("routes a rejected inspection through atomic rotation for replay revocation", async () => {
+    const { service, database, sessions } = createHarness();
+    const rejected = new BusinessException(401, "AUTH_REFRESH_REJECTED", "刷新凭证无效或已过期");
+    vi.mocked(sessions.inspectRefresh).mockRejectedValueOnce(rejected);
+    vi.mocked(sessions.refresh).mockRejectedValueOnce(rejected);
+
+    await expect(service.refresh("r".repeat(32))).rejects.toMatchObject({
+      code: "AUTH_REFRESH_REJECTED",
+      status: 401,
+    });
+
+    expect(sessions.refresh).toHaveBeenCalledWith("r".repeat(32));
+    expect(database.$transaction).not.toHaveBeenCalled();
+  });
+
   it.each([null, { ...activeUser, status: "DISABLED" as const }])(
     "revokes the family before rejecting a missing or disabled user",
     async (databaseUser) => {
-      const { service, databaseUserFindUnique, sessions } = createHarness();
-      databaseUserFindUnique.mockResolvedValueOnce(databaseUser);
+      const { service, transaction, sessions } = createHarness();
+      transaction.$queryRaw.mockResolvedValueOnce(databaseUser === null ? [] : [databaseUser]);
 
       await expect(service.refresh("r".repeat(32))).rejects.toMatchObject({
         code: "AUTH_USER_DISABLED",
