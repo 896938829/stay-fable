@@ -42,7 +42,7 @@
     "@types/supertest": "7.2.1",
     "prisma": "7.9.0",
     "supertest": "7.2.2",
-    "typescript": "6.0.3",
+    "typescript": "7.0.2",
     "vitest": "4.1.10"
   }
 }
