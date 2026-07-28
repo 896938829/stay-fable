@@ -52,11 +52,11 @@ function createSessionStore(options) {
   }
 
   function set(session) {
-    assertAuthSession(session);
-    memory = session;
+    const canonical = assertAuthSession(session);
+    memory = canonical;
     loaded = true;
-    wxApi.setStorageSync(storageKey, session);
-    return session;
+    wxApi.setStorageSync(storageKey, canonical);
+    return canonical;
   }
 
   function get() {
@@ -71,6 +71,7 @@ function createSessionStore(options) {
     }
     try {
       memory = assertAuthSession(stored);
+      wxApi.setStorageSync(storageKey, memory);
     } catch {
       memory = null;
       wxApi.removeStorageSync(storageKey);
@@ -85,9 +86,14 @@ function createSessionStore(options) {
     }
     if (!ensurePromise) {
       ensurePromise = (async () => {
-        const code = await wechatLogin(wxApi);
-        const session = await authService.login(code);
-        return set(session);
+        try {
+          const code = await wechatLogin(wxApi);
+          const session = await authService.login(code);
+          return set(session);
+        } catch (error) {
+          clear();
+          throw error;
+        }
       })().finally(() => {
         ensurePromise = undefined;
       });

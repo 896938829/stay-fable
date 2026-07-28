@@ -3,8 +3,8 @@
 const { assertCity, assertResolvedLocation } = require("./contracts");
 
 function locationInputError() {
-  const error = new Error("Invalid location coordinates");
-  error.code = "INVALID_LOCATION_COORDINATES";
+  const error = new Error("Invalid location input");
+  error.code = "INVALID_LOCATION_INPUT";
   return error;
 }
 
@@ -29,8 +29,12 @@ function createLocationService(requestClient) {
         !coordinates ||
         typeof coordinates.longitude !== "number" ||
         !Number.isFinite(coordinates.longitude) ||
+        coordinates.longitude < -180 ||
+        coordinates.longitude > 180 ||
         typeof coordinates.latitude !== "number" ||
-        !Number.isFinite(coordinates.latitude)
+        !Number.isFinite(coordinates.latitude) ||
+        coordinates.latitude < -90 ||
+        coordinates.latitude > 90
       ) {
         throw locationInputError();
       }

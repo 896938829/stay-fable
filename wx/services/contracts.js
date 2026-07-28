@@ -55,7 +55,15 @@ function assertAuthSession(value) {
   ) {
     throw invalidResponse();
   }
-  return value;
+  return {
+    access_token: value.access_token,
+    access_expires_in: value.access_expires_in,
+    refresh_token: value.refresh_token,
+    refresh_expires_in: value.refresh_expires_in,
+    user: {
+      id: value.user.id,
+    },
+  };
 }
 
 function assertCity(value) {
@@ -68,7 +76,11 @@ function assertCity(value) {
   ) {
     throw invalidResponse();
   }
-  return value;
+  return {
+    id: value.id,
+    code: value.code,
+    name: value.name,
+  };
 }
 
 function assertResolvedLocation(value) {
@@ -80,8 +92,10 @@ function assertResolvedLocation(value) {
   ) {
     throw invalidResponse();
   }
-  assertCity(value.city);
-  return value;
+  return {
+    city: assertCity(value.city),
+    distance_meters: value.distance_meters,
+  };
 }
 
 function hasOnlyKeys(value, allowed) {

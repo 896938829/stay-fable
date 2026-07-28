@@ -71,7 +71,12 @@ function normalizeApiBaseUrl(value, envVersion, explicit) {
 function getRuntimeConfig(wxApi) {
   const api = wxApi || globalThis.wx;
   const accountInfo = api.getAccountInfoSync();
-  const envVersion = accountInfo && accountInfo.miniProgram && accountInfo.miniProgram.envVersion;
+  const reportedEnvVersion =
+    accountInfo && accountInfo.miniProgram && accountInfo.miniProgram.envVersion;
+  const envVersion =
+    typeof reportedEnvVersion === "string" && reportedEnvVersion.trim() !== ""
+      ? reportedEnvVersion
+      : "develop";
   const extConfig =
     typeof api.getExtConfigSync === "function" ? api.getExtConfigSync() || {} : {};
   const explicit =

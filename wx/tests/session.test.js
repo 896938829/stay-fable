@@ -31,12 +31,18 @@ function createStorageWx(initial) {
 
 describe("session store", () => {
   it("uses a valid stored session without logging in", async () => {
-    const stored = makeSession();
-    const wxApi = createStorageWx(stored);
+    const expected = makeSession();
+    const wxApi = createStorageWx({
+      ...expected,
+      code: "persisted-secret",
+      user: { ...expected.user, secret: "private" },
+    });
     const authService = { login: vi.fn(), refresh: vi.fn() };
     const store = createSessionStore({ wxApi, authService, storageKey: "session" });
-    expect(store.get()).toEqual(stored);
-    await expect(store.ensureSession()).resolves.toEqual(stored);
+    expect(store.get()).toEqual(expected);
+    expect(wxApi.stored()).toEqual(expected);
+    expect(JSON.stringify(wxApi.stored())).not.toContain("secret");
+    await expect(store.ensureSession()).resolves.toEqual(expected);
     expect(wxApi.login).not.toHaveBeenCalled();
   });
 
@@ -77,6 +83,7 @@ describe("session store", () => {
         code: "AUTH_LOGIN_FAILED",
         message: "WeChat login failed",
       });
+      expect(wxApi.removeStorageSync).toHaveBeenCalledWith("session");
     }
   });
 
@@ -125,7 +132,13 @@ describe("session store", () => {
     expect(() => store.set({ access_token: "secret" })).toThrowError(
       expect.objectContaining({ code: "INVALID_API_RESPONSE" }),
     );
-    store.set(makeSession());
+    store.set({
+      ...makeSession(),
+      code: "temporary-secret",
+      user: { ...makeSession().user, secret: "private" },
+    });
+    expect(JSON.stringify(wxApi.stored())).not.toContain("temporary-secret");
+    expect(JSON.stringify(wxApi.stored())).not.toContain("private");
     store.clear();
     expect(wxApi.removeStorageSync).toHaveBeenCalledWith("session");
   });

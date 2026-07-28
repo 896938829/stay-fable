@@ -27,6 +27,13 @@ describe("runtime config", () => {
     });
   });
 
+  it.each([undefined, ""])("treats a missing envVersion as develop: %s", (envVersion) => {
+    expect(getRuntimeConfig(wxApi(envVersion, {}))).toEqual({
+      apiBaseUrl: "http://127.0.0.1:3000",
+      envVersion: "develop",
+    });
+  });
+
   it("normalizes a configured HTTPS base URL", () => {
     expect(
       getRuntimeConfig(wxApi("trial", { apiBaseUrl: "https://api.example.com///" })),

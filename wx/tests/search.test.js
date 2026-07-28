@@ -32,7 +32,7 @@ describe("search store", () => {
       city: null,
       checkin: "2026-07-30",
       checkout: "2026-07-31",
-      guests: 1,
+      guests: 2,
     });
     expect(stored()).toEqual(store.get());
   });
@@ -85,7 +85,7 @@ describe("search store", () => {
       city: null,
       checkin: "2026-07-30",
       checkout: "2026-07-31",
-      guests: 1,
+      guests: 2,
     });
     expect(stored()).toEqual(store.get());
   });

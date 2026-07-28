@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { execFileSync, spawnSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
@@ -699,7 +699,7 @@ test("launch evidence records WSL2 Docker validation without unblocking unarchiv
   }
 });
 
-test("launch evidence binds native WeChat validation to immutable inputs", async () => {
+test("launch evidence marks the current native WeChat tree as pending official validation", async () => {
   const markdown = await readFile(
     path.join(root, "docs/compliance/launch-evidence-index.md"),
     "utf8",
@@ -721,29 +721,34 @@ test("launch evidence binds native WeChat validation to immutable inputs", async
     /apps\/consumer-miniapp/,
     "current WeChat evidence must not point to the frozen Taro reference",
   );
-  for (const evidence of ["wxba597a3f09566936", "WXML 32400", "WXSS 2", "3398", "11626 bytes"]) {
-    assert.ok(row.includes(evidence), `WeChat evidence must include ${evidence}`);
-  }
-  assert.doesNotMatch(row, /尚未执行.*微信开发者工具.*编译.*官方预览/);
+  assert.match(row, /official validation pending/i);
+  assert.match(row, /当前.*`\/wx`.*tree.*尚未.*官方.*(?:编译|预览)/i);
   assert.match(
     row,
-    /\|\s*In review\s*\|?\s*$/,
-    "validated official evidence must remain in review until owner approval",
+    /\|\s*Blocked\s*\|?\s*$/,
+    "current unvalidated WeChat evidence must remain blocked",
   );
+  assert.doesNotMatch(row, /deb274c58f64b6259e89d19a582200182126d770/);
+  assert.doesNotMatch(row, /021ed57a0b3b1e876123befad4f375446621fb42/);
+  assert.doesNotMatch(row, /WXML 32400|WXSS 2|3398|11626 bytes/);
   assert.doesNotMatch(row, /\|\s*Accepted\s*\|?\s*$/);
-  assert.match(row, /未调用 `upload`/);
-  assert.match(row, /未发布体验版/);
-  assert.doesNotMatch(row, /(?:^|[^未])调用 `upload`/);
-  assert.doesNotMatch(row, /已发布体验版/);
 });
 
-test("recorded WeChat input and tree match immutable Git objects", async () => {
+test("historical WeChat input and tree remain bound to their immutable Git objects", async () => {
   const [verification, launchIndex] = await Promise.all([
     readFile(path.join(root, "docs/operations/phase-0-verification.md"), "utf8"),
     readFile(path.join(root, "docs/compliance/launch-evidence-index.md"), "utf8"),
   ]);
-  const phaseEvidence = extractWeChatEvidence(verification, "Phase 0 verification");
-  const launchEvidence = extractWeChatEvidence(launchIndex, "launch evidence index");
+  const phaseHistory = verification.match(
+    /^## 2026-07-28 历史微信官方工具证据\r?\n[\s\S]*?(?=^## |(?![\s\S]))/m,
+  )?.[0];
+  const launchHistory = launchIndex.match(
+    /^## 历史与延期的非当前门禁项目\r?\n[\s\S]*?(?=^## |(?![\s\S]))/m,
+  )?.[0];
+  assert.ok(phaseHistory, "Phase 0 verification must retain historical native WeChat evidence");
+  assert.ok(launchHistory, "launch index must retain historical native WeChat evidence");
+  const phaseEvidence = extractWeChatEvidence(phaseHistory, "historical Phase 0 verification");
+  const launchEvidence = extractWeChatEvidence(launchHistory, "historical launch evidence index");
 
   assert.deepEqual(
     launchEvidence,
@@ -752,29 +757,15 @@ test("recorded WeChat input and tree match immutable Git objects", async () => {
   );
 
   const inputTree = git("rev-parse", `${phaseEvidence.input}:wx`);
-  const headTree = git("rev-parse", "HEAD:wx");
   assert.equal(
     phaseEvidence.tree,
     inputTree,
     "recorded wx tree must equal the tree Git resolves from the validation input",
   );
-  assert.equal(
-    phaseEvidence.tree,
-    headTree,
-    "HEAD:wx changed after validation; rerun official validation before updating evidence",
-  );
-
-  const diff = spawnSync("git", ["diff", "--quiet", `${phaseEvidence.input}..HEAD`, "--", "wx"], {
-    cwd: root,
-    encoding: "utf8",
-  });
-  assert.equal(
-    diff.status,
-    0,
-    `wx differs between validation input and HEAD${
-      diff.error ? `: ${diff.error.message}` : diff.stderr ? `: ${diff.stderr.trim()}` : ""
-    }`,
-  );
+  assert.match(phaseHistory, /historical|历史/i);
+  assert.match(phaseHistory, /superseded|不代表当前|不可作为当前/i);
+  assert.match(launchHistory, /Historical|历史/i);
+  assert.match(launchHistory, /Superseded|不代表当前|不可作为当前/i);
 });
 
 test("only WeChat is a current mini-program launch gate", async () => {
@@ -792,18 +783,18 @@ test("only WeChat is a current mini-program launch gate", async () => {
   assert.doesNotMatch(currentSection, /支付宝（Alipay）|抖音（Douyin）/);
 
   assert.ok(historicalSection, "launch evidence must retain deferred platform history");
-  for (const platform of ["支付宝（Alipay）", "抖音（Douyin）"]) {
+  for (const platform of ["微信（WeChat）", "支付宝（Alipay）", "抖音（Douyin）"]) {
     const row = historicalSection
       .split(/\r?\n/)
       .find((line) => line.startsWith("|") && line.includes(platform));
     assert.ok(row, `historical evidence must retain ${platform}`);
-    assert.match(row, /Deferred/);
+    assert.match(row, platform.startsWith("微信") ? /Historical.*Superseded/ : /Deferred/);
     assert.match(row, /不属于当前.*上线门禁/);
     assert.doesNotMatch(row, /\|\s*Blocked\s*\|?\s*$/);
   }
 });
 
-test("Phase 0 verification separates current native WeChat checks from historical Taro evidence", async () => {
+test("Phase 0 verification separates pending current WeChat checks from historical evidence", async () => {
   const markdown = await readFile(
     path.join(root, "docs/operations/phase-0-verification.md"),
     "utf8",
@@ -827,25 +818,16 @@ test("Phase 0 verification separates current native WeChat checks from historica
   }
   assert.match(currentSection, /冻结/);
   assert.match(currentSection, /不进入.*默认.*(?:检查|构建)/s);
-  for (const evidence of [
-    "wxba597a3f09566936",
-    "`codeLength=32400`",
-    "`files=2`",
-    "`totalCodeLength=3398`",
-    "`total=11626 bytes`",
-  ]) {
-    assert.ok(currentSection.includes(evidence), `current evidence must include ${evidence}`);
-  }
-  assert.match(currentSection, /Task 7.*已执行.*微信开发者工具.*编译.*预览/s);
-  assert.match(currentSection, /证据文档.*不改变.*`wx` tree/s);
-  assert.match(currentSection, /等待.*(?:owner|负责人).*审批|待.*(?:owner|负责人).*审批/i);
-  assert.doesNotMatch(currentSection, /Task 7.*尚未执行/s);
-  assert.match(currentSection, /证据状态为 \*\*In review\*\*/);
+  assert.match(currentSection, /official validation pending/i);
+  assert.match(currentSection, /Task 8.*(?:之后|执行).*官方.*(?:编译|预览)/s);
+  assert.match(currentSection, /当前.*`\/wx`.*tree.*尚未.*官方.*(?:编译|预览)/s);
+  assert.match(currentSection, /证据状态为 \*\*Blocked\*\*/);
+  assert.doesNotMatch(
+    currentSection,
+    /deb274c58f64b6259e89d19a582200182126d770|021ed57a0b3b1e876123befad4f375446621fb42/,
+  );
+  assert.doesNotMatch(currentSection, /WXML 32400|WXSS 2|3398|11626 bytes/);
   assert.doesNotMatch(currentSection, /证据状态为 \*\*Accepted\*\*/);
-  assert.match(currentSection, /未调用 `upload`/);
-  assert.match(currentSection, /未发布体验版/);
-  assert.doesNotMatch(currentSection, /(?:^|[^未])调用 `upload`/);
-  assert.doesNotMatch(currentSection, /已发布体验版/);
 
   assert.ok(historicalSection, "verification evidence must retain a dated Taro history section");
   assert.match(historicalSection, /历史/);

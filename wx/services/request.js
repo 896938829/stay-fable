@@ -9,24 +9,36 @@ function requestError(code, message) {
 }
 
 function assertPath(path) {
-  const pathOnly = typeof path === "string" ? path.split(/[?#]/, 1)[0] : "";
-  let decodedPath = "";
-  try {
-    decodedPath = decodeURIComponent(pathOnly);
-  } catch {
+  if (typeof path !== "string" || !path.startsWith("/")) {
     throw requestError("INVALID_REQUEST_PATH", "Invalid request path");
   }
-  if (
-    typeof path !== "string" ||
-    !path.startsWith("/") ||
-    path.startsWith("//") ||
-    path.includes("//") ||
-    path.includes("\\") ||
-    path.includes("://") ||
-    decodedPath.split("/").includes("..")
-  ) {
-    throw requestError("INVALID_REQUEST_PATH", "Invalid request path");
+
+  let candidate = path;
+  for (let depth = 0; depth <= path.length; depth += 1) {
+    const pathOnly = candidate.split(/[?#]/, 1)[0];
+    const segments = pathOnly.split("/");
+    if (
+      candidate.includes("//") ||
+      candidate.includes("\\") ||
+      /(?:^|\/)[A-Za-z][A-Za-z0-9+.-]*:/.test(candidate) ||
+      segments.includes(".") ||
+      segments.includes("..")
+    ) {
+      throw requestError("INVALID_REQUEST_PATH", "Invalid request path");
+    }
+
+    let decoded;
+    try {
+      decoded = decodeURIComponent(candidate);
+    } catch {
+      throw requestError("INVALID_REQUEST_PATH", "Invalid request path");
+    }
+    if (decoded === candidate) {
+      return;
+    }
+    candidate = decoded;
   }
+  throw requestError("INVALID_REQUEST_PATH", "Invalid request path");
 }
 
 function wxRequest(wxApi, options) {
@@ -65,7 +77,10 @@ function createRequestClient(dependencies) {
     refreshSession,
     createRequestId,
   } = dependencies;
+  const reauthenticate = dependencies.reauthenticate || dependencies.ensureSession;
+  const clearSession = dependencies.clearSession;
   let refreshPromise;
+  let reauthenticationPromise;
 
   async function refreshOnce() {
     if (!refreshPromise) {
@@ -76,6 +91,32 @@ function createRequestClient(dependencies) {
         });
     }
     return refreshPromise;
+  }
+
+  async function reauthenticateOnce() {
+    if (!reauthenticationPromise) {
+      reauthenticationPromise = Promise.resolve()
+        .then(() => {
+          if (typeof reauthenticate !== "function") {
+            throw requestError("AUTH_REAUTHENTICATION_FAILED", "Authentication failed");
+          }
+          return reauthenticate();
+        })
+        .catch(() => {
+          if (typeof clearSession === "function") {
+            try {
+              clearSession();
+            } catch {
+              // Preserve the stable authentication failure even if storage cleanup fails.
+            }
+          }
+          throw requestError("AUTH_REAUTHENTICATION_FAILED", "Authentication failed");
+        })
+        .finally(() => {
+          reauthenticationPromise = undefined;
+        });
+    }
+    return reauthenticationPromise;
   }
 
   async function send(method, path, data, options) {
@@ -131,7 +172,15 @@ function createRequestClient(dependencies) {
             ? latestSession.access_token
             : undefined;
         if (latestAccessToken === attemptedAccessToken) {
-          await refreshOnce();
+          try {
+            await refreshOnce();
+          } catch {
+            try {
+              await reauthenticateOnce();
+            } catch {
+              throw requestError("AUTH_REAUTHENTICATION_FAILED", "Authentication failed");
+            }
+          }
         }
         return dispatch(true);
       }
@@ -178,6 +227,12 @@ function getDefaultClient() {
       },
       refreshSession() {
         return require("../stores/session").refreshSession();
+      },
+      ensureSession() {
+        return require("../stores/session").ensureSession();
+      },
+      clearSession() {
+        return require("../stores/session").clear();
       },
       createRequestId: defaultRequestId,
     });

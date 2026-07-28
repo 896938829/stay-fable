@@ -28,7 +28,7 @@ function createSearchStore(options) {
     return {
       city: null,
       ...getDefaultDates(clock),
-      guests: 1,
+      guests: 2,
     };
   }
 

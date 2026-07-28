@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import contracts from "../services/contracts.js";
 import authModule from "../services/auth.js";
@@ -59,7 +59,15 @@ describe("API contracts", () => {
   });
 
   it("validates the backend auth session fields", () => {
-    expect(assertAuthSession(session)).toBe(session);
+    const value = assertAuthSession({
+      ...session,
+      code: "temporary-secret",
+      user: { ...session.user, secret: "private" },
+    });
+    expect(value).toEqual(session);
+    expect(value).not.toBe(session);
+    expect(JSON.stringify(value)).not.toContain("temporary-secret");
+    expect(JSON.stringify(value)).not.toContain("private");
     for (const invalid of [
       { ...session, access_token: "secret-short" },
       { ...session, access_expires_in: 0 },
@@ -71,8 +79,14 @@ describe("API contracts", () => {
   });
 
   it("validates cities and resolved locations", () => {
-    expect(assertCity(city)).toBe(city);
-    expect(assertResolvedLocation({ city, distance_meters: 0 })).toEqual({
+    expect(assertCity({ ...city, longitude: 120, secret: "private" })).toEqual(city);
+    expect(
+      assertResolvedLocation({
+        city: { ...city, latitude: 30 },
+        distance_meters: 0,
+        secret: "private",
+      }),
+    ).toEqual({
       city,
       distance_meters: 0,
     });
@@ -107,8 +121,8 @@ describe("contract-aware services", () => {
       },
     };
     const auth = createAuthService(requestClient);
-    await expect(auth.login("temporary-code")).resolves.toBe(session);
-    await expect(auth.refresh("r".repeat(32))).resolves.toBe(session);
+    await expect(auth.login("temporary-code")).resolves.toEqual(session);
+    await expect(auth.refresh("r".repeat(32))).resolves.toEqual(session);
     expect(calls).toEqual([
       ["/auth/wechat/login", { code: "temporary-code" }, { auth: false, retry: false }],
       [
@@ -120,12 +134,14 @@ describe("contract-aware services", () => {
   });
 
   it("validates city and resolved-location response data", async () => {
+    const get = vi.fn(async () => [city]);
+    const post = vi.fn(async (_path, data) => {
+      expect(data).toEqual({ longitude: 120.1, latitude: 30.2 });
+      return { city, distance_meters: 8 };
+    });
     const requestClient = {
-      get: async () => [city],
-      post: async (_path, data) => {
-        expect(data).toEqual({ longitude: 120.1, latitude: 30.2 });
-        return { city, distance_meters: 8 };
-      },
+      get,
+      post,
     };
     const location = createLocationService(requestClient);
     await expect(location.listCities()).resolves.toEqual([city]);
@@ -134,7 +150,19 @@ describe("contract-aware services", () => {
       distance_meters: 8,
     });
     await expect(location.resolve({ longitude: "120.1", latitude: 30.2 })).rejects.toMatchObject({
-      code: "INVALID_LOCATION_COORDINATES",
+      code: "INVALID_LOCATION_INPUT",
     });
+    for (const coordinates of [
+      { longitude: 180.1, latitude: 30 },
+      { longitude: -180.1, latitude: 30 },
+      { longitude: 120, latitude: 90.1 },
+      { longitude: 120, latitude: -90.1 },
+    ]) {
+      await expect(location.resolve(coordinates)).rejects.toMatchObject({
+        code: "INVALID_LOCATION_INPUT",
+        message: "Invalid location input",
+      });
+    }
+    expect(post).toHaveBeenCalledOnce();
   });
 });
