@@ -37,8 +37,11 @@ test("documents the required WSL2 runtime verification", async () => {
   );
 
   assert.match(guide, /wsl\.exe -l -v[\s\S]*Ubuntu-22\.04[\s\S]*WSL\s*2/i);
-  assert.match(guide, /^docker ps --format [^\r\n]+\|\| true$/m);
-  assert.match(guide, /^docker ps -a --format [^\r\n]+\|\| true$/m);
+  assert.doesNotMatch(guide, /^docker ps(?: -a)? --format [^\r\n]+\|\| true$/m);
+  const inventoryBlock = guide.match(
+    /if ! docker ps --format [^\r\n]+; then[\s\S]*exit 1[\s\S]*fi[\s\S]*if ! docker ps -a --format [^\r\n]+; then[\s\S]*exit 1[\s\S]*fi/,
+  )?.[0];
+  assert.ok(inventoryBlock, "missing mandatory pre-mutation Docker inventory");
   assert.match(
     guide,
     /POSTGRES_PORT=55432 REDIS_PORT=56379 docker compose --project-name stay-fable-wsl-validation -f infrastructure\/compose\.yaml up -d --wait --wait-timeout 120/,
@@ -103,12 +106,9 @@ test("documents the required WSL2 runtime verification", async () => {
     /final_restart_count=.*RestartCount[\s\S]*if \[ "\$final_restart_count" -ne 0 \]; then[\s\S]*docker logs stay-fable-wsl-validation-worker[\s\S]*exit 1[\s\S]*fi[\s\S]*final_worker_logs=.*docker logs --since 10m[\s\S]*if printf[\s\S]*grep -Eiq '\(reconnect\|error\)'[\s\S]*exit 1[\s\S]*fi/,
   );
   assert.match(guide, /不得(停止|删除).*无关容器/s);
-  assert.deepEqual(
-    (guide.match(/^\s*docker (?:rm|stop|kill)[^\r\n]+/gm) ?? []).map((command) => command.trim()),
-    [
-      "docker rm -f stay-fable-wsl-validation-api stay-fable-wsl-validation-worker >/dev/null 2>&1 || true",
-    ],
-  );
+  assert.deepEqual(guide.match(/docker (?:rm|stop|kill)[^\r\n]+/g), [
+    'docker rm -f "$container_name"; then',
+  ]);
   assert.match(
     guide,
     /^\s*if ! POSTGRES_PORT=55432 REDIS_PORT=56379 docker compose --project-name stay-fable-wsl-validation -f infrastructure\/compose\.yaml down; then$/m,
@@ -128,8 +128,17 @@ test("documents the required WSL2 runtime verification", async () => {
   assert.match(cleanupFunction, /trap - EXIT/);
   assert.match(
     cleanupFunction,
-    /docker rm -f stay-fable-wsl-validation-api stay-fable-wsl-validation-worker[^\r\n]*\|\| true/,
+    /for container_name in stay-fable-wsl-validation-api stay-fable-wsl-validation-worker; do/,
   );
+  const exactContainerQueries = cleanupFunction.match(
+    /docker ps -a --filter "name=\^\/\$\{container_name\}\$" --format '\{\{\.Names\}\}'/g,
+  );
+  assert.equal(exactContainerQueries?.length, 2);
+  assert.match(
+    cleanupFunction,
+    /if ! listed_names=.*docker ps -a[\s\S]*cleanup_failed=1[\s\S]*continue[\s\S]*if \[ -n "\$listed_names" \]; then[\s\S]*\[ "\$listed_names" != "\$container_name" \][\s\S]*docker rm -f "\$container_name"[\s\S]*cleanup_failed=1[\s\S]*fi[\s\S]*if ! listed_names=.*docker ps -a[\s\S]*cleanup_failed=1[\s\S]*elif \[ -n "\$listed_names" \]; then[\s\S]*cleanup_failed=1[\s\S]*fi[\s\S]*done/,
+  );
+  assert.doesNotMatch(cleanupFunction, /docker rm[^\r\n]*\|\| true/);
   assert.match(
     cleanupFunction,
     /if ! POSTGRES_PORT=55432 REDIS_PORT=56379 docker compose --project-name stay-fable-wsl-validation[^\r\n]* down; then[\s\S]*cleanup_failed=1[\s\S]*fi/,
@@ -148,6 +157,8 @@ test("documents the required WSL2 runtime verification", async () => {
   const strictModeCommand = "set -Eeuo pipefail";
   const strictModeIndex = guide.indexOf(strictModeCommand);
   assert.ok(trapIndex >= 0);
+  assert.ok(guide.indexOf(inventoryBlock) < guide.indexOf("cleanup_validation()"));
+  assert.ok(guide.indexOf(inventoryBlock) < trapIndex);
   assert.ok(strictModeIndex > trapIndex);
   assert.ok(
     strictModeIndex <

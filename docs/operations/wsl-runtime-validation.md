@@ -28,11 +28,18 @@ wsl.exe -d Ubuntu-22.04 --cd (wsl.exe -d Ubuntu-22.04 -- wslpath -a $repo) bash
 
 ## 2. 盘点现有容器
 
-记录验证前的完整清单：
+记录验证前的完整清单。两次查询都必须成功；Docker daemon 或查询不可用时立即
+退出。此时尚未注册 EXIT trap，也没有执行任何清理或其他变更：
 
 ```bash
-docker ps --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}' || true
-docker ps -a --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}' || true
+if ! docker ps --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}'; then
+  echo '无法盘点运行中的容器，停止验证且不执行清理' >&2
+  exit 1
+fi
+if ! docker ps -a --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}'; then
+  echo '无法盘点全部容器，停止验证且不执行清理' >&2
+  exit 1
+fi
 ```
 
 若 `stay-fable-wsl-validation-api` 或 `stay-fable-wsl-validation-worker` 已存在，
@@ -49,10 +56,32 @@ docker ps -a --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}' || true
 cleanup_validation() {
   local validation_status="$1"
   local cleanup_failed=0
-  local cleanup_repo_root cleanup_current_dir cleanup_runtime_dir
+  local cleanup_repo_root cleanup_current_dir cleanup_runtime_dir container_name listed_names
   trap - EXIT
 
-  docker rm -f stay-fable-wsl-validation-api stay-fable-wsl-validation-worker >/dev/null 2>&1 || true
+  for container_name in stay-fable-wsl-validation-api stay-fable-wsl-validation-worker; do
+    if ! listed_names="$(docker ps -a --filter "name=^/${container_name}$" --format '{{.Names}}')"; then
+      echo "无法查询验证容器：${container_name}" >&2
+      cleanup_failed=1
+      continue
+    fi
+    if [ -n "$listed_names" ]; then
+      if [ "$listed_names" != "$container_name" ]; then
+        echo "容器查询返回非预期名称，拒绝删除：${listed_names}" >&2
+        cleanup_failed=1
+      elif ! docker rm -f "$container_name"; then
+        cleanup_failed=1
+      fi
+    fi
+
+    if ! listed_names="$(docker ps -a --filter "name=^/${container_name}$" --format '{{.Names}}')"; then
+      echo "无法验证容器已删除：${container_name}" >&2
+      cleanup_failed=1
+    elif [ -n "$listed_names" ]; then
+      echo "验证容器清理后仍存在：${container_name}" >&2
+      cleanup_failed=1
+    fi
+  done
 
   if ! POSTGRES_PORT=55432 REDIS_PORT=56379 docker compose --project-name stay-fable-wsl-validation -f infrastructure/compose.yaml down; then
     cleanup_failed=1
@@ -91,9 +120,10 @@ set -Eeuo pipefail
 清理 Compose 时没有使用 `--volumes`，所以验证项目的数据卷会被保留。函数中的
 容器删除命令不得加入其他名称。`set -Eeuo pipefail` 在 trap 之后启用：从步骤 3
 开始，Compose、构建、部署、容器启动、探测、`curl` 或 `inspect` 等普通命令只要
-返回非零状态，就会立即结束当前 Bash 并触发清理。盘点命令和“临时容器不存在”
-是允许失败的情况，已分别用 `|| true` 显式标注；日志关键字 grep 位于 `if`
-条件中，其非匹配状态不会触发误退出。
+返回非零状态，就会立即结束当前 Bash 并触发清理。清理函数对两个固定名称分别
+执行删除前查询、按精确名称删除和删除后查询；查询、daemon、删除或残留错误都会
+使清理失败。临时容器不存在是正常状态，无需执行删除。日志关键字 grep 位于
+`if` 条件中，其非匹配状态不会触发误退出。
 
 ## 3. 用避让端口启动 Compose
 
