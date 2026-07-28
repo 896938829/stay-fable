@@ -755,6 +755,14 @@ refreshSession();
 `search.js` 保存 `{ city, checkin, checkout, guests }`。默认明天入住、一晚、2 人；每次写入
 均执行本地格式和范围校验。
 
+#### 安全实施决策（2026-07-29）
+
+本决策取代本 Task 前文“`session.js` 只持久化 session 对象”的早期描述：access token
+和 refresh token 只保存在小程序进程内存，不调用同步存储读写会话。冷启动删除
+`stay-fable:session` legacy key 后重新执行 `wx.login`；删除失败安全中止，不能读取或
+使用旧 token。401 恢复和请求重放必须绑定首次请求的非空用户 ID；用户变化时返回稳定
+错误且不重放。搜索上下文仍按原计划持久化。
+
 ### Step 4：验证并提交
 
 ```powershell

@@ -8,6 +8,15 @@ function requestError(code, message) {
   return error;
 }
 
+function sessionUserId(session) {
+  return session &&
+    session.user &&
+    typeof session.user.id === "string" &&
+    session.user.id !== ""
+    ? session.user.id
+    : undefined;
+}
+
 function assertPath(path) {
   if (typeof path !== "string" || !path.startsWith("/")) {
     throw requestError("INVALID_REQUEST_PATH", "Invalid request path");
@@ -126,6 +135,15 @@ function createRequestClient(dependencies) {
     const retry = settings.retry !== false;
     const requestId = await Promise.resolve(createRequestId());
     const runtime = getRuntimeConfig(wxApi);
+    let identityCaptured = false;
+    let initialAccessToken;
+    let initialUserId;
+
+    function assertInitialUser(session) {
+      if (initialUserId && sessionUserId(session) !== initialUserId) {
+        throw requestError("AUTH_SESSION_CHANGED", "Session identity changed");
+      }
+    }
 
     async function dispatch(hasRefreshed) {
       let networkAttempt = 0;
@@ -133,6 +151,14 @@ function createRequestClient(dependencies) {
       let attemptedAccessToken;
       while (true) {
         const session = auth ? await Promise.resolve(getSession()) : null;
+        if (!identityCaptured) {
+          initialAccessToken =
+            session && typeof session.access_token === "string"
+              ? session.access_token
+              : undefined;
+          initialUserId = sessionUserId(session);
+          identityCaptured = true;
+        }
         const header = {
           ...(settings.header || {}),
           "x-request-id": requestId,
@@ -167,6 +193,7 @@ function createRequestClient(dependencies) {
       const parsedError = apiError(response);
       if (response.statusCode === 401 && auth && !hasRefreshed) {
         const latestSession = await Promise.resolve(getSession());
+        assertInitialUser(latestSession);
         const latestAccessToken =
           latestSession && typeof latestSession.access_token === "string"
             ? latestSession.access_token
@@ -174,9 +201,10 @@ function createRequestClient(dependencies) {
         const anotherRecoveryCompleted =
           typeof latestAccessToken === "string" &&
           latestAccessToken !== "" &&
-          latestAccessToken !== attemptedAccessToken;
+          latestAccessToken !== initialAccessToken;
         if (!anotherRecoveryCompleted) {
           await recoverOnce();
+          assertInitialUser(await Promise.resolve(getSession()));
         }
         return dispatch(true);
       }

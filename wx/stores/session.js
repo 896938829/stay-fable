@@ -22,6 +22,12 @@ function operationCancelledError() {
   return error;
 }
 
+function storageCleanupError() {
+  const error = new Error("Session storage cleanup failed");
+  error.code = "AUTH_SESSION_STORAGE_CLEANUP_FAILED";
+  return error;
+}
+
 function wechatLogin(wxApi) {
   return new Promise((resolve, reject) => {
     try {
@@ -46,24 +52,39 @@ function wechatLogin(wxApi) {
 function createSessionStore(options) {
   const { wxApi, authService } = options;
   const storageKey = options.storageKey || DEFAULT_STORAGE_KEY;
-  let memory;
-  let loaded = false;
+  let memory = null;
+  let initialized = false;
   let ensurePromise;
   let refreshPromise;
   let generation = 0;
 
+  function removeLegacySession() {
+    try {
+      wxApi.removeStorageSync(storageKey);
+    } catch {
+      throw storageCleanupError();
+    }
+  }
+
+  function initialize() {
+    if (!initialized) {
+      removeLegacySession();
+      memory = null;
+      initialized = true;
+    }
+  }
+
   function clear() {
     generation += 1;
     memory = null;
-    loaded = true;
-    wxApi.removeStorageSync(storageKey);
+    removeLegacySession();
+    initialized = true;
   }
 
   function set(session) {
+    initialize();
     const canonical = assertAuthSession(session);
-    wxApi.setStorageSync(storageKey, canonical);
     memory = canonical;
-    loaded = true;
     generation += 1;
     return canonical;
   }
@@ -73,30 +94,13 @@ function createSessionStore(options) {
       throw operationCancelledError();
     }
     const canonical = assertAuthSession(session);
-    wxApi.setStorageSync(storageKey, canonical);
     memory = canonical;
-    loaded = true;
     generation += 1;
     return canonical;
   }
 
   function get() {
-    if (loaded) {
-      return memory;
-    }
-    loaded = true;
-    const stored = wxApi.getStorageSync(storageKey);
-    if (stored === undefined || stored === null || stored === "") {
-      memory = null;
-      return memory;
-    }
-    try {
-      memory = assertAuthSession(stored);
-      wxApi.setStorageSync(storageKey, memory);
-    } catch {
-      memory = null;
-      wxApi.removeStorageSync(storageKey);
-    }
+    initialize();
     return memory;
   }
 
@@ -174,17 +178,11 @@ let defaultStore;
 function getDefaultStore() {
   if (!defaultStore) {
     const wxApi = {
-      getStorageSync(key) {
-        return globalThis.wx.getStorageSync(key);
-      },
       login(options) {
         return globalThis.wx.login(options);
       },
       removeStorageSync(key) {
         return globalThis.wx.removeStorageSync(key);
-      },
-      setStorageSync(key, value) {
-        return globalThis.wx.setStorageSync(key, value);
       },
     };
     defaultStore = createSessionStore({

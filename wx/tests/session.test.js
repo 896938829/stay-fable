@@ -14,8 +14,8 @@ function makeSession(marker = "a") {
   };
 }
 
-function createStorageWx(initial) {
-  let stored = initial;
+function createStorageWx(legacy) {
+  let stored = legacy;
   return {
     login: vi.fn(),
     getStorageSync: vi.fn(() => stored),
@@ -37,31 +37,47 @@ function deferred() {
   return { promise, resolve };
 }
 
+function expectNoTokenStorage(wxApi) {
+  expect(wxApi.getStorageSync).not.toHaveBeenCalled();
+  expect(wxApi.setStorageSync).not.toHaveBeenCalled();
+  expect(JSON.stringify(wxApi.stored()) || "").not.toMatch(/access_token|refresh_token/);
+}
+
 describe("session store", () => {
-  it("uses a valid stored session without logging in", async () => {
-    const expected = makeSession();
-    const wxApi = createStorageWx({
-      ...expected,
-      code: "persisted-secret",
-      user: { ...expected.user, secret: "private" },
-    });
-    const authService = { login: vi.fn(), refresh: vi.fn() };
+  it("deletes a legacy stored session and performs a fresh login on cold start", async () => {
+    const legacy = makeSession("a");
+    const next = makeSession("b");
+    const wxApi = createStorageWx(legacy);
+    wxApi.login.mockImplementation(({ success }) =>
+      queueMicrotask(() => success({ code: "temporary-login-code" })),
+    );
+    const authService = {
+      login: vi.fn(async () => next),
+      refresh: vi.fn(),
+    };
     const store = createSessionStore({ wxApi, authService, storageKey: "session" });
-    expect(store.get()).toEqual(expected);
-    expect(wxApi.stored()).toEqual(expected);
-    expect(JSON.stringify(wxApi.stored())).not.toContain("secret");
-    await expect(store.ensureSession()).resolves.toEqual(expected);
-    expect(wxApi.login).not.toHaveBeenCalled();
+
+    expect(store.get()).toBeNull();
+    expect(wxApi.removeStorageSync).toHaveBeenCalledOnce();
+    await expect(store.ensureSession()).resolves.toEqual(next);
+    expect(store.get()).toEqual(next);
+    expect(wxApi.login).toHaveBeenCalledOnce();
+    expect(authService.login).toHaveBeenCalledWith("temporary-login-code");
+    expectNoTokenStorage(wxApi);
   });
 
-  it("merges concurrent login exchanges and never stores the code", async () => {
+  it("merges concurrent login exchanges and keeps tokens only in memory", async () => {
     const wxApi = createStorageWx();
     wxApi.login.mockImplementation(({ success }) =>
       queueMicrotask(() => success({ code: "temporary-login-code" })),
     );
-    const next = makeSession("b");
+    const next = makeSession("c");
     const authService = {
-      login: vi.fn(async () => next),
+      login: vi.fn(async () => ({
+        ...next,
+        code: "response-secret",
+        user: { ...next.user, secret: "private" },
+      })),
       refresh: vi.fn(),
     };
     const store = createSessionStore({ wxApi, authService, storageKey: "session" });
@@ -72,7 +88,8 @@ describe("session store", () => {
     ]);
     expect(wxApi.login).toHaveBeenCalledOnce();
     expect(authService.login).toHaveBeenCalledOnce();
-    expect(JSON.stringify(wxApi.stored())).not.toContain("temporary-login-code");
+    expect(store.get()).toEqual(next);
+    expectNoTokenStorage(wxApi);
   });
 
   it("throws a safe login error when wx.login fails or returns no code", async () => {
@@ -91,14 +108,16 @@ describe("session store", () => {
         code: "AUTH_LOGIN_FAILED",
         message: "WeChat login failed",
       });
+      expect(store.get()).toBeNull();
       expect(wxApi.removeStorageSync).toHaveBeenCalledWith("session");
+      expectNoTokenStorage(wxApi);
     }
   });
 
-  it("merges concurrent refreshes and stores the rotated session", async () => {
-    const current = makeSession("c");
-    const next = makeSession("d");
-    const wxApi = createStorageWx(current);
+  it("merges concurrent refreshes and rotates the in-memory session", async () => {
+    const current = makeSession("d");
+    const next = makeSession("e");
+    const wxApi = createStorageWx();
     const authService = {
       login: vi.fn(),
       refresh: vi.fn(async () => {
@@ -107,17 +126,20 @@ describe("session store", () => {
       }),
     };
     const store = createSessionStore({ wxApi, authService, storageKey: "session" });
+    store.set(current);
+
     await expect(Promise.all([store.refreshSession(), store.refreshSession()])).resolves.toEqual([
       next,
       next,
     ]);
     expect(authService.refresh).toHaveBeenCalledOnce();
     expect(authService.refresh).toHaveBeenCalledWith(current.refresh_token);
-    expect(wxApi.stored()).toEqual(next);
+    expect(store.get()).toEqual(next);
+    expectNoTokenStorage(wxApi);
   });
 
-  it("clears memory and storage when refresh fails", async () => {
-    const wxApi = createStorageWx(makeSession("e"));
+  it("clears memory and the legacy key when refresh fails", async () => {
+    const wxApi = createStorageWx();
     const authService = {
       login: vi.fn(),
       refresh: vi.fn(async () => {
@@ -125,12 +147,15 @@ describe("session store", () => {
       }),
     };
     const store = createSessionStore({ wxApi, authService, storageKey: "session" });
+    store.set(makeSession("f"));
+
     await expect(store.refreshSession()).rejects.toMatchObject({ code: "REFRESH_DENIED" });
     expect(store.get()).toBeNull();
-    expect(wxApi.removeStorageSync).toHaveBeenCalledWith("session");
+    expect(wxApi.removeStorageSync).toHaveBeenCalledTimes(2);
+    expectNoTokenStorage(wxApi);
   });
 
-  it("validates set values and clear removes only the session key", () => {
+  it("validates explicit values in memory and clear deletes the legacy key again", () => {
     const wxApi = createStorageWx();
     const store = createSessionStore({
       wxApi,
@@ -140,32 +165,60 @@ describe("session store", () => {
     expect(() => store.set({ access_token: "secret" })).toThrowError(
       expect.objectContaining({ code: "INVALID_API_RESPONSE" }),
     );
-    store.set({
-      ...makeSession(),
-      code: "temporary-secret",
-      user: { ...makeSession().user, secret: "private" },
-    });
-    expect(JSON.stringify(wxApi.stored())).not.toContain("temporary-secret");
-    expect(JSON.stringify(wxApi.stored())).not.toContain("private");
+    const expected = makeSession("g");
+    expect(
+      store.set({
+        ...expected,
+        code: "temporary-secret",
+        user: { ...expected.user, secret: "private" },
+      }),
+    ).toEqual(expected);
+    expect(store.get()).toEqual(expected);
     store.clear();
-    expect(wxApi.removeStorageSync).toHaveBeenCalledWith("session");
+    expect(store.get()).toBeNull();
+    expect(wxApi.removeStorageSync).toHaveBeenCalledTimes(2);
+    expectNoTokenStorage(wxApi);
+  });
+
+  it("fails safely without reading a legacy token when cleanup fails", async () => {
+    const wxApi = createStorageWx(makeSession("h"));
+    wxApi.removeStorageSync.mockImplementation(() => {
+      throw new Error("storage path and token secret");
+    });
+    const authService = { login: vi.fn(), refresh: vi.fn() };
+    const store = createSessionStore({ wxApi, authService, storageKey: "session" });
+
+    expect(() => store.get()).toThrowError(
+      expect.objectContaining({
+        code: "AUTH_SESSION_STORAGE_CLEANUP_FAILED",
+        message: "Session storage cleanup failed",
+      }),
+    );
+    await expect(Promise.resolve().then(() => store.ensureSession())).rejects.toMatchObject({
+      code: "AUTH_SESSION_STORAGE_CLEANUP_FAILED",
+      message: "Session storage cleanup failed",
+    });
+    expect(wxApi.login).not.toHaveBeenCalled();
+    expect(authService.login).not.toHaveBeenCalled();
+    expect(wxApi.getStorageSync).not.toHaveBeenCalled();
+    expect(wxApi.setStorageSync).not.toHaveBeenCalled();
   });
 
   it("does not revive a session when clear wins over an in-flight refresh", async () => {
-    const current = makeSession("f");
-    const next = makeSession("g");
+    const current = makeSession("i");
+    const next = makeSession("j");
     const pending = deferred();
-    const wxApi = createStorageWx(current);
+    const wxApi = createStorageWx();
     const authService = {
       login: vi.fn(),
       refresh: vi.fn(() => pending.promise),
     };
     const store = createSessionStore({ wxApi, authService, storageKey: "session" });
+    store.set(current);
 
     const refresh = store.refreshSession();
     await vi.waitFor(() => expect(authService.refresh).toHaveBeenCalledOnce());
     store.clear();
-    const writesAfterClear = wxApi.setStorageSync.mock.calls.length;
     pending.resolve(next);
 
     await expect(refresh).rejects.toMatchObject({
@@ -173,12 +226,11 @@ describe("session store", () => {
       message: "Session operation cancelled",
     });
     expect(store.get()).toBeNull();
-    expect(wxApi.stored()).toBeUndefined();
-    expect(wxApi.setStorageSync).toHaveBeenCalledTimes(writesAfterClear);
+    expectNoTokenStorage(wxApi);
   });
 
   it("does not revive a session when clear wins over an in-flight login", async () => {
-    const next = makeSession("h");
+    const next = makeSession("k");
     const pending = deferred();
     const wxApi = createStorageWx();
     wxApi.login.mockImplementation(({ success }) => success({ code: "temporary-code" }));
@@ -191,7 +243,6 @@ describe("session store", () => {
     const login = store.ensureSession();
     await vi.waitFor(() => expect(authService.login).toHaveBeenCalledOnce());
     store.clear();
-    const writesAfterClear = wxApi.setStorageSync.mock.calls.length;
     pending.resolve(next);
 
     await expect(login).rejects.toMatchObject({
@@ -199,25 +250,24 @@ describe("session store", () => {
       message: "Session operation cancelled",
     });
     expect(store.get()).toBeNull();
-    expect(wxApi.stored()).toBeUndefined();
-    expect(wxApi.setStorageSync).toHaveBeenCalledTimes(writesAfterClear);
+    expectNoTokenStorage(wxApi);
   });
 
   it("does not let an old refresh overwrite an explicitly set session", async () => {
     const pending = deferred();
-    const explicit = makeSession("i");
-    const stale = makeSession("j");
-    const wxApi = createStorageWx(makeSession("k"));
+    const explicit = makeSession("l");
+    const stale = makeSession("m");
+    const wxApi = createStorageWx();
     const authService = {
       login: vi.fn(),
       refresh: vi.fn(() => pending.promise),
     };
     const store = createSessionStore({ wxApi, authService, storageKey: "session" });
+    store.set(makeSession("n"));
 
     const refresh = store.refreshSession();
     await vi.waitFor(() => expect(authService.refresh).toHaveBeenCalledOnce());
     store.set(explicit);
-    const writesAfterSet = wxApi.setStorageSync.mock.calls.length;
     pending.resolve(stale);
 
     await expect(refresh).rejects.toMatchObject({
@@ -225,7 +275,6 @@ describe("session store", () => {
       message: "Session operation cancelled",
     });
     expect(store.get()).toEqual(explicit);
-    expect(wxApi.stored()).toEqual(explicit);
-    expect(wxApi.setStorageSync).toHaveBeenCalledTimes(writesAfterSet);
+    expectNoTokenStorage(wxApi);
   });
 });

@@ -19,6 +19,13 @@ function createClient(request, overrides = {}) {
   });
 }
 
+function identitySession(userId, token) {
+  return {
+    access_token: token,
+    user: { id: userId },
+  };
+}
+
 describe("request client", () => {
   it("returns validated envelope data and adds request/session headers", async () => {
     const request = vi.fn((options) => {
@@ -493,5 +500,134 @@ describe("request client", () => {
     expect(reauthenticate).not.toHaveBeenCalled();
     expect(clearSession).not.toHaveBeenCalled();
     expect(request).toHaveBeenCalledOnce();
+  });
+
+  it("does not replay a POST body after the active user changes", async () => {
+    const userA = "11111111-1111-4111-8111-111111111111";
+    const userB = "22222222-2222-4222-8222-222222222222";
+    let session = identitySession(userA, "token-a");
+    const request = vi.fn((options) => {
+      session = identitySession(userB, "token-b");
+      options.success({
+        statusCode: 401,
+        data: {
+          error: { code: "UNAUTHORIZED", message: "Expired" },
+          request_id: "req_user_a",
+        },
+      });
+    });
+    const refreshSession = vi.fn();
+    const reauthenticate = vi.fn();
+    const client = createClient(request, {
+      getSession: () => session,
+      refreshSession,
+      reauthenticate,
+    });
+
+    await expect(client.post("/booking", { private: "user-a-body" })).rejects.toMatchObject({
+      code: "AUTH_SESSION_CHANGED",
+      message: "Session identity changed",
+    });
+    expect(request).toHaveBeenCalledOnce();
+    expect(refreshSession).not.toHaveBeenCalled();
+    expect(reauthenticate).not.toHaveBeenCalled();
+  });
+
+  it("does not replay after recovery authenticates a different user", async () => {
+    const userA = "11111111-1111-4111-8111-111111111111";
+    const userB = "22222222-2222-4222-8222-222222222222";
+    let session = identitySession(userA, "token-a");
+    const request = vi.fn((options) =>
+      options.success({
+        statusCode: 401,
+        data: {
+          error: { code: "UNAUTHORIZED", message: "Expired" },
+          request_id: "req_user_a",
+        },
+      }),
+    );
+    const refreshSession = vi.fn(async () => {
+      session = null;
+      throw new Error("refresh failed");
+    });
+    const reauthenticate = vi.fn(async () => {
+      session = identitySession(userB, "token-b");
+    });
+    const client = createClient(request, {
+      getSession: () => session,
+      refreshSession,
+      reauthenticate,
+    });
+
+    await expect(client.get("/private")).rejects.toMatchObject({
+      code: "AUTH_SESSION_CHANGED",
+      message: "Session identity changed",
+    });
+    expect(refreshSession).toHaveBeenCalledOnce();
+    expect(reauthenticate).toHaveBeenCalledOnce();
+    expect(request).toHaveBeenCalledOnce();
+  });
+
+  it("replays once when recovery rotates a token for the same user", async () => {
+    const userA = "11111111-1111-4111-8111-111111111111";
+    let session = identitySession(userA, "token-old");
+    const request = vi.fn((options) =>
+      options.success(
+        options.header.Authorization === "Bearer token-new"
+          ? { statusCode: 200, data: { data: "ok", request_id: "req_new" } }
+          : {
+              statusCode: 401,
+              data: {
+                error: { code: "UNAUTHORIZED", message: "Expired" },
+                request_id: "req_old",
+              },
+            },
+      ),
+    );
+    const refreshSession = vi.fn(async () => {
+      session = identitySession(userA, "token-new");
+    });
+    const client = createClient(request, {
+      getSession: () => session,
+      refreshSession,
+    });
+
+    await expect(client.get("/private")).resolves.toBe("ok");
+    expect(refreshSession).toHaveBeenCalledOnce();
+    expect(request).toHaveBeenCalledTimes(2);
+  });
+
+  it("allows an initially anonymous request to replay once after login", async () => {
+    const userA = "11111111-1111-4111-8111-111111111111";
+    let session = null;
+    const request = vi.fn((options) =>
+      options.success(
+        options.header.Authorization === "Bearer token-new"
+          ? { statusCode: 200, data: { data: "ok", request_id: "req_new" } }
+          : {
+              statusCode: 401,
+              data: {
+                error: { code: "UNAUTHORIZED", message: "Login required" },
+                request_id: "req_anonymous",
+              },
+            },
+      ),
+    );
+    const refreshSession = vi.fn(async () => {
+      throw new Error("no refresh session");
+    });
+    const reauthenticate = vi.fn(async () => {
+      session = identitySession(userA, "token-new");
+    });
+    const client = createClient(request, {
+      getSession: () => session,
+      refreshSession,
+      reauthenticate,
+    });
+
+    await expect(client.get("/private")).resolves.toBe("ok");
+    expect(refreshSession).toHaveBeenCalledOnce();
+    expect(reauthenticate).toHaveBeenCalledOnce();
+    expect(request).toHaveBeenCalledTimes(2);
   });
 });
