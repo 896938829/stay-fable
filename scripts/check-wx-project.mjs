@@ -1,17 +1,40 @@
-import { access, readFile } from "node:fs/promises";
+import { readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 const pageExtensions = [".js", ".json", ".wxml", ".wxss"];
 const pagePathPattern = /^[A-Za-z0-9_/-]+$/;
 
-async function readJson(filePath) {
-  return JSON.parse(await readFile(filePath, "utf8"));
+async function readJson(filePath, fileName) {
+  let source;
+
+  try {
+    source = await readFile(filePath, "utf8");
+  } catch (error) {
+    throw new Error(`Unable to read ${fileName}: ${error.message}`, { cause: error });
+  }
+
+  let value;
+
+  try {
+    value = JSON.parse(source);
+  } catch (error) {
+    throw new Error(`${fileName} must contain valid JSON: ${error.message}`, { cause: error });
+  }
+
+  if (value === null || Array.isArray(value) || typeof value !== "object") {
+    throw new Error(`${fileName} must contain a JSON object`);
+  }
+
+  return value;
 }
 
 export async function validateWxProject(projectRoot) {
-  const projectConfig = await readJson(path.join(projectRoot, "project.config.json"));
-  const app = await readJson(path.join(projectRoot, "app.json"));
+  const projectConfig = await readJson(
+    path.join(projectRoot, "project.config.json"),
+    "project.config.json",
+  );
+  const app = await readJson(path.join(projectRoot, "app.json"), "app.json");
 
   if (projectConfig.compileType !== "miniprogram") {
     throw new Error('project.config.json must set compileType to "miniprogram"');
@@ -33,10 +56,15 @@ export async function validateWxProject(projectRoot) {
 
     for (const extension of pageExtensions) {
       const pageFile = path.join(projectRoot, `${page}${extension}`);
+      let pageFileStats;
 
       try {
-        await access(pageFile);
+        pageFileStats = await stat(pageFile);
       } catch {
+        // Report missing and inaccessible paths through the same project contract error.
+      }
+
+      if (!pageFileStats?.isFile()) {
         throw new Error(`Missing WeChat page file: ${page}${extension}`);
       }
     }

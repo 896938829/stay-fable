@@ -43,9 +43,39 @@ test("rejects a page missing its WXML file", async () => {
   await assert.rejects(() => validateWxProject(root), /index\.wxml/);
 });
 
+test("rejects a directory in place of a required page file", async () => {
+  const root = await createFixture();
+  const wxmlPath = path.join(root, "pages", "index", "index.wxml");
+  await unlink(wxmlPath);
+  await mkdir(wxmlPath);
+
+  await assert.rejects(() => validateWxProject(root), /Missing WeChat page file:.*index\.wxml/);
+});
+
 test("rejects a traversal page path", async () => {
   const root = await createFixture();
   await writeFile(path.join(root, "app.json"), JSON.stringify({ pages: ["../outside"] }));
 
-  await assert.rejects(() => validateWxProject(root), /\.\.\/outside/);
+  await assert.rejects(() => validateWxProject(root), /Invalid WeChat page path/);
+});
+
+test("identifies malformed JSON by file", async () => {
+  const root = await createFixture();
+  await writeFile(path.join(root, "app.json"), "{");
+
+  await assert.rejects(() => validateWxProject(root), /app\.json.*valid JSON/i);
+});
+
+test("requires project configuration JSON to have an object root", async () => {
+  const root = await createFixture();
+  await writeFile(path.join(root, "project.config.json"), "null");
+
+  await assert.rejects(() => validateWxProject(root), /project\.config\.json.*JSON object/i);
+});
+
+test("requires app JSON to have an object root", async () => {
+  const root = await createFixture();
+  await writeFile(path.join(root, "app.json"), "null");
+
+  await assert.rejects(() => validateWxProject(root), /app\.json.*JSON object/i);
 });
