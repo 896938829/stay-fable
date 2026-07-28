@@ -7,6 +7,8 @@ import request from "supertest";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 
 import { configureApplication } from "../src/application-configuration.js";
+import { DatabaseService } from "../src/database/database.service.js";
+import { REDIS_CLIENT } from "../src/infrastructure/redis/redis.service.js";
 import { CurrentUser, type AuthenticatedUser } from "../src/identity/current-user.js";
 import { IdentityModule } from "../src/identity/identity.module.js";
 import { SessionAuthGuard } from "../src/identity/session-auth.guard.js";
@@ -19,6 +21,8 @@ const suiteName = runDatabaseIntegration
   : "identity authentication with real PostgreSQL and Redis (set RUN_DATABASE_INTEGRATION=true to run)";
 
 const hash = (token: string) => createHash("sha256").update(token).digest("hex");
+const tokenForE2e = (label: string): string =>
+  `${label}-${randomBytes(20).toString("base64url")}`.padEnd(43, "x");
 
 interface TestSession {
   access_token: string;
@@ -42,10 +46,13 @@ class IdentityProbeController {
 describeDatabase(suiteName, () => {
   let app: INestApplication;
   let redis: Redis;
+  let database: DatabaseService;
   let server: Parameters<typeof request>[0];
   const logWrites: string[] = [];
   let restoreStdout: (() => void) | undefined;
   const keysToClean = new Set<string>();
+  const userIdsToClean = new Set<string>();
+  const suiteStartedAt = new Date();
   const suffix = randomBytes(10).toString("hex");
   const codeA = `mock:user-a-${suffix}`;
   const codeB = `mock:user-b-${suffix}`;
@@ -68,6 +75,7 @@ describeDatabase(suiteName, () => {
     configureApplication(app, "production");
     await app.init();
     server = app.getHttpServer() as Parameters<typeof request>[0];
+    database = app.get(DatabaseService);
     const redisUrl = process.env.REDIS_URL;
     if (redisUrl === undefined) {
       throw new Error("REDIS_URL is required");
@@ -83,6 +91,11 @@ describeDatabase(suiteName, () => {
         }
         redis.disconnect();
       }
+      if (database !== undefined && userIdsToClean.size > 0) {
+        await database.user.deleteMany({
+          where: { id: { in: [...userIdsToClean] } },
+        });
+      }
       await app?.close();
     } finally {
       restoreStdout?.();
@@ -95,10 +108,42 @@ describeDatabase(suiteName, () => {
       .send({ code })
       .expect(201);
     const session = (response.body as { data: TestSession }).data;
+    userIdsToClean.add(session.user.id);
     keysToClean.add(`session:access:${hash(session.access_token)}`);
     keysToClean.add(`session:refresh:${hash(session.refresh_token)}`);
+    keysToClean.add(`session:used-refresh:${hash(session.refresh_token)}`);
+    keysToClean.add(`session:family:${hash(session.refresh_token)}`);
     return session;
   };
+
+  it("converges concurrent first login on one identity without orphan users", async () => {
+    const concurrentCode = `mock:concurrent-${suffix}`;
+    const orphanCountBefore = await database.user.count({
+      where: {
+        createdAt: { gte: suiteStartedAt },
+        identities: { none: {} },
+      },
+    });
+
+    const sessions = await Promise.all(Array.from({ length: 24 }, () => login(concurrentCode)));
+    const ids = new Set(sessions.map(({ user }) => user.id));
+    expect(ids.size).toBe(1);
+
+    const providerSubject = `mock_${hash(concurrentCode)}`;
+    await expect(
+      database.userIdentity.count({
+        where: { provider: "WECHAT", providerSubject },
+      }),
+    ).resolves.toBe(1);
+    await expect(
+      database.user.count({
+        where: {
+          createdAt: { gte: suiteStartedAt },
+          identities: { none: {} },
+        },
+      }),
+    ).resolves.toBe(orphanCountBefore);
+  });
 
   it("maps repeated mock code to one user and a different code to another user", async () => {
     const first = await login(codeA);
@@ -175,6 +220,35 @@ describeDatabase(suiteName, () => {
       });
   });
 
+  it("revokes access, refresh, and family before rejecting a disabled user", async () => {
+    const disabledCode = `mock:disabled-${suffix}`;
+    const session = await login(disabledCode);
+    const familyId = hash(session.refresh_token);
+    await database.user.update({
+      where: { id: session.user.id },
+      data: { status: "DISABLED" },
+    });
+
+    await request(server)
+      .post("/api/v1/auth/session/refresh")
+      .send({ refresh_token: session.refresh_token })
+      .expect(403)
+      .expect((response) => {
+        expect((response.body as ErrorEnvelope).error.code).toBe("AUTH_USER_DISABLED");
+      });
+    await request(server)
+      .get("/api/v1/identity-test/current-user")
+      .set("Authorization", `Bearer ${session.access_token}`)
+      .expect(401);
+    await expect(
+      redis.mget(
+        `session:access:${hash(session.access_token)}`,
+        `session:refresh:${hash(session.refresh_token)}`,
+        `session:family:${familyId}`,
+      ),
+    ).resolves.toEqual([null, null, null]);
+  });
+
   it("returns stable session expiry for missing and invalid access", async () => {
     for (const authorization of [undefined, `Bearer ${"invalid".repeat(8)}`]) {
       const call = request(server).get("/api/v1/identity-test/current-user");
@@ -184,6 +258,33 @@ describeDatabase(suiteName, () => {
       await call.expect(401).expect((response) => {
         expect((response.body as ErrorEnvelope).error.code).toBe("AUTH_SESSION_EXPIRED");
       });
+    }
+  });
+
+  it("distinguishes invalid refresh from Redis dependency failure", async () => {
+    const unknownRefresh = tokenForE2e("unknown-refresh");
+    await request(server)
+      .post("/api/v1/auth/session/refresh")
+      .send({ refresh_token: unknownRefresh })
+      .expect(401)
+      .expect((response) => {
+        expect((response.body as ErrorEnvelope).error.code).toBe("AUTH_REFRESH_REJECTED");
+      });
+
+    const applicationRedis = app.get<Redis>(REDIS_CLIENT);
+    applicationRedis.disconnect();
+    try {
+      await request(server)
+        .post("/api/v1/auth/session/refresh")
+        .send({ refresh_token: unknownRefresh })
+        .expect(503)
+        .expect((response) => {
+          expect((response.body as ErrorEnvelope).error.code).toBe(
+            "AUTH_SESSION_SERVICE_UNAVAILABLE",
+          );
+        });
+    } finally {
+      await applicationRedis.connect();
     }
   });
 

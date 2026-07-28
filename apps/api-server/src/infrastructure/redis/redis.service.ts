@@ -7,7 +7,7 @@ export interface RedisClient {
   quit: () => Promise<unknown>;
   get: (key: string) => Promise<string | null>;
   set: (key: string, value: string, expiryMode: "EX", ttlSeconds: number) => Promise<unknown>;
-  eval: (script: string, numberOfKeys: number, key: string) => Promise<unknown>;
+  eval: (script: string, numberOfKeys: number, ...arguments_: string[]) => Promise<unknown>;
   del: (key: string) => Promise<unknown>;
 }
 
@@ -97,6 +97,22 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
     }
 
     return parseStoredJson<T>(value);
+  }
+
+  async executeSessionScript(
+    script: string,
+    keys: string[],
+    arguments_: string[],
+  ): Promise<string> {
+    try {
+      const result = await this.redis.eval(script, keys.length, ...keys, ...arguments_);
+      if (typeof result !== "string") {
+        throw new Error("Invalid session script result");
+      }
+      return result;
+    } catch {
+      throw new Error("Redis session script failed");
+    }
   }
 
   async delete(key: string): Promise<void> {

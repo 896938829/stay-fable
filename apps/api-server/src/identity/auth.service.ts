@@ -85,7 +85,18 @@ export class AuthService {
     return this.sessions.issue(requireEnabled(user).id);
   }
 
-  refresh(refreshToken: string): Promise<AuthSession> {
-    return this.sessions.refresh(refreshToken);
+  async refresh(refreshToken: string): Promise<AuthSession> {
+    const inspected = await this.sessions.inspectRefresh(refreshToken);
+    const user = await this.database.user.findUnique({
+      where: { id: inspected.userId },
+      select: { status: true },
+    });
+
+    if (user === null || user.status === "DISABLED") {
+      await this.sessions.revokeFamilyByRefresh(refreshToken);
+      throw new BusinessException(403, "AUTH_USER_DISABLED", "账号已被停用");
+    }
+
+    return this.sessions.refresh(refreshToken, inspected);
   }
 }

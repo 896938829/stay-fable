@@ -37,6 +37,9 @@ const createHarness = (existingUser: typeof activeUser | null = activeUser) => {
       create: vi.fn(() => Promise.resolve(activeUser)),
     },
   };
+  const databaseUserFindUnique = vi.fn(() =>
+    Promise.resolve<{ status: "ACTIVE" | "DISABLED" } | null>({ status: "ACTIVE" }),
+  );
   const database = {
     $transaction: vi.fn((callback: (tx: typeof transaction) => unknown) =>
       Promise.resolve(callback(transaction)),
@@ -44,14 +47,19 @@ const createHarness = (existingUser: typeof activeUser | null = activeUser) => {
     userIdentity: {
       findUnique: vi.fn(() => Promise.resolve({ user: activeUser })),
     },
+    user: {
+      findUnique: databaseUserFindUnique,
+    },
   } as unknown as DatabaseService;
   const sessions = {
     issue: vi.fn(() => Promise.resolve(session)),
+    inspectRefresh: vi.fn(() => Promise.resolve({ userId: activeUser.id, familyId: "family-id" })),
+    revokeFamilyByRefresh: vi.fn(() => Promise.resolve()),
     refresh: vi.fn(),
   } as unknown as SessionService;
   const service = new AuthService(provider, database, sessions);
 
-  return { service, provider, database, transaction, sessions };
+  return { service, provider, database, databaseUserFindUnique, transaction, sessions };
 };
 
 describe("AuthService", () => {
@@ -116,11 +124,36 @@ describe("AuthService", () => {
     expect(sessions.issue).not.toHaveBeenCalled();
   });
 
-  it("delegates refresh rotation to SessionService", async () => {
-    const { service, sessions } = createHarness();
+  it("inspects an enabled user before rotating the same family", async () => {
+    const { service, database, sessions } = createHarness();
     vi.mocked(sessions.refresh).mockResolvedValueOnce(session);
 
     await expect(service.refresh("r".repeat(32))).resolves.toEqual(session);
-    expect(sessions.refresh).toHaveBeenCalledWith("r".repeat(32));
+    expect(sessions.inspectRefresh).toHaveBeenCalledWith("r".repeat(32));
+    expect(database.user.findUnique).toHaveBeenCalledWith({
+      where: { id: activeUser.id },
+      select: { status: true },
+    });
+    expect(sessions.refresh).toHaveBeenCalledWith("r".repeat(32), {
+      userId: activeUser.id,
+      familyId: "family-id",
+    });
+    expect(sessions.revokeFamilyByRefresh).not.toHaveBeenCalled();
   });
+
+  it.each([null, { ...activeUser, status: "DISABLED" as const }])(
+    "revokes the family before rejecting a missing or disabled user",
+    async (databaseUser) => {
+      const { service, databaseUserFindUnique, sessions } = createHarness();
+      databaseUserFindUnique.mockResolvedValueOnce(databaseUser);
+
+      await expect(service.refresh("r".repeat(32))).rejects.toMatchObject({
+        code: "AUTH_USER_DISABLED",
+        message: "账号已被停用",
+        status: 403,
+      });
+      expect(sessions.revokeFamilyByRefresh).toHaveBeenCalledWith("r".repeat(32));
+      expect(sessions.refresh).not.toHaveBeenCalled();
+    },
+  );
 });

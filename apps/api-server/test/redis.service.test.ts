@@ -93,6 +93,43 @@ describe("RedisService", () => {
     expect(vi.mocked(client.eval).mock.calls[0]?.[0]).toContain("redis.call('DEL', KEYS[1])");
   });
 
+  it("executes a session script with all declared keys and arguments", async () => {
+    vi.mocked(client.eval).mockResolvedValueOnce("OK");
+
+    await expect(
+      service.executeSessionScript(
+        "return 'OK'",
+        ["session:access:a", "session:refresh:r", "session:family:f"],
+        ["access-json", "refresh-json", "family-json", "120000", "600000"],
+      ),
+    ).resolves.toBe("OK");
+
+    expect(client.eval).toHaveBeenCalledWith(
+      "return 'OK'",
+      3,
+      "session:access:a",
+      "session:refresh:r",
+      "session:family:f",
+      "access-json",
+      "refresh-json",
+      "family-json",
+      "120000",
+      "600000",
+    );
+  });
+
+  it("returns a fixed safe failure for session script errors or invalid results", async () => {
+    vi.mocked(client.eval).mockRejectedValueOnce(new Error("secret redis detail"));
+    await expect(service.executeSessionScript("return 1", [], [])).rejects.toThrow(
+      "Redis session script failed",
+    );
+
+    vi.mocked(client.eval).mockResolvedValueOnce(42);
+    await expect(service.executeSessionScript("return 1", [], [])).rejects.toThrow(
+      "Redis session script failed",
+    );
+  });
+
   it("deletes a key", async () => {
     await service.delete("session:1");
 

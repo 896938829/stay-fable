@@ -2,14 +2,14 @@
 import { createHash } from "node:crypto";
 
 import type { ConfigService } from "@nestjs/config";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import type { Clock } from "../src/common/clock/clock.js";
-import { BusinessException } from "../src/common/http/business.exception.js";
 import type { RedisService } from "../src/infrastructure/redis/redis.service.js";
 import {
   SessionService,
-  type StoredSession,
+  type StoredAccessSession,
+  type StoredRefreshSession,
   type TokenGenerator,
 } from "../src/identity/session.service.js";
 
@@ -20,26 +20,13 @@ const refreshToken = "refresh-token-".padEnd(43, "r");
 const nextAccessToken = "next-access-token-".padEnd(43, "a");
 const nextRefreshToken = "next-refresh-token-".padEnd(43, "r");
 const hash = (token: string) => createHash("sha256").update(token).digest("hex");
+const familyId = hash(refreshToken);
 
 const createHarness = () => {
-  const values = new Map<string, StoredSession>();
-  const ttls = new Map<string, number>();
   const redis = {
-    getJson: vi.fn((key: string) => Promise.resolve(values.get(key) ?? null)),
-    setJson: vi.fn((key: string, value: StoredSession, ttl: number) => {
-      values.set(key, value);
-      ttls.set(key, ttl);
-      return Promise.resolve();
-    }),
-    consumeJson: vi.fn((key: string) => {
-      const value = values.get(key) ?? null;
-      values.delete(key);
-      return Promise.resolve(value);
-    }),
-    delete: vi.fn((key: string) => {
-      values.delete(key);
-      return Promise.resolve();
-    }),
+    executeSessionScript: vi.fn(() => Promise.resolve("OK")),
+    getJson: vi.fn(() => Promise.resolve(null)),
+    delete: vi.fn(() => Promise.resolve()),
   } as unknown as RedisService;
   const config = {
     getOrThrow: vi.fn((key: string) => (key === "SESSION_ACCESS_TTL_SECONDS" ? 120 : 600)),
@@ -55,16 +42,12 @@ const createHarness = () => {
   const clock: Clock = { now: vi.fn(() => now) };
   const service = new SessionService(redis, config, tokenGenerator, clock);
 
-  return { service, redis, values, ttls, tokenGenerator, clock };
+  return { service, redis, tokenGenerator };
 };
 
-describe("SessionService", () => {
-  beforeEach(() => {
-    vi.restoreAllMocks();
-  });
-
-  it("stores only hashed access and refresh keys with configured TTLs", async () => {
-    const { service, values, ttls } = createHarness();
+describe("SessionService atomic state transitions", () => {
+  it("issues access, refresh, and family records in one script without plaintext storage", async () => {
+    const { service, redis } = createHarness();
 
     const session = await service.issue(userId);
 
@@ -75,119 +58,146 @@ describe("SessionService", () => {
       refresh_expires_in: 600,
       user: { id: userId },
     });
-    expect([...values.keys()]).toEqual([
+    expect(redis.executeSessionScript).toHaveBeenCalledOnce();
+    const [, keys, arguments_] = vi.mocked(redis.executeSessionScript).mock.calls[0] ?? [];
+    expect(keys).toEqual([
       `session:access:${hash(accessToken)}`,
       `session:refresh:${hash(refreshToken)}`,
+      `session:family:${familyId}`,
     ]);
-    expect([...values.keys()].join(" ")).not.toContain(accessToken);
-    expect([...values.keys()].join(" ")).not.toContain(refreshToken);
-    expect(ttls.get(`session:access:${hash(accessToken)}`)).toBe(120);
-    expect(ttls.get(`session:refresh:${hash(refreshToken)}`)).toBe(600);
-    expect(JSON.stringify([...values.values()])).not.toContain(accessToken);
-    expect(JSON.stringify([...values.values()])).not.toContain(refreshToken);
+    expect(arguments_?.slice(-3)).toEqual(["120000", "600000", String(now.getTime())]);
+    expect(JSON.stringify({ keys, arguments_ })).not.toContain(accessToken);
+    expect(JSON.stringify({ keys, arguments_ })).not.toContain(refreshToken);
   });
 
-  it("generates one high-entropy token for each session kind", async () => {
-    const { service, tokenGenerator } = createHarness();
-
-    await service.issue(userId);
-
-    expect(tokenGenerator.generate).toHaveBeenCalledTimes(2);
-  });
-
-  it("cleans up the access key when writing the refresh record fails", async () => {
+  it("maps issue script failures to a stable 503", async () => {
     const { service, redis } = createHarness();
-    vi.mocked(redis.setJson)
-      .mockResolvedValueOnce()
-      .mockRejectedValueOnce(new Error("redis unavailable"));
+    vi.mocked(redis.executeSessionScript).mockRejectedValueOnce(new Error("redis internals"));
 
-    await expect(service.issue(userId)).rejects.toThrow("redis unavailable");
-    expect(redis.delete).toHaveBeenCalledWith(`session:access:${hash(accessToken)}`);
+    await expect(service.issue(userId)).rejects.toMatchObject({
+      code: "AUTH_SESSION_SERVICE_UNAVAILABLE",
+      message: "登录服务暂时不可用，请稍后重试",
+      status: 503,
+    });
   });
 
-  it("atomically consumes refresh, deletes linked access, and rotates both tokens", async () => {
+  it("inspects an active refresh without consuming it", async () => {
+    const { service, redis, tokenGenerator } = createHarness();
+    const record: StoredRefreshSession = {
+      kind: "refresh",
+      userId,
+      familyId,
+      issuedAt: now.getTime(),
+      expiresAt: now.getTime() + 600_000,
+      accessKey: `session:access:${hash(accessToken)}`,
+    };
+    vi.mocked(redis.executeSessionScript).mockResolvedValueOnce(
+      JSON.stringify({ status: "ACTIVE", record }),
+    );
+
+    await expect(service.inspectRefresh(refreshToken)).resolves.toEqual({ userId, familyId });
+    expect(tokenGenerator.generate).not.toHaveBeenCalled();
+    expect(redis.executeSessionScript).toHaveBeenCalledWith(
+      expect.any(String),
+      [`session:refresh:${hash(refreshToken)}`, `session:used-refresh:${hash(refreshToken)}`],
+      [String(now.getTime())],
+    );
+  });
+
+  it.each(["INVALID", "EXPIRED", "REPLAY"])(
+    "maps inspect status %s to rejected refresh",
+    async (status) => {
+      const { service, redis } = createHarness();
+      vi.mocked(redis.executeSessionScript).mockResolvedValueOnce(status);
+
+      await expect(service.inspectRefresh(refreshToken)).rejects.toMatchObject({
+        code: "AUTH_REFRESH_REJECTED",
+        status: 401,
+      });
+    },
+  );
+
+  it("rotates the family in one script and returns the new tokens", async () => {
     const { service, redis } = createHarness();
+    // Reserve the first pair as if it were already issued.
     await service.issue(userId);
+    vi.mocked(redis.executeSessionScript).mockResolvedValueOnce("OK");
 
-    const rotated = await service.refresh(refreshToken);
+    const rotated = await service.refresh(refreshToken, { userId, familyId });
 
-    expect(redis.consumeJson).toHaveBeenCalledWith(`session:refresh:${hash(refreshToken)}`);
-    expect(redis.delete).toHaveBeenCalledWith(`session:access:${hash(accessToken)}`);
     expect(rotated.access_token).toBe(nextAccessToken);
     expect(rotated.refresh_token).toBe(nextRefreshToken);
-    await expect(service.refresh(refreshToken)).rejects.toMatchObject({
-      code: "AUTH_REFRESH_REJECTED",
-      status: 401,
-    });
+    const [, keys, arguments_] = vi.mocked(redis.executeSessionScript).mock.calls[1] ?? [];
+    expect(keys).toEqual([
+      `session:refresh:${hash(refreshToken)}`,
+      `session:used-refresh:${hash(refreshToken)}`,
+      `session:access:${hash(nextAccessToken)}`,
+      `session:refresh:${hash(nextRefreshToken)}`,
+    ]);
+    expect(arguments_).toEqual(expect.arrayContaining([String(now.getTime()), "120000", "600000"]));
   });
 
-  it("rejects expired refresh records without issuing replacements", async () => {
-    const { service, values, tokenGenerator } = createHarness();
-    values.set(`session:refresh:${hash(refreshToken)}`, {
-      kind: "refresh",
-      userId,
-      familyId: "family",
-      issuedAt: now.getTime() - 10_000,
-      expiresAt: now.getTime() - 1,
-      accessKey: `session:access:${hash(accessToken)}`,
-    });
+  it.each(["INVALID", "EXPIRED", "REPLAY"])(
+    "maps rotate status %s to a stable 401",
+    async (status) => {
+      const { service, redis } = createHarness();
+      vi.mocked(redis.executeSessionScript).mockResolvedValueOnce(status);
 
-    await expect(service.refresh(refreshToken)).rejects.toMatchObject({
-      code: "AUTH_REFRESH_REJECTED",
-    });
-    expect(tokenGenerator.generate).not.toHaveBeenCalled();
-  });
-
-  it("normalizes Redis failures after destructive refresh consumption", async () => {
-    const { service, redis } = createHarness();
-    vi.mocked(redis.consumeJson).mockRejectedValueOnce(new Error("redis internals"));
-
-    const rejection = service.refresh(refreshToken);
-
-    await expect(rejection).rejects.toBeInstanceOf(BusinessException);
-    await expect(rejection).rejects.toMatchObject({
-      code: "AUTH_REFRESH_REJECTED",
-      message: "刷新凭证无效或已过期",
-      status: 401,
-    });
-  });
-
-  it("resolves a valid access session to its user", async () => {
-    const { service } = createHarness();
-    await service.issue(userId);
-
-    await expect(service.resolveAccess(accessToken)).resolves.toEqual({ userId });
-  });
-
-  it.each([
-    null,
-    {
-      kind: "refresh",
-      userId,
-      familyId: "family",
-      issuedAt: now.getTime(),
-      expiresAt: now.getTime() + 1000,
-      accessKey: "session:access:any",
+      await expect(service.refresh(refreshToken, { userId, familyId })).rejects.toMatchObject({
+        code: "AUTH_REFRESH_REJECTED",
+        status: 401,
+      });
     },
-    {
+  );
+
+  it("maps inspect and rotate Redis faults to a stable 503", async () => {
+    const { service, redis } = createHarness();
+    vi.mocked(redis.executeSessionScript).mockRejectedValue(new Error("redis internals"));
+
+    await expect(service.inspectRefresh(refreshToken)).rejects.toMatchObject({
+      code: "AUTH_SESSION_SERVICE_UNAVAILABLE",
+      status: 503,
+    });
+    await expect(service.refresh(refreshToken, { userId, familyId })).rejects.toMatchObject({
+      code: "AUTH_SESSION_SERVICE_UNAVAILABLE",
+      status: 503,
+    });
+  });
+
+  it("revokes a family through the supplied refresh hash", async () => {
+    const { service, redis } = createHarness();
+    vi.mocked(redis.executeSessionScript).mockResolvedValueOnce("REVOKED");
+
+    await expect(service.revokeFamilyByRefresh(refreshToken)).resolves.toBeUndefined();
+    expect(redis.executeSessionScript).toHaveBeenCalledWith(
+      expect.any(String),
+      [`session:refresh:${hash(refreshToken)}`, `session:used-refresh:${hash(refreshToken)}`],
+      [String(now.getTime())],
+    );
+  });
+
+  it("resolves active access and distinguishes dependency faults from expiry", async () => {
+    const { service, redis } = createHarness();
+    const record: StoredAccessSession = {
       kind: "access",
       userId,
-      familyId: "family",
-      issuedAt: now.getTime() - 2000,
-      expiresAt: now.getTime() - 1,
-    },
-  ])("rejects missing, wrong-kind, or expired access records", async (record) => {
-    const { service, values, redis } = createHarness();
-    const key = `session:access:${hash(accessToken)}`;
-    if (record !== null) {
-      values.set(key, record as StoredSession);
-    }
+      familyId,
+      issuedAt: now.getTime(),
+      expiresAt: now.getTime() + 120_000,
+    };
+    vi.mocked(redis.getJson).mockResolvedValueOnce(record);
+    await expect(service.resolveAccess(accessToken)).resolves.toEqual({ userId });
 
+    vi.mocked(redis.getJson).mockResolvedValueOnce(null);
     await expect(service.resolveAccess(accessToken)).rejects.toMatchObject({
       code: "AUTH_SESSION_EXPIRED",
-      message: "登录状态已过期，请重新登录",
       status: 401,
     });
-    expect(redis.delete).toHaveBeenCalledWith(key);
+
+    vi.mocked(redis.getJson).mockRejectedValueOnce(new Error("redis internals"));
+    await expect(service.resolveAccess(accessToken)).rejects.toMatchObject({
+      code: "AUTH_SESSION_SERVICE_UNAVAILABLE",
+      status: 503,
+    });
   });
 });
