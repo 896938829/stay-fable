@@ -1,6 +1,6 @@
 # Stay Fable 微信最小预订闭环设计
 
-状态：待用户书面复核  
+状态：已确认  
 日期：2026-07-29  
 上位设计：`2026-07-28-wx-first-development-landscape-design.md`
 
