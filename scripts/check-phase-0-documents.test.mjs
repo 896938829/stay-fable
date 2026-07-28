@@ -176,6 +176,37 @@ function canonicalMarkdown(markdown) {
     .join("\n");
 }
 
+function normalizedMarkdownBullets(section) {
+  const bullets = [];
+  let current = "";
+
+  function saveCurrent() {
+    if (current) {
+      bullets.push(current.replace(/\s+/g, " ").trim());
+      current = "";
+    }
+  }
+
+  for (const line of section.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    const bullet = /^-\s+(.+)$/.exec(trimmed);
+    if (bullet) {
+      saveCurrent();
+      current = bullet[1];
+      continue;
+    }
+    if (/^-{3,}$/.test(trimmed)) {
+      break;
+    }
+    if (current && trimmed) {
+      current += ` ${trimmed}`;
+    }
+  }
+  saveCurrent();
+
+  return bullets;
+}
+
 function assertDependencyAuditEvidenceConsistent(evidenceIndex, dependencyAudit) {
   const summaries = [
     ...dependencyAudit.matchAll(/^Current audit summary: (\d+) CRITICAL, (\d+) HIGH$/gm),
@@ -312,72 +343,18 @@ test("WeChat-first workspace plan records the completed implementation baseline"
   ]) {
     assert.ok(completionSummary.includes(evidence), `completion summary must include ${evidence}`);
   }
-  assert.match(
-    completionSummary,
-    /实施基线[^。\r\n]*5a7ba6f1800c26569e2cb41679c3f8cc26ede22d/,
-    "completion summary must identify the final SHA as the implementation baseline",
-  );
-  assert.match(
-    completionSummary,
-    /(?:29[^。\r\n]*(?:2\s*Critical)[^。\r\n]*(?:11\s*High)[^。\r\n]*(?:14\s*Moderate)[^。\r\n]*(?:2\s*Low)|2\s*Critical[^。\r\n]*11\s*High[^。\r\n]*14\s*Moderate[^。\r\n]*2\s*Low[^。\r\n]*29)/i,
-    "completion summary must record the full dependency audit counts",
-  );
-  for (const deferred of ["Taro", "支付宝", "抖音", "多语言"]) {
-    assert.match(
-      completionSummary,
-      new RegExp(`${deferred}[^。\\r\\n]*(?:搁置|延期)|(?:搁置|延期)[^。\\r\\n]*${deferred}`),
-      `completion summary must mark ${deferred} as deferred`,
-    );
-  }
-  assert.match(
-    completionSummary,
-    /未(?:曾)?调用\s*`?upload`?/i,
-    "completion summary must state that upload was not called",
-  );
-  assert.match(
-    completionSummary,
-    /证据状态[^。\r\n]*\bIn\s+review\b/i,
-    "completion summary must keep WeChat evidence In review",
-  );
-  assert.doesNotMatch(
-    completionSummary,
-    /证据状态[^。\r\n]*\bAccepted\b/i,
-    "completion summary must not claim that WeChat evidence is Accepted",
-  );
-  assert.match(
-    completionSummary,
-    /`?dev`?[^。\r\n]*漏洞[^。\r\n]*只报告/i,
-    "completion summary must state that dev vulnerabilities are report-only",
-  );
-  assert.match(
-    completionSummary,
-    /`?dev`?[^。\r\n]*不阻断/i,
-    "completion summary must state that dev vulnerabilities do not block development",
-  );
-  assert.match(
-    completionSummary,
-    /`?release(?:\/|、|和|与)main`?[^。\r\n]*(?:(?:阻断|门禁)[^。\r\n]*(?:Critical\s*\/\s*High|Critical[^。\r\n]*High)|(?:Critical\s*\/\s*High|Critical[^。\r\n]*High)[^。\r\n]*(?:阻断|门禁))/i,
-    "completion summary must state that release/main block Critical and High findings",
-  );
-  assert.match(
-    completionSummary,
-    /旧工作树[^。\r\n]*(?:已清理|已删除)/,
-    "completion summary must state that old worktrees were cleaned",
-  );
-  assert.match(
-    completionSummary,
-    /已完成[^。\r\n]*功能分支[^。\r\n]*(?:已清理|已删除)/,
-    "completion summary must state that completed feature branches were cleaned",
-  );
-  assert.match(
-    completionSummary,
-    /本计划[^。\r\n]*工作区重整[^。\r\n]*(?:完成|完成状态)/,
-    "completion summary must scope completion to workspace realignment",
-  );
-  assert.match(
-    completionSummary,
-    /酒店产品功能[^。\r\n]*(?:尚未完成|未完成|仍属后续|后续开发)/,
-    "completion summary must state that hotel product features remain future work",
+
+  const approvedBullets = [
+    "Task 1–9 均已完成。实施收尾时，`main`、`dev`、`release` 及对应远端分支均对齐到**实施基线** `5a7ba6f1800c26569e2cb41679c3f8cc26ede22d`；该 SHA 是实施基线，而不是本计划后续文档提交产生的当前 `HEAD`。旧工作树和已完成功能分支已清理。",
+    "微信官方验证绑定不可变 input `deb274c58f64b6259e89d19a582200182126d770` 与 `wx` tree `021ed57a0b3b1e876123befad4f375446621fb42`：WXML 32400，WXSS 2/3398，preview 11626 bytes。未调用 `upload`，证据状态保持 **In review**。",
+    "WSL2 实机验证已完成：PostGIS 查询成功、Redis 返回 `PONG`、API live/ready 返回 HTTP 200，API 与 Worker 均为非 root 且只读根文件系统；Worker 观察超过 10 分钟后 `RestartCount=0`，无重连循环。",
+    "依赖审计仍报告 29 项：2 Critical、11 High、14 Moderate、2 Low。`dev` 阶段漏洞只报告、不阻断功能开发；`release/main` 继续阻断 Critical/High，除非存在正式批准的风险例外。",
+    "Taro、支付宝、抖音和多语言均已搁置，不属于当前开发与上线门禁。本计划仅记录工作区重整的完成状态，不代表酒店产品功能完成；酒店产品功能仍属后续开发。",
+  ];
+  assert.deepEqual(
+    normalizedMarkdownBullets(completionSummary).sort(),
+    approvedBullets.sort(),
+    "completion summary must exactly match the approved affirmative bullet set",
   );
 });
 
