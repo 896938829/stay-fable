@@ -9,7 +9,19 @@ describe("validateRuntimeConfig", () => {
         NODE_ENV: "production",
         DATABASE_URL: "postgresql://localhost:5432/stay_fable?sslmode=require",
         REDIS_URL: "redis://localhost:6379",
+        IDENTITY_PROVIDER: "code2session",
       }),
     ).toThrow("Production REDIS_URL must use rediss: protocol");
+  });
+
+  it("inherits the shared production identity-provider requirement", () => {
+    expect(() =>
+      validateRuntimeConfig({
+        NODE_ENV: "production",
+        DATABASE_URL: "postgresql://localhost:5432/stay_fable?sslmode=require",
+        REDIS_URL: "rediss://localhost:6380",
+        IDENTITY_PROVIDER: "mock",
+      }),
+    ).toThrow("Production IDENTITY_PROVIDER must be code2session");
   });
 });

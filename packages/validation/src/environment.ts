@@ -17,6 +17,11 @@ const runtimeEnvironmentSchema = z.object({
   REDIS_URL: z.url().refine((url) => usesProtocol(url, ["redis:", "rediss:"]), {
     message: "REDIS_URL must use redis: or rediss: protocol",
   }),
+  IDENTITY_PROVIDER: z.enum(["mock", "code2session"]).default("mock"),
+  ENABLE_MOCK_PAYMENT: z.stringbool({ truthy: ["true"], falsy: ["false"] }).default(false),
+  SESSION_ACCESS_TTL_SECONDS: z.coerce.number().int().min(60).max(86_400).default(7200),
+  SESSION_REFRESH_TTL_SECONDS: z.coerce.number().int().min(3_600).max(7_776_000).default(2_592_000),
+  LOCATION_MAX_DISTANCE_METERS: z.coerce.number().int().min(1_000).max(500_000).default(100_000),
 });
 
 export type RuntimeEnvironment = z.infer<typeof runtimeEnvironmentSchema>;
@@ -36,6 +41,17 @@ export const parseRuntimeEnvironment = (environment: unknown): RuntimeEnvironmen
 
   if (parsedEnvironment.NODE_ENV === "production" && redisUrl.protocol !== "rediss:") {
     throw new Error("Production REDIS_URL must use rediss: protocol");
+  }
+
+  if (
+    parsedEnvironment.NODE_ENV === "production" &&
+    parsedEnvironment.IDENTITY_PROVIDER !== "code2session"
+  ) {
+    throw new Error("Production IDENTITY_PROVIDER must be code2session");
+  }
+
+  if (parsedEnvironment.NODE_ENV === "production" && parsedEnvironment.ENABLE_MOCK_PAYMENT) {
+    throw new Error("Production ENABLE_MOCK_PAYMENT must be false");
   }
 
   return parsedEnvironment;

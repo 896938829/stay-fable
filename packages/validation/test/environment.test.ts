@@ -6,6 +6,8 @@ const productionEnvironment = (databaseUrl: string, redisUrl = "rediss://localho
   NODE_ENV: "production",
   DATABASE_URL: databaseUrl,
   REDIS_URL: redisUrl,
+  IDENTITY_PROVIDER: "code2session",
+  ENABLE_MOCK_PAYMENT: "false",
 });
 
 const expectTlsError = (databaseUrl: string) => {
@@ -100,6 +102,83 @@ describe("parseRuntimeEnvironment", () => {
         REDIS_URL: "redis://localhost:6379",
       }).REDIS_URL,
     ).toBe("redis://localhost:6379");
+  });
+
+  it("applies safe identity, payment, session, and location defaults", () => {
+    expect(
+      parseRuntimeEnvironment({
+        NODE_ENV: "development",
+        DATABASE_URL: "postgresql://localhost:5432/stay_fable",
+        REDIS_URL: "redis://localhost:6379",
+      }),
+    ).toMatchObject({
+      IDENTITY_PROVIDER: "mock",
+      ENABLE_MOCK_PAYMENT: false,
+      SESSION_ACCESS_TTL_SECONDS: 7200,
+      SESSION_REFRESH_TTL_SECONDS: 2_592_000,
+      LOCATION_MAX_DISTANCE_METERS: 100_000,
+    });
+  });
+
+  it.each([
+    ["true", true],
+    ["false", false],
+  ])("parses ENABLE_MOCK_PAYMENT=%s", (input, expected) => {
+    expect(
+      parseRuntimeEnvironment({
+        NODE_ENV: "development",
+        DATABASE_URL: "postgresql://localhost:5432/stay_fable",
+        REDIS_URL: "redis://localhost:6379",
+        ENABLE_MOCK_PAYMENT: input,
+      }).ENABLE_MOCK_PAYMENT,
+    ).toBe(expected);
+  });
+
+  it("rejects non-boolean environment strings for ENABLE_MOCK_PAYMENT", () => {
+    expect(() =>
+      parseRuntimeEnvironment({
+        NODE_ENV: "development",
+        DATABASE_URL: "postgresql://localhost:5432/stay_fable",
+        REDIS_URL: "redis://localhost:6379",
+        ENABLE_MOCK_PAYMENT: "yes",
+      }),
+    ).toThrow();
+  });
+
+  it.each([
+    ["SESSION_ACCESS_TTL_SECONDS", 59],
+    ["SESSION_ACCESS_TTL_SECONDS", 86_401],
+    ["SESSION_REFRESH_TTL_SECONDS", 3_599],
+    ["SESSION_REFRESH_TTL_SECONDS", 7_776_001],
+    ["LOCATION_MAX_DISTANCE_METERS", 999],
+    ["LOCATION_MAX_DISTANCE_METERS", 500_001],
+  ])("rejects %s outside its supported range", (name, value) => {
+    expect(() =>
+      parseRuntimeEnvironment({
+        NODE_ENV: "development",
+        DATABASE_URL: "postgresql://localhost:5432/stay_fable",
+        REDIS_URL: "redis://localhost:6379",
+        [name]: value,
+      }),
+    ).toThrow();
+  });
+
+  it("rejects the mock identity provider in production with a stable message", () => {
+    expect(() =>
+      parseRuntimeEnvironment({
+        ...productionEnvironment("postgresql://localhost:5432/stay_fable?sslmode=require"),
+        IDENTITY_PROVIDER: "mock",
+      }),
+    ).toThrow("Production IDENTITY_PROVIDER must be code2session");
+  });
+
+  it("rejects mock payment in production with a stable message", () => {
+    expect(() =>
+      parseRuntimeEnvironment({
+        ...productionEnvironment("postgresql://localhost:5432/stay_fable?sslmode=require"),
+        ENABLE_MOCK_PAYMENT: "true",
+      }),
+    ).toThrow("Production ENABLE_MOCK_PAYMENT must be false");
   });
 
   it("rejects redis: in production", () => {

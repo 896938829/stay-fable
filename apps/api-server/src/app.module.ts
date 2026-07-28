@@ -6,6 +6,7 @@ import { validateRuntimeConfig } from "./config/runtime-config.js";
 import { DatabaseService } from "./database/database.service.js";
 import { HealthController } from "./health/health.controller.js";
 import { HealthService } from "./health/health.service.js";
+import { RedisModule } from "./infrastructure/redis/redis.module.js";
 import { LOGGER_ROUTES } from "./logger-routes.js";
 
 @Module({
@@ -28,6 +29,7 @@ import { LOGGER_ROUTES } from "./logger-routes.js";
         },
       },
     }),
+    RedisModule,
   ],
   controllers: [HealthController],
   providers: [DatabaseService, HealthService],
