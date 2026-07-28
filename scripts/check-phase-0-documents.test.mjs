@@ -176,35 +176,106 @@ function canonicalMarkdown(markdown) {
     .join("\n");
 }
 
-function normalizedMarkdownBullets(section) {
-  const bullets = [];
-  let current = "";
+function stripFencedCodeBlocks(markdown) {
+  const eol = markdown.includes("\r\n") ? "\r\n" : "\n";
+  const output = [];
+  let fenceCharacter;
+  let fenceLength = 0;
+
+  for (const line of markdown.split(/\r?\n/)) {
+    if (fenceCharacter) {
+      const closingFence = new RegExp(`^ {0,3}${fenceCharacter}{${fenceLength},}[\\t ]*$`);
+      if (closingFence.test(line)) {
+        fenceCharacter = undefined;
+        fenceLength = 0;
+      }
+      output.push("");
+      continue;
+    }
+
+    const openingFence = /^ {0,3}(`{3,}|~{3,})[^\r\n]*$/.exec(line);
+    if (openingFence) {
+      fenceCharacter = openingFence[1][0];
+      fenceLength = openingFence[1].length;
+      output.push("");
+      continue;
+    }
+
+    output.push(line);
+  }
+
+  return output.join(eol);
+}
+
+function validateCompletedPlanTasks(markdown) {
+  const source = stripFencedCodeBlocks(markdown);
+  assert.doesNotMatch(source, /^\s*-\s+\[ \]/m, "completed plan has an unchecked task");
+
+  const taskMatches = [...source.matchAll(/^###\s+Task\s+(\d+)(?:\s*[:：]|\s|$)[^\r\n]*$/gm)];
+  for (let number = 1; number <= 9; number += 1) {
+    const matchingTasks = taskMatches.filter((match) => Number(match[1]) === number);
+    assert.equal(matchingTasks.length, 1, `Task ${number} must appear exactly once`);
+  }
+  assert.equal(taskMatches.length, 9, "plan must contain exactly nine real Task headings");
+
+  for (let index = 0; index < taskMatches.length; index += 1) {
+    const current = taskMatches[index];
+    const next = taskMatches[index + 1];
+    const section = source.slice(current.index, next?.index ?? source.length);
+    assert.match(
+      section,
+      /^\s*-\s+\[[xX]\]/m,
+      `Task ${current[1]} must contain a completed checklist item`,
+    );
+  }
+}
+
+function parseLabeledCompletionSummary(section) {
+  const allowedLabels = new Set(["实施基线", "微信证据", "WSL2 验证", "漏洞策略", "延期范围"]);
+  const entries = [];
+  let current;
 
   function saveCurrent() {
-    if (current) {
-      bullets.push(current.replace(/\s+/g, " ").trim());
-      current = "";
-    }
+    if (!current) return;
+    assert.ok(current.value, `${current.label} summary value must not be empty`);
+    assert.ok(
+      !entries.some(([label]) => label === current.label),
+      `duplicate completion summary label: ${current.label}`,
+    );
+    entries.push([current.label, current.value.replace(/\s+/g, " ").trim()]);
+    current = undefined;
   }
 
   for (const line of section.split(/\r?\n/)) {
-    const trimmed = line.trim();
-    const bullet = /^-\s+(.+)$/.exec(trimmed);
+    if (!line.trim()) continue;
+
+    const bullet = /^ {0,3}-\s+(.+)$/.exec(line);
     if (bullet) {
       saveCurrent();
-      current = bullet[1];
+      const labeledValue = /^\*\*([^*：:]+)[：:]\*\*\s*(.*)$/.exec(bullet[1]);
+      assert.ok(labeledValue, "completion summary bullet must start with a bold label");
+      const label = labeledValue[1].trim();
+      assert.ok(allowedLabels.has(label), `unknown completion summary label: ${label}`);
+      current = { label, value: labeledValue[2].trim() };
       continue;
     }
-    if (/^-{3,}$/.test(trimmed)) {
-      break;
-    }
-    if (current && trimmed) {
-      current += ` ${trimmed}`;
-    }
+
+    assert.ok(
+      current && /^(?: {2,}|\t)\S/.test(line),
+      "completion summary contains non-bullet prose",
+    );
+    current.value += ` ${line.trim()}`;
   }
   saveCurrent();
 
-  return bullets;
+  assert.equal(entries.length, 5, "completion summary must contain exactly five labeled bullets");
+  assert.deepEqual(
+    entries.map(([label]) => label).sort(),
+    [...allowedLabels].sort(),
+    "completion summary labels must each appear exactly once",
+  );
+
+  return Object.fromEntries(entries);
 }
 
 function assertDependencyAuditEvidenceConsistent(evidenceIndex, dependencyAudit) {
@@ -292,6 +363,102 @@ function assertDependencyAuditEvidenceConsistent(evidenceIndex, dependencyAudit)
   }
 }
 
+function completedTaskFixture(eol = "\n") {
+  return Array.from(
+    { length: 9 },
+    (_, index) => `### Task ${index + 1}：fixture${eol}${eol}- [x] completed`,
+  ).join(`${eol}${eol}`);
+}
+
+test("completed task parser ignores fenced checkboxes and pseudo tasks", () => {
+  const markdown = [
+    completedTaskFixture(),
+    "```markdown",
+    "### Task 1：pseudo duplicate",
+    "- [ ] pseudo incomplete",
+    "- [x] pseudo complete",
+    "````",
+    "````text",
+    "```",
+    "### Task 2：pseudo after a too-short closer",
+    "- [ ] still fenced",
+    "````",
+    "~~~",
+    "```",
+    "### Task 9：another pseudo duplicate",
+    "- [ ] another pseudo incomplete",
+    "~~~~",
+  ].join("\n");
+
+  assert.equal(
+    stripFencedCodeBlocks(markdown).split("\n").length,
+    markdown.split("\n").length,
+    "fence stripping must preserve line structure",
+  );
+  assert.doesNotThrow(() => validateCompletedPlanTasks(markdown));
+});
+
+test("completed task parser rejects duplicate real tasks and fenced-only completion", () => {
+  assert.throws(
+    () =>
+      validateCompletedPlanTasks(`${completedTaskFixture()}\n### Task 9：duplicate\n- [x] done`),
+    /exactly once|duplicate/i,
+  );
+
+  const fencedOnly = completedTaskFixture().replace(
+    "### Task 1：fixture\n\n- [x] completed",
+    "### Task 1：fixture\n\n```\n- [x] pseudo complete\n```",
+  );
+  assert.throws(() => validateCompletedPlanTasks(fencedOnly), /Task 1.*completed checklist/i);
+});
+
+test("completed task parser supports CRLF and the final task section", () => {
+  const markdown = completedTaskFixture("\r\n");
+  assert.doesNotThrow(() => validateCompletedPlanTasks(markdown));
+});
+
+test("completion summary parser accepts wrapped labeled bullets and CRLF", () => {
+  const summary = [
+    "- **实施基线：** first line",
+    "  wrapped continuation",
+    "- **微信证据：** evidence",
+    "- **WSL2 验证：** runtime",
+    "- **漏洞策略：** policy",
+    "- **延期范围：** deferred",
+  ].join("\r\n");
+
+  assert.deepEqual(parseLabeledCompletionSummary(summary), {
+    实施基线: "first line wrapped continuation",
+    微信证据: "evidence",
+    "WSL2 验证": "runtime",
+    漏洞策略: "policy",
+    延期范围: "deferred",
+  });
+});
+
+test("completion summary parser rejects prose, unknown, extra, and duplicate labels", () => {
+  const canonical = [
+    "- **实施基线：** baseline",
+    "- **微信证据：** evidence",
+    "- **WSL2 验证：** runtime",
+    "- **漏洞策略：** policy",
+    "- **延期范围：** deferred",
+  ];
+  const invalidSummaries = [
+    ["unlabeled preface", ...canonical],
+    [canonical[0], "unlabeled body", ...canonical.slice(1)],
+    [...canonical, "- **未知标签：** unexpected"],
+    [...canonical.slice(0, 4), "- **实施基线：** duplicate"],
+  ];
+
+  for (const lines of invalidSummaries) {
+    assert.throws(
+      () => parseLabeledCompletionSummary(lines.join("\n")),
+      /non-bullet|unknown|exactly five|duplicate|labels/i,
+    );
+  }
+});
+
 test("WeChat-first workspace plan records the completed implementation baseline", async () => {
   const markdown = await readFile(path.join(root, wxFirstPlanPath), "utf8");
   const topMatter = markdown.split(/^##\s+/m, 1)[0];
@@ -302,32 +469,15 @@ test("WeChat-first workspace plan records the completed implementation baseline"
     /^完成日期\s*:\s*2026-07-28\s*$/m,
     "plan completion date must be 2026-07-28",
   );
-  assert.doesNotMatch(markdown, /^- \[ \]/m, "completed plan must not contain unchecked tasks");
-
-  const taskMatches = [...markdown.matchAll(/^###\s+Task\s+([1-9])(?:\s*[:：]|\b)[^\r\n]*$/gm)];
-  const taskNumbers = taskMatches.map((match) => Number(match[1]));
-  assert.deepEqual(
-    [...new Set(taskNumbers)].sort((left, right) => left - right),
-    [1, 2, 3, 4, 5, 6, 7, 8, 9],
-    "plan must retain Task 1 through Task 9",
-  );
-
-  for (let index = 0; index < taskMatches.length; index += 1) {
-    const current = taskMatches[index];
-    const next = taskMatches[index + 1];
-    const section = markdown.slice(current.index, next?.index ?? markdown.length);
-    assert.match(
-      section,
-      /^- \[[xX]\]/m,
-      `Task ${current[1]} must contain at least one completed checklist item`,
-    );
-  }
+  validateCompletedPlanTasks(markdown);
 
   const completionSummary = markdown.match(
     /^##\s+完成摘要\s*$([\s\S]*?)(?=^##\s+|(?![\s\S]))/m,
   )?.[1];
   assert.ok(completionSummary, "plan must include a 完成摘要 section");
 
+  const summary = parseLabeledCompletionSummary(completionSummary);
+  const allSummaryValues = Object.values(summary).join("\n");
   for (const evidence of [
     "5a7ba6f1800c26569e2cb41679c3f8cc26ede22d",
     "deb274c58f64b6259e89d19a582200182126d770",
@@ -341,20 +491,34 @@ test("WeChat-first workspace plan records the completed implementation baseline"
     "HTTP 200",
     "RestartCount=0",
   ]) {
-    assert.ok(completionSummary.includes(evidence), `completion summary must include ${evidence}`);
+    assert.ok(allSummaryValues.includes(evidence), `completion summary must include ${evidence}`);
   }
 
-  const approvedBullets = [
-    "Task 1–9 均已完成。实施收尾时，`main`、`dev`、`release` 及对应远端分支均对齐到**实施基线** `5a7ba6f1800c26569e2cb41679c3f8cc26ede22d`；该 SHA 是实施基线，而不是本计划后续文档提交产生的当前 `HEAD`。旧工作树和已完成功能分支已清理。",
-    "微信官方验证绑定不可变 input `deb274c58f64b6259e89d19a582200182126d770` 与 `wx` tree `021ed57a0b3b1e876123befad4f375446621fb42`：WXML 32400，WXSS 2/3398，preview 11626 bytes。未调用 `upload`，证据状态保持 **In review**。",
-    "WSL2 实机验证已完成：PostGIS 查询成功、Redis 返回 `PONG`、API live/ready 返回 HTTP 200，API 与 Worker 均为非 root 且只读根文件系统；Worker 观察超过 10 分钟后 `RestartCount=0`，无重连循环。",
-    "依赖审计仍报告 29 项：2 Critical、11 High、14 Moderate、2 Low。`dev` 阶段漏洞只报告、不阻断功能开发；`release/main` 继续阻断 Critical/High，除非存在正式批准的风险例外。",
-    "Taro、支付宝、抖音和多语言均已搁置，不属于当前开发与上线门禁。本计划仅记录工作区重整的完成状态，不代表酒店产品功能完成；酒店产品功能仍属后续开发。",
-  ];
-  assert.deepEqual(
-    normalizedMarkdownBullets(completionSummary).sort(),
-    approvedBullets.sort(),
-    "completion summary must exactly match the approved affirmative bullet set",
+  assert.match(summary.实施基线, /^Task 1–9 均已完成。/);
+  assert.match(summary.实施基线, /`main`、`dev`、`release` 及对应远端分支均对齐到/);
+  assert.match(summary.实施基线, /该 SHA 是实施基线，而不是.*当前 `HEAD`/);
+  assert.match(summary.实施基线, /旧工作树和已完成功能分支已清理。$/);
+
+  assert.match(summary.微信证据, /未调用 `upload`，证据状态保持 \*\*In review\*\*。$/);
+  assert.doesNotMatch(summary.微信证据, /\bAccepted\b|已调用 `upload`|已发布体验版/i);
+
+  assert.match(summary["WSL2 验证"], /^WSL2 实机验证已完成：/);
+  assert.match(summary["WSL2 验证"], /API 与 Worker 均为非 root 且只读根文件系统/);
+  assert.match(summary["WSL2 验证"], /Worker 观察超过 10 分钟后 `RestartCount=0`，无重连循环。$/);
+
+  assert.match(
+    summary.漏洞策略,
+    /^依赖审计仍报告 29 项：2 Critical、11 High、14 Moderate、2 Low。/,
+  );
+  assert.match(summary.漏洞策略, /`dev` 阶段漏洞只报告、不阻断功能开发/);
+  assert.match(summary.漏洞策略, /`release\/main` 继续阻断 Critical\/High/);
+
+  assert.match(summary.延期范围, /^Taro、支付宝、抖音和多语言均已搁置/);
+  assert.match(summary.延期范围, /本计划仅记录工作区重整的完成状态，不代表酒店产品功能完成/);
+  assert.match(summary.延期范围, /酒店产品功能仍属后续开发。$/);
+  assert.doesNotMatch(
+    summary.延期范围,
+    /酒店产品功能(?:已经|已)完成|当前开发与上线门禁包含(?:Taro|支付宝|抖音|多语言)/,
   );
 });
 
