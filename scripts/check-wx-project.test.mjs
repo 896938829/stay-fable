@@ -199,6 +199,46 @@ test("ignores WXML comments and data-src attributes", async () => {
   assert.deepEqual(await validateWxProject(root), { pageCount: 1 });
 });
 
+test("ignores src-like text nodes", async () => {
+  const root = await createFixture();
+  await writeFile(
+    path.join(root, "pages", "index", "index.wxml"),
+    '<view>Example text: src="/assets/not-an-attribute.png"</view>',
+  );
+
+  assert.deepEqual(await validateWxProject(root), { pageCount: 1 });
+});
+
+test("ignores tags and src-like strings inside a wxs script", async () => {
+  const root = await createFixture();
+  await writeFile(
+    path.join(root, "pages", "index", "index.wxml"),
+    `<wxs module="tools">
+      var text = 'src="/assets/wxs-text.png"';
+      var markup = '<image src="/assets/wxs-markup.png" />';
+      var fakeClose = '</wxs><image src="/assets/after-fake-close.png" />';
+      module.exports = { text: text, markup: markup, fakeClose: fakeClose };
+    </wxs>
+    <view>{{tools.text}}</view>`,
+  );
+
+  assert.deepEqual(await validateWxProject(root), { pageCount: 1 });
+});
+
+test("checks src only on real image, import, and include start tags", async () => {
+  const root = await createFixture();
+  const wxmlPath = path.join(root, "pages", "index", "index.wxml");
+
+  for (const markup of [
+    '<image src="/assets/missing-image.png" />',
+    '<import src="/templates/missing-import.wxml" />',
+    '<include src="/templates/missing-include.wxml" />',
+  ]) {
+    await writeFile(wxmlPath, markup);
+    await assert.rejects(() => validateWxProject(root), /Missing WeChat WXML resource/);
+  }
+});
+
 test("checks local icon configuration and WXSS url resources", async () => {
   const root = await createFixture();
   await writeFile(

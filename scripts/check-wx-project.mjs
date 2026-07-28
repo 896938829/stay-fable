@@ -177,6 +177,173 @@ async function validateResource(projectRoot, sourceFile, reference, kind) {
   );
 }
 
+function findTagEnd(source, startIndex) {
+  let quote;
+
+  for (let index = startIndex; index < source.length; index += 1) {
+    const character = source[index];
+    if (quote !== undefined) {
+      if (character === "\\") {
+        index += 1;
+      } else if (character === quote) {
+        quote = undefined;
+      }
+    } else if (character === '"' || character === "'") {
+      quote = character;
+    } else if (character === ">") {
+      return index;
+    }
+  }
+
+  return source.length;
+}
+
+function findWxsEnd(source, startIndex) {
+  let state = "code";
+  let quote;
+
+  for (let index = startIndex; index < source.length; index += 1) {
+    const character = source[index];
+    const nextCharacter = source[index + 1];
+
+    if (state === "string") {
+      if (character === "\\") {
+        index += 1;
+      } else if (character === quote) {
+        state = "code";
+        quote = undefined;
+      }
+      continue;
+    }
+    if (state === "line-comment") {
+      if (character === "\n" || character === "\r") {
+        state = "code";
+      }
+      continue;
+    }
+    if (state === "block-comment") {
+      if (character === "*" && nextCharacter === "/") {
+        state = "code";
+        index += 1;
+      }
+      continue;
+    }
+
+    if (character === '"' || character === "'" || character === "`") {
+      state = "string";
+      quote = character;
+    } else if (character === "/" && nextCharacter === "/") {
+      state = "line-comment";
+      index += 1;
+    } else if (character === "/" && nextCharacter === "*") {
+      state = "block-comment";
+      index += 1;
+    } else if (character === "<" && /^<\/wxs(?:\s|>)/i.test(source.slice(index, index + 7))) {
+      const closingTagEnd = findTagEnd(source, index + 5);
+      return closingTagEnd < source.length ? closingTagEnd + 1 : source.length;
+    }
+  }
+
+  return source.length;
+}
+
+function srcAttributes(attributeSource) {
+  const references = [];
+  let index = 0;
+
+  while (index < attributeSource.length) {
+    while (/[\s/]/.test(attributeSource[index] ?? "")) {
+      index += 1;
+    }
+    const nameStart = index;
+    while (!/[\s=/>]/.test(attributeSource[index] ?? ">")) {
+      index += 1;
+    }
+    const attributeName = attributeSource.slice(nameStart, index);
+    while (/\s/.test(attributeSource[index] ?? "")) {
+      index += 1;
+    }
+    if (attributeSource[index] !== "=") {
+      if (index === nameStart) {
+        index += 1;
+      }
+      continue;
+    }
+    index += 1;
+    while (/\s/.test(attributeSource[index] ?? "")) {
+      index += 1;
+    }
+
+    let attributeValue;
+    const quote = attributeSource[index];
+    if (quote === '"' || quote === "'") {
+      index += 1;
+      const valueStart = index;
+      while (index < attributeSource.length && attributeSource[index] !== quote) {
+        if (attributeSource[index] === "\\") {
+          index += 1;
+        }
+        index += 1;
+      }
+      attributeValue = attributeSource.slice(valueStart, index);
+      index += 1;
+    } else {
+      const valueStart = index;
+      while (!/[\s/>]/.test(attributeSource[index] ?? ">")) {
+        index += 1;
+      }
+      attributeValue = attributeSource.slice(valueStart, index);
+    }
+
+    if (attributeName === "src") {
+      references.push(attributeValue);
+    }
+  }
+
+  return references;
+}
+
+// This deliberately scans only WXML start tags; it is not a replacement for the official compiler.
+function wxmlSrcReferences(source) {
+  const references = [];
+  let index = 0;
+
+  while (index < source.length) {
+    const tagStart = source.indexOf("<", index);
+    if (tagStart < 0) {
+      break;
+    }
+    if (source.startsWith("<!--", tagStart)) {
+      const commentEnd = source.indexOf("-->", tagStart + 4);
+      index = commentEnd < 0 ? source.length : commentEnd + 3;
+      continue;
+    }
+
+    const nameMatch = /^[A-Za-z_][A-Za-z0-9_.:-]*/.exec(source.slice(tagStart + 1));
+    if (nameMatch === null) {
+      const ignoredTagEnd = findTagEnd(source, tagStart + 1);
+      index = ignoredTagEnd < source.length ? ignoredTagEnd + 1 : source.length;
+      continue;
+    }
+
+    const tagName = nameMatch[0];
+    const attributesStart = tagStart + 1 + tagName.length;
+    const tagEnd = findTagEnd(source, attributesStart);
+    if (tagEnd >= source.length) {
+      break;
+    }
+    const attributeSource = source.slice(attributesStart, tagEnd);
+    references.push(...srcAttributes(attributeSource));
+    index = tagEnd + 1;
+
+    if (tagName.toLowerCase() === "wxs" && !/\/\s*$/.test(attributeSource)) {
+      index = findWxsEnd(source, index);
+    }
+  }
+
+  return references;
+}
+
 async function validateWxml(projectRoot, filePath) {
   const safePath = await safeRegularFile(
     projectRoot,
@@ -184,11 +351,10 @@ async function validateWxml(projectRoot, filePath) {
     `Missing WeChat WXML file: ${projectLabel(projectRoot, filePath)}`,
     `Unsafe WeChat WXML file: ${projectLabel(projectRoot, filePath)}`,
   );
-  const source = (await readFile(safePath, "utf8")).replace(/<!--[\s\S]*?-->/g, "");
-  const sourceAttributePattern = /(?:^|[\s<])src\s*=\s*(["'])(.*?)\1/gis;
+  const source = await readFile(safePath, "utf8");
 
-  for (const match of source.matchAll(sourceAttributePattern)) {
-    await validateResource(projectRoot, filePath, match[2], "WXML");
+  for (const reference of wxmlSrcReferences(source)) {
+    await validateResource(projectRoot, filePath, reference, "WXML");
   }
 }
 

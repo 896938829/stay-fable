@@ -69,6 +69,11 @@ test("documents the required WSL2 runtime verification", async () => {
     windowsPhase,
     /if \(Test-Path -LiteralPath \$runtimeDir\) \{[\s\S]*throw '.*\.wsl-runtime.*拒绝.*'/,
   );
+  const runtimeCollisionGuard = windowsPhase.match(
+    /if \(Test-Path -LiteralPath \$runtimeDir\) \{[\s\S]*?throw '.*\.wsl-runtime.*拒绝.*'[\s\S]*?\}/,
+  )?.[0];
+  assert.ok(runtimeCollisionGuard, "missing .wsl-runtime collision guard");
+  assert.doesNotMatch(runtimeCollisionGuard, /Remove-Item/);
   assert.match(
     windowsPhase,
     /New-Item -ItemType Directory -Path \$runtimeDir[\s\S]*Set-Content -LiteralPath \$runtimeOwnerMarker -Value \$validationToken/,
@@ -104,6 +109,10 @@ test("documents the required WSL2 runtime verification", async () => {
   assert.match(
     windowsPhase,
     /finally \{[\s\S]*if \(\$runtimeOwned\) \{[\s\S]*Get-Content -LiteralPath \$runtimeOwnerMarker[\s\S]*\[StringComparer\]::Ordinal\.Equals\(\$cleanupMarkerToken, \$validationToken\)[\s\S]*Remove-Item -LiteralPath \$runtimeDir -Recurse -Force/,
+  );
+  assert.equal(
+    windowsPhase.match(/Remove-Item -LiteralPath \$runtimeDir -Recurse -Force/g)?.length,
+    1,
   );
   assert.match(
     windowsPhase,
