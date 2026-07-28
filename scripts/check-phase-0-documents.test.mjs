@@ -79,6 +79,7 @@ const documents = {
 };
 
 const allowedControlStatuses = new Set(["Not started", "In review", "Accepted", "Blocked"]);
+const wxFirstPlanPath = "docs/superpowers/plans/2026-07-28-wx-first-workspace-realignment.md";
 
 function git(...args) {
   try {
@@ -259,6 +260,76 @@ function assertDependencyAuditEvidenceConsistent(evidenceIndex, dependencyAudit)
     throw new Error("dependency audit evidence status must match the current release conclusion");
   }
 }
+
+test("WeChat-first workspace plan records the completed implementation baseline", async () => {
+  const markdown = await readFile(path.join(root, wxFirstPlanPath), "utf8");
+  const topMatter = markdown.split(/^##\s+/m, 1)[0];
+
+  assert.match(topMatter, /^(?:Status|状态)\s*:\s*已完成\s*$/m, "plan status must be 已完成");
+  assert.match(
+    topMatter,
+    /^完成日期\s*:\s*2026-07-28\s*$/m,
+    "plan completion date must be 2026-07-28",
+  );
+  assert.doesNotMatch(markdown, /^- \[ \]/m, "completed plan must not contain unchecked tasks");
+
+  const taskMatches = [...markdown.matchAll(/^###\s+Task\s+([1-9])(?:\s*[:：]|\b)[^\r\n]*$/gm)];
+  const taskNumbers = taskMatches.map((match) => Number(match[1]));
+  assert.deepEqual(
+    [...new Set(taskNumbers)].sort((left, right) => left - right),
+    [1, 2, 3, 4, 5, 6, 7, 8, 9],
+    "plan must retain Task 1 through Task 9",
+  );
+
+  for (let index = 0; index < taskMatches.length; index += 1) {
+    const current = taskMatches[index];
+    const next = taskMatches[index + 1];
+    const section = markdown.slice(current.index, next?.index ?? markdown.length);
+    assert.match(
+      section,
+      /^- \[[xX]\]/m,
+      `Task ${current[1]} must contain at least one completed checklist item`,
+    );
+  }
+
+  const completionSummary = markdown.match(
+    /^##\s+完成摘要\s*$([\s\S]*?)(?=^##\s+|(?![\s\S]))/m,
+  )?.[1];
+  assert.ok(completionSummary, "plan must include a 完成摘要 section");
+
+  for (const evidence of [
+    "5a7ba6f1800c26569e2cb41679c3f8cc26ede22d",
+    "deb274c58f64b6259e89d19a582200182126d770",
+    "021ed57a0b3b1e876123befad4f375446621fb42",
+    "WXML 32400",
+    "WXSS 2/3398",
+    "preview 11626",
+    "WSL2",
+    "PostGIS",
+    "PONG",
+    "HTTP 200",
+    "RestartCount=0",
+  ]) {
+    assert.ok(completionSummary.includes(evidence), `completion summary must include ${evidence}`);
+  }
+  assert.match(
+    completionSummary,
+    /实施基线[^。\r\n]*5a7ba6f1800c26569e2cb41679c3f8cc26ede22d/,
+    "completion summary must identify the final SHA as the implementation baseline",
+  );
+  assert.match(
+    completionSummary,
+    /(?:29[^。\r\n]*(?:2\s*Critical)[^。\r\n]*(?:11\s*High)[^。\r\n]*(?:14\s*Moderate)[^。\r\n]*(?:2\s*Low)|2\s*Critical[^。\r\n]*11\s*High[^。\r\n]*14\s*Moderate[^。\r\n]*2\s*Low[^。\r\n]*29)/i,
+    "completion summary must record the full dependency audit counts",
+  );
+  for (const deferred of ["Taro", "支付宝", "抖音", "多语言"]) {
+    assert.match(
+      completionSummary,
+      new RegExp(`${deferred}[^。\\r\\n]*(?:搁置|延期)|(?:搁置|延期)[^。\\r\\n]*${deferred}`),
+      `completion summary must mark ${deferred} as deferred`,
+    );
+  }
+});
 
 test("status parser validates every status-bearing table column", () => {
   const markdown = [

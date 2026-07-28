@@ -1,5 +1,8 @@
 # 微信优先工作区重整实施计划
 
+状态: 已完成
+完成日期: 2026-07-28
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 将仓库重整为以 `/wx` 原生微信小程序为正式客户端的干净开发基线，保全并上传所有现有文件，建立微信开发者工具与 WSL2 后端验证工作流。
@@ -7,6 +10,14 @@
 **Architecture:** `/wx` 成为默认客户端质量门禁，Taro 多平台工程保留但从日常构建中冻结。根目录 `AGENTS.md` 负责路由微信开发者工具技能、WSL2 Docker 验证、分支与漏洞策略；`dev` 阶段持续报告漏洞但不阻断，`release/main` 仍执行发布级门禁。
 
 **Tech Stack:** 原生微信小程序、Node.js 24、pnpm 11、Node Test Runner、NestJS、PostgreSQL/PostGIS、Redis、Docker Compose、WSL2 Ubuntu-22.04、GitHub Actions
+
+## 完成摘要
+
+- Task 1–9 均已完成。实施收尾时，`main`、`dev`、`release` 及对应远端分支均对齐到**实施基线** `5a7ba6f1800c26569e2cb41679c3f8cc26ede22d`；该 SHA 是实施基线，而不是本计划后续文档提交产生的当前 `HEAD`。旧工作树和已完成功能分支已清理。
+- 微信官方验证绑定不可变 input `deb274c58f64b6259e89d19a582200182126d770` 与 `wx` tree `021ed57a0b3b1e876123befad4f375446621fb42`：WXML 32400，WXSS 2/3398，preview 11626 bytes。未调用 `upload`，证据状态保持 **In review**。
+- WSL2 实机验证已完成：PostGIS 查询成功、Redis 返回 `PONG`、API live/ready 返回 HTTP 200，API 与 Worker 均为非 root 且只读根文件系统；Worker 观察超过 10 分钟后 `RestartCount=0`，无重连循环。
+- 依赖审计仍报告 29 项：2 Critical、11 High、14 Moderate、2 Low。`dev` 阶段只报告；`release/main` 继续阻断 Critical/High，除非存在正式批准的风险例外。
+- Taro、支付宝、抖音和多语言均已搁置，不属于当前开发与上线门禁。本计划仅记录工作区重整的完成状态，不是后续产品功能开发计划。
 
 ---
 
@@ -35,7 +46,7 @@
 - Create: `AGENTS.md`
 - Modify: `scripts/verify-workspace.test.mjs`
 
-- [ ] **Step 1: 写入失败的项目规则测试**
+- [x] **Step 1: 写入失败的项目规则测试**
 
 在 `scripts/verify-workspace.test.mjs` 中新增：
 
@@ -62,7 +73,7 @@ test("documents the WeChat-first agent workflow", async () => {
 });
 ```
 
-- [ ] **Step 2: 运行测试并确认失败**
+- [x] **Step 2: 运行测试并确认失败**
 
 Run:
 
@@ -72,7 +83,7 @@ node --test scripts/verify-workspace.test.mjs
 
 Expected: FAIL，错误指出无法读取 `AGENTS.md`。
 
-- [ ] **Step 3: 创建项目级工作流**
+- [x] **Step 3: 创建项目级工作流**
 
 创建 `AGENTS.md`，内容如下：
 
@@ -117,7 +128,7 @@ Expected: FAIL，错误指出无法读取 `AGENTS.md`。
 - 完成前必须执行与修改范围相称的全量验证，不得仅依据缓存或历史结果。
 ```
 
-- [ ] **Step 4: 运行测试并确认通过**
+- [x] **Step 4: 运行测试并确认通过**
 
 Run:
 
@@ -127,7 +138,7 @@ node --test scripts/verify-workspace.test.mjs
 
 Expected: 所有 workspace contract 测试 PASS。
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```powershell
 git add AGENTS.md scripts/verify-workspace.test.mjs
@@ -142,7 +153,7 @@ git commit -m "docs: establish WeChat-first agent workflow"
 - Create: `scripts/check-wx-project.test.mjs`
 - Modify: `scripts/verify-workspace.mjs`
 
-- [ ] **Step 1: 创建最小合法和非法微信工程测试**
+- [x] **Step 1: 创建最小合法和非法微信工程测试**
 
 `scripts/check-wx-project.test.mjs` 使用临时目录构建 fixture，并验证页面完整性：
 
@@ -197,7 +208,7 @@ test("rejects traversal in a declared page path", async () => {
 });
 ```
 
-- [ ] **Step 2: 运行测试并确认模块不存在**
+- [x] **Step 2: 运行测试并确认模块不存在**
 
 Run:
 
@@ -207,7 +218,7 @@ node --test scripts/check-wx-project.test.mjs
 
 Expected: FAIL，无法导入 `check-wx-project.mjs`。
 
-- [ ] **Step 3: 实现检查器**
+- [x] **Step 3: 实现检查器**
 
 创建 `scripts/check-wx-project.mjs`：
 
@@ -257,7 +268,7 @@ if (isCli) {
 }
 ```
 
-- [ ] **Step 4: 将 `/wx` 加入工作区必需路径**
+- [x] **Step 4: 将 `/wx` 加入工作区必需路径**
 
 在 `scripts/verify-workspace.mjs` 的 `requiredPaths` 中增加：
 
@@ -271,7 +282,7 @@ if (isCli) {
 
 保留 `apps/consumer-miniapp/package.json`，因为冻结表示保留，而不是删除。
 
-- [ ] **Step 5: 运行检查**
+- [x] **Step 5: 运行检查**
 
 Run:
 
@@ -284,7 +295,7 @@ node scripts/verify-workspace.mjs
 Expected: 3 个微信测试 PASS；输出 `WeChat project verified: 2 pages` 和
 `Workspace contract verified.`。
 
-- [ ] **Step 6: 提交**
+- [x] **Step 6: 提交**
 
 ```powershell
 git add scripts/check-wx-project.mjs scripts/check-wx-project.test.mjs scripts/verify-workspace.mjs
@@ -298,7 +309,7 @@ git commit -m "test: verify native WeChat project"
 - Modify: `package.json`
 - Modify: `scripts/verify-workspace.test.mjs`
 
-- [ ] **Step 1: 写入失败的脚本契约**
+- [x] **Step 1: 写入失败的脚本契约**
 
 在 `scripts/verify-workspace.test.mjs` 的根契约测试中增加：
 
@@ -310,7 +321,7 @@ for (const script of ["lint", "typecheck", "test", "build"]) {
 assert.match(root.scripts.check, /pnpm wx:check/);
 ```
 
-- [ ] **Step 2: 运行测试并确认失败**
+- [x] **Step 2: 运行测试并确认失败**
 
 Run:
 
@@ -320,7 +331,7 @@ node --test scripts/verify-workspace.test.mjs
 
 Expected: FAIL，`wx:check` 为 `undefined`。
 
-- [ ] **Step 3: 调整根脚本**
+- [x] **Step 3: 调整根脚本**
 
 将 `package.json` 对应脚本改为：
 
@@ -340,7 +351,7 @@ Expected: FAIL，`wx:check` 为 `undefined`。
 
 保留其他现有脚本和值不变。
 
-- [ ] **Step 4: 验证默认门禁不运行 Taro**
+- [x] **Step 4: 验证默认门禁不运行 Taro**
 
 Run:
 
@@ -351,7 +362,7 @@ corepack pnpm check
 Expected: exit 0；Turbo 输出中不出现 `@stay-fable/consumer-miniapp` 任务，微信静态检查
 输出 `WeChat project verified: 2 pages`。
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```powershell
 git add package.json scripts/verify-workspace.test.mjs
@@ -365,7 +376,7 @@ git commit -m "build: make native WeChat the default client"
 - Modify: `.github/workflows/ci.yml`
 - Modify: `scripts/check-ci-contracts.test.mjs`
 
-- [ ] **Step 1: 写入 CI 分支和漏洞策略测试**
+- [x] **Step 1: 写入 CI 分支和漏洞策略测试**
 
 在 `scripts/check-ci-contracts.test.mjs` 中新增：
 
@@ -380,7 +391,7 @@ test("reports dependency vulnerabilities on dev and blocks release branches", as
 });
 ```
 
-- [ ] **Step 2: 运行测试并确认失败**
+- [x] **Step 2: 运行测试并确认失败**
 
 Run:
 
@@ -390,7 +401,7 @@ node --test scripts/check-ci-contracts.test.mjs
 
 Expected: FAIL，push 分支缺少 `dev` 和 `release`。
 
-- [ ] **Step 3: 修改 CI 触发和审计步骤**
+- [x] **Step 3: 修改 CI 触发和审计步骤**
 
 将 `.github/workflows/ci.yml` 的 push 分支改为：
 
@@ -414,7 +425,7 @@ push:
 该表达式使 `dev` push 和目标为 `dev` 的 PR 只报告审计失败；`release`、`main` 及目标为
 这些分支的 PR 继续阻断。
 
-- [ ] **Step 4: 运行 CI 契约测试**
+- [x] **Step 4: 运行 CI 契约测试**
 
 Run:
 
@@ -424,7 +435,7 @@ node --test scripts/check-ci-contracts.test.mjs
 
 Expected: 全部 PASS。
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```powershell
 git add .github/workflows/ci.yml scripts/check-ci-contracts.test.mjs
@@ -439,7 +450,7 @@ git commit -m "ci: report audits on dev and gate releases"
 - Modify: `docs/operations/local-development.md`
 - Modify: `scripts/check-local-infrastructure.test.mjs`
 
-- [ ] **Step 1: 写入失败的 WSL2 文档契约**
+- [x] **Step 1: 写入失败的 WSL2 文档契约**
 
 在 `scripts/check-local-infrastructure.test.mjs` 中新增：
 
@@ -462,7 +473,7 @@ test("documents the required WSL2 runtime verification", async () => {
 });
 ```
 
-- [ ] **Step 2: 运行测试并确认文档不存在**
+- [x] **Step 2: 运行测试并确认文档不存在**
 
 Run:
 
@@ -472,7 +483,7 @@ node --test scripts/check-local-infrastructure.test.mjs
 
 Expected: FAIL，无法读取 `wsl-runtime-validation.md`。
 
-- [ ] **Step 3: 编写 WSL2 验证流程**
+- [x] **Step 3: 编写 WSL2 验证流程**
 
 创建 `docs/operations/wsl-runtime-validation.md`，必须包含以下有序流程和完整命令：
 
@@ -489,7 +500,7 @@ Expected: FAIL，无法读取 `wsl-runtime-validation.md`。
 
 文档中的示例输出必须包含 `user=node`、`ReadonlyRootfs=true`、`PONG` 和 HTTP 200。
 
-- [ ] **Step 4: 从本地开发文档链接新流程**
+- [x] **Step 4: 从本地开发文档链接新流程**
 
 在 `docs/operations/local-development.md` 的端口说明后增加：
 
@@ -499,7 +510,7 @@ Expected: FAIL，无法读取 `wsl-runtime-validation.md`。
 并在结束时保留 Compose 数据卷。
 ```
 
-- [ ] **Step 5: 运行文档契约测试**
+- [x] **Step 5: 运行文档契约测试**
 
 Run:
 
@@ -509,7 +520,7 @@ node --test scripts/check-local-infrastructure.test.mjs
 
 Expected: 全部 PASS。
 
-- [ ] **Step 6: 提交**
+- [x] **Step 6: 提交**
 
 ```powershell
 git add docs/operations/wsl-runtime-validation.md docs/operations/local-development.md scripts/check-local-infrastructure.test.mjs
@@ -525,7 +536,7 @@ git commit -m "docs: standardize WSL2 backend verification"
 - Modify: `docs/operations/phase-0-verification.md`
 - Modify: `docs/superpowers/specs/2026-07-27-stay-fable-platform-architecture-design.md`
 
-- [ ] **Step 1: 再次记录旧工作树状态**
+- [x] **Step 1: 再次记录旧工作树状态**
 
 Run:
 
@@ -537,7 +548,7 @@ git -C "E:\My Work\stay-fable\.worktrees\phase-0-foundation" diff --check
 Expected: 只出现上述 4 个修改文件；`diff --check` 不得出现错误。若文件集合发生变化，
 停止整合并重新盘点，不能遗漏新增文件。
 
-- [ ] **Step 2: 在旧分支提交现有文档**
+- [x] **Step 2: 在旧分支提交现有文档**
 
 ```powershell
 git -C "E:\My Work\stay-fable\.worktrees\phase-0-foundation" add docs/compliance/launch-evidence-index.md docs/operations/dependency-audit.md docs/operations/phase-0-verification.md docs/superpowers/specs/2026-07-27-stay-fable-platform-architecture-design.md
@@ -546,7 +557,7 @@ git -C "E:\My Work\stay-fable\.worktrees\phase-0-foundation" commit -m "docs: pr
 
 Expected: 生成一个只包含 4 个文档的提交。
 
-- [ ] **Step 3: 将文档提交整合到当前分支**
+- [x] **Step 3: 将文档提交整合到当前分支**
 
 记录上一步提交号为 `$phase0DocsCommit`，然后：
 
@@ -557,7 +568,7 @@ git cherry-pick $phase0DocsCommit
 Expected: cherry-pick 成功且 4 份文件均出现在当前分支历史中。若冲突，保留旧工作树的
 中文内容，同时保留本分支新增的微信优先设计文件；解决后运行 `git diff --check`。
 
-- [ ] **Step 4: 运行文档契约**
+- [x] **Step 4: 运行文档契约**
 
 Run:
 
@@ -574,7 +585,7 @@ Expected: 文档契约和格式检查全部 PASS。
 
 - No source changes expected
 
-- [ ] **Step 1: 执行全仓开发门禁**
+- [x] **Step 1: 执行全仓开发门禁**
 
 Run:
 
@@ -584,7 +595,7 @@ corepack pnpm check
 
 Expected: exit 0；默认任务不构建 Taro；`/wx` 静态检查通过。
 
-- [ ] **Step 2: 执行漏洞报告并记录实际状态**
+- [x] **Step 2: 执行漏洞报告并记录实际状态**
 
 Run:
 
@@ -595,7 +606,7 @@ corepack pnpm audit --audit-level high
 Expected: 在现有风险未解决时 exit 1，并打印具体 Critical/High 数量。此结果记录为
 已知开发风险，不将 `dev` 判定为失败，也不得描述为安全通过。
 
-- [ ] **Step 3: 使用微信技能执行官方编译**
+- [x] **Step 3: 使用微信技能执行官方编译**
 
 先完整读取 `compiler` 技能，然后针对
 `E:\My Work\stay-fable\wx` 执行微信开发者工具编译。若编译器技能要求先初始化，则先
@@ -603,14 +614,14 @@ Expected: 在现有风险未解决时 exit 1，并打印具体 Critical/High 数
 
 Expected: 官方微信开发者工具报告编译成功，无 WXML/WXSS/JavaScript 错误。
 
-- [ ] **Step 4: 生成一次微信预览**
+- [x] **Step 4: 生成一次微信预览**
 
 完整读取并使用 `previewer` 技能，为 `/wx` 生成预览信息。
 
 Expected: AppID 权限有效，预览构建成功并返回包体信息。关闭本次打开的项目窗口，但
 不得退出用户原本已打开的其他项目。
 
-- [ ] **Step 5: 执行 WSL2 实机验证**
+- [x] **Step 5: 执行 WSL2 实机验证**
 
 严格按照 `docs/operations/wsl-runtime-validation.md` 执行。确认：
 
@@ -622,7 +633,7 @@ Expected: AppID 权限有效，预览构建成功并返回包体信息。关闭�
 - 临时容器和 `.wsl-runtime/` 已清理；
 - Compose 数据卷保留。
 
-- [ ] **Step 6: 确认工作区无验证噪声**
+- [x] **Step 6: 确认工作区无验证噪声**
 
 Run:
 
@@ -640,7 +651,7 @@ Expected: 只包含本计划文档尚未提交时的预期修改；不得包含 
 
 - No source changes expected
 
-- [ ] **Step 1: 确认所有实施提交和工作区状态**
+- [x] **Step 1: 确认所有实施提交和工作区状态**
 
 ```powershell
 git status --short
@@ -650,7 +661,7 @@ git log --oneline --decorate -10
 Expected: 当前功能分支 `git status --short` 无输出；历史中包含设计、实施计划、
 `AGENTS.md`、微信检查、CI 策略、WSL2 文档和旧工作树文档提交。
 
-- [ ] **Step 2: 更新本地主线并合并功能分支**
+- [x] **Step 2: 更新本地主线并合并功能分支**
 
 在主工作区执行：
 
@@ -661,7 +672,7 @@ git merge --ff-only codex/wx-first-roadmap
 
 Expected: `main` 快进到微信优先重整的最终提交。
 
-- [ ] **Step 3: 重新执行合并后的全量检查**
+- [x] **Step 3: 重新执行合并后的全量检查**
 
 Run:
 
@@ -671,7 +682,7 @@ corepack pnpm check
 
 Expected: exit 0。若失败，不得继续删除工作树或推送。
 
-- [ ] **Step 4: 删除已整合工作树和功能分支**
+- [x] **Step 4: 删除已整合工作树和功能分支**
 
 先确认两个辅助工作树均无修改：
 
@@ -692,7 +703,7 @@ git worktree prune
 
 Expected: `git worktree list` 只显示主工作区。
 
-- [ ] **Step 5: 对齐本地基线分支**
+- [x] **Step 5: 对齐本地基线分支**
 
 ```powershell
 git branch -f dev main
@@ -707,7 +718,7 @@ Expected: `main`、`dev`、`release` 指向同一最终提交。
 
 - No source changes expected
 
-- [ ] **Step 1: 推送功能历史和三条基线分支**
+- [x] **Step 1: 推送功能历史和三条基线分支**
 
 使用普通推送，不使用 `--force`：
 
@@ -720,7 +731,7 @@ git push origin release
 Expected: 三次推送成功。若远程出现新提交导致 non-fast-forward，停止并先 fetch/rebase
 或合并，不得覆盖远程。
 
-- [ ] **Step 2: 刷新并比对本地与远程提交号**
+- [x] **Step 2: 刷新并比对本地与远程提交号**
 
 ```powershell
 git fetch --prune origin
@@ -734,7 +745,7 @@ git rev-parse origin/release
 
 Expected: 每一对本地/远程提交号完全一致。
 
-- [ ] **Step 3: 最终盘点**
+- [x] **Step 3: 最终盘点**
 
 ```powershell
 git status --short
@@ -751,7 +762,7 @@ Expected:
 - 三条分支均与对应 origin 分支一致；
 - Dependabot 远程分支未被修改或删除。
 
-- [ ] **Step 4: 记录已知搁置项**
+- [x] **Step 4: 记录已知搁置项**
 
 最终交付说明必须明确：
 
