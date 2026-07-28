@@ -1,0 +1,27 @@
+import { Body, Controller, Post } from "@nestjs/common";
+import { ApiCreatedResponse, ApiOperation, ApiTags } from "@nestjs/swagger";
+import type { AuthSession } from "@stay-fable/api-contracts/auth";
+
+import { AuthService } from "./auth.service.js";
+import { RefreshSessionDto } from "./dto/refresh-session.dto.js";
+import { WechatLoginDto } from "./dto/wechat-login.dto.js";
+
+@ApiTags("auth")
+@Controller("auth")
+export class AuthController {
+  constructor(private readonly auth: AuthService) {}
+
+  @Post("wechat/login")
+  @ApiOperation({ summary: "Exchange a WeChat login code for a session" })
+  @ApiCreatedResponse({ description: "Session issued" })
+  login(@Body() body: WechatLoginDto): Promise<AuthSession> {
+    return this.auth.login(body.code);
+  }
+
+  @Post("session/refresh")
+  @ApiOperation({ summary: "Rotate a refresh token and session" })
+  @ApiCreatedResponse({ description: "Session rotated" })
+  refresh(@Body() body: RefreshSessionDto): Promise<AuthSession> {
+    return this.auth.refresh(body.refresh_token);
+  }
+}

@@ -4,6 +4,10 @@
   "private": true,
   "type": "module",
   "exports": {
+    "./auth": {
+      "types": "./src/auth.ts",
+      "default": "./dist/src/auth.js"
+    },
     "./health": {
       "types": "./src/health.ts",
       "default": "./dist/src/health.js"
