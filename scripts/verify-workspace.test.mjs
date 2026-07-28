@@ -14,14 +14,19 @@ test("declares the root workspace contract", async () => {
   assert.match(workspace, /^\s*-\s+["']?packages\/\*["']?\s*$/m);
   assert.equal(root.scripts.verify, "node scripts/verify-workspace.mjs");
   assert.equal(root.scripts["verify:phase-0"], "node scripts/verify-phase-0.mjs");
-  assert.equal(root.scripts["wx:check"], "node scripts/check-wx-project.mjs");
-  for (const script of ["lint", "typecheck", "test", "build"]) {
-    assert.ok(
-      root.scripts[script].includes("--filter=!@stay-fable/consumer-miniapp"),
-      `${script} must exclude the frozen Taro client`,
-    );
+  const expectedScripts = {
+    build: "turbo run build --filter=!@stay-fable/consumer-miniapp",
+    dev: 'turbo run build --filter="./packages/*" && turbo run dev --parallel --filter=!@stay-fable/consumer-miniapp',
+    lint: "eslint eslint.config.mjs prettier.config.mjs scripts/*.mjs packages/eslint-config/index.mjs && turbo run lint --filter=!@stay-fable/consumer-miniapp",
+    test: "node --test scripts/*.test.mjs && turbo run test --filter=!@stay-fable/consumer-miniapp",
+    typecheck: "turbo run typecheck --filter=!@stay-fable/consumer-miniapp",
+    "wx:check": "node scripts/check-wx-project.mjs",
+    check:
+      "pnpm verify && pnpm wx:check && pnpm format:check && pnpm lint && pnpm typecheck && pnpm test && pnpm build",
+  };
+  for (const [script, expected] of Object.entries(expectedScripts)) {
+    assert.equal(root.scripts[script], expected, `${script} must match the approved command`);
   }
-  assert.ok(root.scripts.check.includes("pnpm wx:check"));
 });
 
 test("includes phase zero verification entry points and evidence in the workspace contract", async () => {
