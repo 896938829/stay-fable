@@ -12,7 +12,7 @@ test("CI workflow enforces verification, secret scanning, and container scanning
 
   assert.deepEqual(workflow.on, {
     pull_request: {},
-    push: { branches: ["main"] },
+    push: { branches: ["main", "dev", "release"] },
   });
   assert.deepEqual(workflow.permissions, { contents: "read" });
 
@@ -76,6 +76,22 @@ test("CI workflow enforces verification, secret scanning, and container scanning
     assert.match(use[2], /^[0-9a-f]{40}$/, `${use[1]} must be pinned to a full commit SHA`);
   }
   assert.doesNotMatch(source, /security-events:\s*write/);
+});
+
+test("dependency audits report only for dev contexts and gate protected branches", async () => {
+  const workflow = parse(await read(".github/workflows/ci.yml"));
+
+  assert.deepEqual(workflow.on.push.branches, ["main", "dev", "release"]);
+
+  const auditSteps = workflow.jobs.verify.steps.filter(
+    (step) => step.run === "pnpm audit --audit-level high",
+  );
+  assert.equal(auditSteps.length, 1);
+  assert.equal(auditSteps[0].id, "dependency-audit");
+  assert.equal(
+    auditSteps[0]["continue-on-error"],
+    "${{ github.ref_name == 'dev' || github.base_ref == 'dev' }}",
+  );
 });
 
 test("Dependabot covers npm and GitHub Actions with bounded schedules", async () => {

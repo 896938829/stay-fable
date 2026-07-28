@@ -5,6 +5,8 @@ on:
   push:
     branches:
       - main
+      - dev
+      - release
 
 permissions:
   contents: read
@@ -61,6 +63,8 @@ jobs:
       - name: Run quality checks
         run: pnpm check
       - name: Audit all workspace dependencies
+        id: dependency-audit
+        continue-on-error: ${{ github.ref_name == 'dev' || github.base_ref == 'dev' }}
         run: pnpm audit --audit-level high
 
   secrets:
