@@ -84,6 +84,16 @@ test("CI workflow runs for required protected and development branches", async (
   }
 });
 
+test("CI workflow runs for pull requests", async () => {
+  const workflow = parse(await read(".github/workflows/ci.yml"));
+
+  assert.equal(
+    Object.hasOwn(workflow.on, "pull_request"),
+    true,
+    "workflow must include a pull_request trigger",
+  );
+});
+
 test("dependency audits report only for dev contexts and gate protected branches", async () => {
   const workflow = parse(await read(".github/workflows/ci.yml"));
   const verify = workflow.jobs.verify;
