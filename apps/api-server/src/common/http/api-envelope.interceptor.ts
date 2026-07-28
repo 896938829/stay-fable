@@ -7,13 +7,7 @@ import {
 import type { Observable } from "rxjs";
 import { map } from "rxjs/operators";
 
-import type { RequestWithId } from "./request-context.js";
-
-const isUnwrappedPath = (path: string): boolean =>
-  path === "/health/live" ||
-  path === "/health/ready" ||
-  path === "/internal/openapi" ||
-  path.startsWith("/internal/openapi/");
+import { isUnwrappedPath, type RequestWithId } from "./request-context.js";
 
 @Injectable()
 export class ApiEnvelopeInterceptor implements NestInterceptor {

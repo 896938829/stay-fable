@@ -8,7 +8,7 @@ import {
 import type { Response } from "express";
 
 import { BusinessException } from "./business.exception.js";
-import type { RequestWithId } from "./request-context.js";
+import { isUnwrappedPath, type RequestWithId } from "./request-context.js";
 
 interface ErrorBody {
   error: {
@@ -25,6 +25,19 @@ export class ApiExceptionFilter implements ExceptionFilter {
     const http = host.switchToHttp();
     const request = http.getRequest<RequestWithId>();
     const response = http.getResponse<Response>();
+
+    if (isUnwrappedPath(request.path)) {
+      if (exception instanceof HttpException) {
+        response.status(exception.getStatus()).json(exception.getResponse());
+        return;
+      }
+
+      response.status(HttpStatus.INTERNAL_SERVER_ERROR).json({
+        statusCode: HttpStatus.INTERNAL_SERVER_ERROR,
+        message: "Internal server error",
+      });
+      return;
+    }
 
     if (exception instanceof BusinessException) {
       const body: ErrorBody = {

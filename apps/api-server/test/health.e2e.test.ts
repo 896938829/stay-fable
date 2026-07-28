@@ -3,6 +3,7 @@ import { Test } from "@nestjs/testing";
 import request from "supertest";
 import { afterEach, describe, it } from "vitest";
 
+import { configureApplication } from "../src/application-configuration.js";
 import { HealthController } from "../src/health/health.controller.js";
 import { HealthService } from "../src/health/health.service.js";
 
@@ -55,6 +56,7 @@ describe("HealthController", () => {
     }).compile();
 
     app = module.createNestApplication();
+    configureApplication(app, "production");
     await app.init();
     const server = app.getHttpServer() as Parameters<typeof request>[0];
 
