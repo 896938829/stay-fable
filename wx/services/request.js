@@ -224,11 +224,11 @@ function createRequestClient(dependencies) {
       }
 
       if (response.statusCode === 401 && auth && !hasRefreshed) {
+        apiError(response);
         const selectedRecovery = selectFirst401Recovery(
           responseSession,
           attemptedAccessToken,
         );
-        apiError(response);
         if (selectedRecovery) {
           await selectedRecovery;
           bindRecoveredUser(await Promise.resolve(getSession()));

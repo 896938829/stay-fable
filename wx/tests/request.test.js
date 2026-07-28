@@ -95,6 +95,32 @@ describe("request client", () => {
     });
   });
 
+  it("rejects a malformed 401 before starting authentication recovery", async () => {
+    const userA = "11111111-1111-4111-8111-111111111111";
+    const session = canonicalIdentitySession(userA, "a");
+    const request = vi.fn((options) => {
+      options.success({
+        statusCode: 401,
+        data: { error: { code: "UNAUTHORIZED", message: "Expired" } },
+      });
+    });
+    const refreshSession = vi.fn(() => new Promise(() => {}));
+    const reauthenticate = vi.fn();
+    const client = createClient(request, {
+      getSession: () => session,
+      refreshSession,
+      reauthenticate,
+    });
+
+    await expect(client.get("/private")).rejects.toMatchObject({
+      code: "INVALID_API_RESPONSE",
+      message: "Invalid API response",
+    });
+    expect(refreshSession).not.toHaveBeenCalled();
+    expect(reauthenticate).not.toHaveBeenCalled();
+    expect(request).toHaveBeenCalledOnce();
+  });
+
   it("parses a stable non-2xx API error", async () => {
     const request = vi.fn((options) => {
       options.success({
