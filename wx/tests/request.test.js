@@ -26,6 +26,16 @@ function identitySession(userId, token) {
   };
 }
 
+function canonicalIdentitySession(userId, marker) {
+  return {
+    access_token: marker.repeat(32),
+    access_expires_in: 120,
+    refresh_token: marker.toUpperCase().repeat(32),
+    refresh_expires_in: 600,
+    user: { id: userId },
+  };
+}
+
 describe("request client", () => {
   it("returns validated envelope data and adds request/session headers", async () => {
     const request = vi.fn((options) => {
@@ -245,7 +255,10 @@ describe("request client", () => {
   });
 
   it("shares the complete refresh-to-reauthentication chain with a staggered 401", async () => {
-    let accessToken = "old";
+    const userA = "11111111-1111-4111-8111-111111111111";
+    const oldSession = canonicalIdentitySession(userA, "o");
+    const newSession = canonicalIdentitySession(userA, "n");
+    let session = oldSession;
     let releaseSecondUnauthorized;
     let releaseReauthentication;
     let markReauthenticationStarted;
@@ -258,7 +271,7 @@ describe("request client", () => {
       const path = new URL(options.url).pathname;
       attempts.set(path, (attempts.get(path) || 0) + 1);
       const respond = () => {
-        if (options.header.Authorization === "Bearer new") {
+        if (options.header.Authorization === `Bearer ${newSession.access_token}`) {
           options.success({
             statusCode: 200,
             data: { data: path, request_id: `req_new_${path.slice(1)}` },
@@ -276,14 +289,17 @@ describe("request client", () => {
           },
         });
       };
-      if (path === "/two" && options.header.Authorization === "Bearer old") {
+      if (
+        path === "/two" &&
+        options.header.Authorization === `Bearer ${oldSession.access_token}`
+      ) {
         releaseSecondUnauthorized = respond;
       } else {
         queueMicrotask(respond);
       }
     });
     const refreshSession = vi.fn(async () => {
-      accessToken = undefined;
+      session = null;
       throw new Error("refresh failed");
     });
     const reauthenticate = vi.fn(
@@ -291,26 +307,27 @@ describe("request client", () => {
         new Promise((resolve) => {
           markReauthenticationStarted();
           releaseReauthentication = () => {
-            accessToken = "new";
+            session = newSession;
             resolve();
           };
         }),
     );
     const client = createClient(request, {
-      getSession: () => (accessToken ? { access_token: accessToken } : null),
+      getSession: () => session,
       refreshSession,
       reauthenticate,
     });
 
     const first = client.get("/one");
     const second = client.get("/two");
+    const resultsPromise = Promise.allSettled([first, second]);
     await reauthenticationStarted;
     releaseSecondUnauthorized();
     await new Promise((resolve) => setTimeout(resolve, 0));
     const secondAttemptsBeforeRecovery = attempts.get("/two");
     releaseReauthentication();
 
-    const results = await Promise.allSettled([first, second]);
+    const results = await resultsPromise;
     expect(secondAttemptsBeforeRecovery).toBe(1);
     expect(results).toEqual([
       { status: "fulfilled", value: "/one" },
@@ -325,6 +342,36 @@ describe("request client", () => {
         ["/two", 2],
       ]),
     );
+  });
+
+  it("does not start login when a bound session is cleared without an in-flight recovery", async () => {
+    const userA = "11111111-1111-4111-8111-111111111111";
+    let session = canonicalIdentitySession(userA, "a");
+    const request = vi.fn((options) => {
+      session = null;
+      options.success({
+        statusCode: 401,
+        data: {
+          error: { code: "UNAUTHORIZED", message: "Expired" },
+          request_id: "req_cleared",
+        },
+      });
+    });
+    const refreshSession = vi.fn();
+    const reauthenticate = vi.fn();
+    const client = createClient(request, {
+      getSession: () => session,
+      refreshSession,
+      reauthenticate,
+    });
+
+    await expect(client.get("/private")).rejects.toMatchObject({
+      code: "AUTH_SESSION_CHANGED",
+      message: "Session identity changed",
+    });
+    expect(refreshSession).not.toHaveBeenCalled();
+    expect(reauthenticate).not.toHaveBeenCalled();
+    expect(request).toHaveBeenCalledOnce();
   });
 
   it("replays a late old-token 401 with an already recovered nonempty token", async () => {

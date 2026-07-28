@@ -90,7 +90,7 @@ function createRequestClient(dependencies) {
   const clearSession = dependencies.clearSession;
   let recoveryPromise;
 
-  async function recoverOnce() {
+  function recoverOnce() {
     if (!recoveryPromise) {
       recoveryPromise = Promise.resolve()
         .then(async () => {
@@ -151,6 +151,36 @@ function createRequestClient(dependencies) {
       }
     }
 
+    function selectFirst401Recovery(session, attemptedAccessToken) {
+      const currentUserId = sessionUserId(session);
+      if (boundUserId && currentUserId && currentUserId !== boundUserId) {
+        throw requestError("AUTH_SESSION_CHANGED", "Session identity changed");
+      }
+
+      const inFlightRecovery = recoveryPromise;
+      if (boundUserId && !currentUserId) {
+        if (!inFlightRecovery) {
+          throw requestError("AUTH_SESSION_CHANGED", "Session identity changed");
+        }
+        return inFlightRecovery;
+      }
+
+      assertBoundUser(session);
+      const latestAccessToken =
+        session && typeof session.access_token === "string"
+          ? session.access_token
+          : undefined;
+      if (
+        typeof latestAccessToken === "string" &&
+        latestAccessToken !== "" &&
+        latestAccessToken !== attemptedAccessToken
+      ) {
+        bindRecoveredUser(session);
+        return null;
+      }
+      return inFlightRecovery || recoverOnce();
+    }
+
     async function dispatch(hasRefreshed) {
       let networkAttempt = 0;
       let response;
@@ -177,7 +207,6 @@ function createRequestClient(dependencies) {
             header,
           });
           responseSession = auth ? await Promise.resolve(getSession()) : null;
-          assertBoundUser(responseSession);
           break;
         } catch (error) {
           if (
@@ -194,28 +223,25 @@ function createRequestClient(dependencies) {
         }
       }
 
+      if (response.statusCode === 401 && auth && !hasRefreshed) {
+        const selectedRecovery = selectFirst401Recovery(
+          responseSession,
+          attemptedAccessToken,
+        );
+        apiError(response);
+        if (selectedRecovery) {
+          await selectedRecovery;
+          bindRecoveredUser(await Promise.resolve(getSession()));
+        }
+        return dispatch(true);
+      }
+
+      assertBoundUser(responseSession);
       if (response.statusCode >= 200 && response.statusCode < 300) {
         return assertEnvelope(response.data).data;
       }
 
       const parsedError = apiError(response);
-      if (response.statusCode === 401 && auth && !hasRefreshed) {
-        const latestAccessToken =
-          responseSession && typeof responseSession.access_token === "string"
-            ? responseSession.access_token
-            : undefined;
-        const anotherRecoveryCompleted =
-          typeof latestAccessToken === "string" &&
-          latestAccessToken !== "" &&
-          latestAccessToken !== attemptedAccessToken;
-        if (!anotherRecoveryCompleted) {
-          await recoverOnce();
-          bindRecoveredUser(await Promise.resolve(getSession()));
-        } else {
-          bindRecoveredUser(responseSession);
-        }
-        return dispatch(true);
-      }
       throw parsedError;
     }
 
