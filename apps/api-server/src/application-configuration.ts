@@ -2,10 +2,15 @@ import { type INestApplication, RequestMethod, ValidationPipe } from "@nestjs/co
 import { DocumentBuilder, SwaggerModule } from "@nestjs/swagger";
 import helmet from "helmet";
 
+import { ApiEnvelopeInterceptor } from "./common/http/api-envelope.interceptor.js";
+import { ApiExceptionFilter } from "./common/http/api-exception.filter.js";
+import { requestContext } from "./common/http/request-context.js";
+
 export const configureApplication = (
   app: INestApplication,
   nodeEnvironment = process.env.NODE_ENV,
 ): void => {
+  app.use(requestContext);
   app.use(helmet());
   app.enableShutdownHooks();
   app.setGlobalPrefix("api/v1", {
@@ -21,6 +26,8 @@ export const configureApplication = (
       whitelist: true,
     }),
   );
+  app.useGlobalInterceptors(new ApiEnvelopeInterceptor());
+  app.useGlobalFilters(new ApiExceptionFilter());
 
   if (nodeEnvironment !== "production") {
     const openApiConfig = new DocumentBuilder()

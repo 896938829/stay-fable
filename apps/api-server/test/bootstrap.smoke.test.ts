@@ -66,9 +66,13 @@ describe("API bootstrap configuration", () => {
       .expect(201);
 
     expect(response.body).toEqual({
-      transformed: true,
-      name: "Fable",
+      data: {
+        transformed: true,
+        name: "Fable",
+      },
+      request_id: response.headers["x-request-id"],
     });
+    expect(response.headers["x-request-id"]).toMatch(/^req_[a-f0-9]{32}$/);
 
     await request(server)
       .get("/health/live")
