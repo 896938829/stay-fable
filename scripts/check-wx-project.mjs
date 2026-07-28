@@ -476,6 +476,17 @@ async function validateUsingComponents(projectRoot, configFile, config, validate
   }
 }
 
+function validateRendererNavigation(app, page, pageConfig) {
+  const renderer = pageConfig.renderer ?? app.renderer;
+  const navigationStyle = pageConfig.navigationStyle ?? app.window?.navigationStyle ?? "default";
+
+  if (renderer === "skyline" && navigationStyle !== "custom") {
+    throw new Error(
+      `Skyline page ${page} must set navigationStyle to "custom" in its page config or app.json window`,
+    );
+  }
+}
+
 export async function validateWxProject(projectRoot) {
   projectRoot = await realpath(path.resolve(projectRoot));
   const projectConfig = await readJson(
@@ -536,6 +547,7 @@ export async function validateWxProject(projectRoot) {
     const pageBasePath = path.join(projectRoot, ...page.split("/"));
     const pageJsonPath = `${pageBasePath}.json`;
     const pageConfig = await readJson(projectRoot, pageJsonPath, `${page}.json`);
+    validateRendererNavigation(app, page, pageConfig);
     pageConfigs.push({ config: pageConfig, file: pageJsonPath });
     await validateConfigResources(projectRoot, pageJsonPath, pageConfig);
     await validateJavaScript(projectRoot, `${pageBasePath}.js`);

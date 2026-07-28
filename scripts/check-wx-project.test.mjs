@@ -42,6 +42,20 @@ test("accepts a complete native WeChat mini-program", async () => {
   assert.deepEqual(await validateWxProject(root), { pageCount: 1 });
 });
 
+test("rejects Skyline pages that use the standard navigation bar", async () => {
+  const root = await createFixture();
+  await writeFile(
+    path.join(root, "app.json"),
+    JSON.stringify({
+      pages: ["pages/index/index"],
+      renderer: "skyline",
+      sitemapLocation: "sitemap.json",
+    }),
+  );
+
+  await assert.rejects(() => validateWxProject(root), /Skyline.*navigationStyle.*custom/i);
+});
+
 test("rejects a page missing its WXML file", async () => {
   const root = await createFixture();
   await unlink(path.join(root, "pages", "index", "index.wxml"));
