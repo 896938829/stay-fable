@@ -61,7 +61,7 @@ describe("HealthController", () => {
     const server = app.getHttpServer() as Parameters<typeof request>[0];
 
     await request(server)
-      .get("/health/ready")
+      .get("/health/ready/?source=probe")
       .expect(503)
       .expect({
         status: "unavailable",
@@ -69,7 +69,7 @@ describe("HealthController", () => {
         checks: { database: "down", redis: "down" },
       });
     await request(server)
-      .get("/health/live")
+      .get("/health/live/?source=probe")
       .expect(200)
       .expect({ status: "ok", service: "api-server" });
   });

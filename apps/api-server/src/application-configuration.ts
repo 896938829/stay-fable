@@ -1,4 +1,4 @@
-import { type INestApplication, RequestMethod, ValidationPipe } from "@nestjs/common";
+import { type INestApplication, Logger, RequestMethod, ValidationPipe } from "@nestjs/common";
 import { DocumentBuilder, SwaggerModule } from "@nestjs/swagger";
 import helmet from "helmet";
 
@@ -27,7 +27,7 @@ export const configureApplication = (
     }),
   );
   app.useGlobalInterceptors(new ApiEnvelopeInterceptor());
-  app.useGlobalFilters(new ApiExceptionFilter());
+  app.useGlobalFilters(new ApiExceptionFilter(new Logger(ApiExceptionFilter.name)));
 
   if (nodeEnvironment !== "production") {
     const openApiConfig = new DocumentBuilder()

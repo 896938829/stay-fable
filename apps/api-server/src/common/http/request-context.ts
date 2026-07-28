@@ -4,11 +4,17 @@ import type { NextFunction, Request, Response } from "express";
 
 const REQUEST_ID_PATTERN = /^[A-Za-z0-9_-]{8,80}$/;
 
-export const isUnwrappedPath = (path: string): boolean =>
-  path === "/health/live" ||
-  path === "/health/ready" ||
-  path === "/internal/openapi" ||
-  path.startsWith("/internal/openapi/");
+export const isUnwrappedPath = (path: string): boolean => {
+  const pathWithoutQuery = path.split("?", 1)[0] ?? path;
+  const normalizedPath = pathWithoutQuery.replace(/\/+$/, "") || "/";
+
+  return (
+    normalizedPath === "/health/live" ||
+    normalizedPath === "/health/ready" ||
+    normalizedPath === "/internal/openapi" ||
+    normalizedPath.startsWith("/internal/openapi/")
+  );
+};
 
 export interface RequestWithId extends Request {
   requestId: string;

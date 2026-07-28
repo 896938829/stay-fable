@@ -4,6 +4,8 @@ import {
   type ExceptionFilter,
   HttpException,
   HttpStatus,
+  Logger,
+  type LoggerService,
 } from "@nestjs/common";
 import type { Response } from "express";
 
@@ -21,10 +23,32 @@ interface ErrorBody {
 
 @Catch()
 export class ApiExceptionFilter implements ExceptionFilter {
+  constructor(private readonly logger: LoggerService = new Logger(ApiExceptionFilter.name)) {}
+
   catch(exception: unknown, host: ArgumentsHost): void {
     const http = host.switchToHttp();
     const request = http.getRequest<RequestWithId>();
     const response = http.getResponse<Response>();
+
+    if (!(exception instanceof HttpException)) {
+      const error =
+        exception instanceof Error
+          ? {
+              name: exception.name,
+              message: exception.message,
+              stack: exception.stack,
+            }
+          : {
+              name: "UnknownException",
+              message: String(exception),
+              stack: undefined,
+            };
+
+      this.logger.error({
+        request_id: request.requestId,
+        error,
+      });
+    }
 
     if (isUnwrappedPath(request.path)) {
       if (exception instanceof HttpException) {
