@@ -1,0 +1,141 @@
+.home {
+  overflow: hidden;
+}
+
+.hero {
+  display: flex;
+  padding: 44rpx 10rpx 54rpx;
+  flex-direction: column;
+}
+
+.hero__eyebrow {
+  color: var(--color-brand);
+  font-size: 22rpx;
+  font-weight: 700;
+  letter-spacing: 6rpx;
+}
+
+.hero__title {
+  max-width: 600rpx;
+  margin-top: 22rpx;
+  font-size: 58rpx;
+  font-weight: 650;
+  line-height: 1.2;
+  letter-spacing: 1rpx;
+}
+
+.hero__subtitle {
+  max-width: 610rpx;
+  margin-top: 22rpx;
+  color: var(--color-muted);
+  font-size: 28rpx;
+  line-height: 1.7;
+}
+
+.search-card {
+  padding: 12rpx;
+}
+
+.search-card__body {
+  padding: 12rpx 18rpx 0;
+}
+
+.field-row {
+  display: flex;
+  width: 100%;
+  min-height: 112rpx;
+  padding: 18rpx 10rpx;
+  border: 0;
+  border-radius: var(--radius-small);
+  align-items: center;
+  justify-content: space-between;
+  background: transparent;
+  text-align: left;
+  line-height: 1.4;
+}
+
+.field-row::after,
+.location-button::after {
+  border: 0;
+}
+
+.field-row__content {
+  display: flex;
+  flex-direction: column;
+}
+
+.field-row__label {
+  display: block;
+  color: var(--color-muted);
+  font-size: 23rpx;
+}
+
+.field-row__value {
+  display: block;
+  margin-top: 6rpx;
+  color: var(--color-text);
+  font-size: 32rpx;
+  font-weight: 600;
+}
+
+.field-row__value--placeholder {
+  color: #9b8f87;
+}
+
+.field-row__arrow {
+  color: #9c8d84;
+  font-size: 52rpx;
+  font-weight: 300;
+}
+
+.field-row__meta {
+  display: flex;
+  margin-top: 8rpx;
+  color: var(--color-brand-dark);
+  font-size: 25rpx;
+}
+
+.meta-dot {
+  margin: 0 12rpx;
+}
+
+.location-button {
+  min-height: 88rpx;
+  margin: 2rpx 8rpx 16rpx;
+  border: 0;
+  border-radius: var(--radius-small);
+  background: #f8eee8;
+  color: var(--color-brand-dark);
+  font-size: 26rpx;
+  line-height: 88rpx;
+}
+
+.divider {
+  height: 1rpx;
+  margin: 0 10rpx;
+  background: var(--color-border);
+}
+
+.search-button {
+  margin: 20rpx 18rpx 18rpx;
+}
+
+.promise {
+  display: flex;
+  margin: 48rpx 12rpx 0;
+  padding-left: 24rpx;
+  border-left: 4rpx solid #d6a28c;
+  flex-direction: column;
+}
+
+.promise__title {
+  font-size: 28rpx;
+  font-weight: 600;
+}
+
+.promise__text {
+  margin-top: 8rpx;
+  color: var(--color-muted);
+  font-size: 24rpx;
+  line-height: 1.6;
+}

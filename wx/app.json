@@ -1,11 +1,15 @@
 {
   "pages": [
-    "pages/index/index",
-    "pages/logs/logs"
+    "pages/home/home",
+    "pages/city-select/city-select",
+    "pages/date-guest-select/date-guest-select"
   ],
   "window": {
+    "navigationBarBackgroundColor": "#FBF7F2",
     "navigationBarTextStyle": "black",
-    "navigationStyle": "custom"
+    "navigationBarTitleText": "Stay Fable",
+    "backgroundColor": "#F7F1EB",
+    "backgroundTextStyle": "dark"
   },
   "style": "v2",
   "renderer": "skyline",

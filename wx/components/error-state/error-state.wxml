@@ -1,0 +1,8 @@
+<view class="state" role="alert">
+  <view class="state__mark">!</view>
+  <text class="state__title">{{title}}</text>
+  <text wx:if="{{message}}" class="state__message">{{message}}</text>
+  <button class="state__action" hover-class="state__action--pressed" bindtap="handleRetry">
+    {{actionText}}
+  </button>
+</view>

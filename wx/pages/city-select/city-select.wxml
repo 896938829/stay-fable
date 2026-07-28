@@ -1,0 +1,41 @@
+<view class="page-shell city-page">
+  <view class="page-heading">
+    <text class="section-title">想去哪里住一晚？</text>
+    <text class="page-heading__description">以下城市已开放 Stay Fable 精选住宿。</text>
+  </view>
+
+  <loading-state wx:if="{{status === 'loading'}}" text="正在加载已开通城市"></loading-state>
+  <error-state
+    wx:elif="{{status === 'error'}}"
+    message="{{errorMessage}}"
+    bind:retry="retry"
+  ></error-state>
+  <empty-state
+    wx:elif="{{status === 'empty'}}"
+    title="暂时没有已开通城市"
+    description="我们正在认真准备新的目的地。"
+    action-text="重新加载"
+    bind:action="retry"
+  ></empty-state>
+
+  <view wx:else class="city-list">
+    <view wx:if="{{notice}}" class="notice" role="alert">
+      <text>{{notice}}</text>
+      <button class="notice__retry" bindtap="retry">重试</button>
+    </view>
+    <button
+      wx:for="{{cities}}"
+      wx:key="id"
+      class="city-item surface-card"
+      data-id="{{item.id}}"
+      bindtap="chooseCity"
+    >
+      <view class="city-item__mark">城</view>
+      <view class="city-item__body">
+        <text class="city-item__name">{{item.name}}</text>
+        <text class="city-item__hint">查看 {{item.name}} 的精选住宿</text>
+      </view>
+      <text class="city-item__arrow">›</text>
+    </button>
+  </view>
+</view>

@@ -1,19 +1,49 @@
-// app.js
-App({
-  onLaunch() {
-    // 展示本地存储能力
-    const logs = wx.getStorageSync('logs') || []
-    logs.unshift(Date.now())
-    wx.setStorageSync('logs', logs)
+"use strict";
 
-    // 登录
-    wx.login({
-      success: res => {
-        // 发送 res.code 到后台换取 openId, sessionKey, unionId
+function safeSessionError(error) {
+  const allowedCodes = [
+    "AUTH_LOGIN_FAILED",
+    "AUTH_REAUTHENTICATION_FAILED",
+    "AUTH_REFRESH_FAILED",
+    "NETWORK",
+    "NETWORK_REQUEST_FAILED",
+  ];
+  return {
+    code: allowedCodes.includes(error && error.code) ? error.code : "SERVICE_UNAVAILABLE",
+  };
+}
+
+function createAppDefinition(dependencies = {}) {
+  const sessionStore = dependencies.sessionStore || require("./stores/session");
+  const searchStore = dependencies.searchStore || require("./stores/search");
+
+  return {
+    onLaunch() {
+      searchStore.initializeDefaults();
+      let sessionAttempt;
+      try {
+        sessionAttempt = sessionStore.ensureSession();
+      } catch (error) {
+        sessionAttempt = Promise.reject(error);
       }
-    })
-  },
-  globalData: {
-    userInfo: null
-  }
-})
+      this.globalData.sessionReady = Promise.resolve(sessionAttempt).then(
+        (session) => ({ session, error: null }),
+        (error) => ({ session: null, error: safeSessionError(error) }),
+      );
+    },
+    globalData: {
+      sessionStore,
+      searchStore,
+      sessionReady: null,
+    },
+  };
+}
+
+const definition = createAppDefinition();
+if (typeof App === "function") {
+  App(definition);
+}
+
+module.exports = {
+  createAppDefinition,
+};

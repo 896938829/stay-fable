@@ -1,0 +1,67 @@
+<view class="page-shell home">
+  <view class="hero">
+    <text class="hero__eyebrow">STAY FABLE</text>
+    <text class="hero__title">去住进一座城的故事里</text>
+    <text class="hero__subtitle">选择目的地与同行人数，开启一段恰到好处的旅程。</text>
+  </view>
+
+  <loading-state wx:if="{{status === 'loading'}}" text="正在为你准备旅程"></loading-state>
+
+  <view wx:else class="surface-card search-card">
+    <error-state
+      wx:if="{{status === 'error'}}"
+      title="暂时无法登录"
+      message="{{errorMessage}}"
+      bind:retry="retrySession"
+    ></error-state>
+
+    <view class="search-card__body">
+      <button class="field-row" bindtap="openCitySelect">
+        <view>
+          <text class="field-row__label">目的地</text>
+          <text class="field-row__value {{search.city ? '' : 'field-row__value--placeholder'}}">
+            {{cityLabel}}
+          </text>
+        </view>
+        <text class="field-row__arrow">›</text>
+      </button>
+
+      <button
+        class="location-button"
+        loading="{{locating}}"
+        disabled="{{locating}}"
+        bindtap="useCurrentLocation"
+      >
+        使用当前位置匹配已开通城市
+      </button>
+
+      <view class="divider"></view>
+
+      <button class="field-row" bindtap="openDateGuestSelect">
+        <view class="field-row__content">
+          <text class="field-row__label">入住 · 离店</text>
+          <text class="field-row__value">{{dateLabel}}</text>
+          <view class="field-row__meta">
+            <text>{{nightsLabel}}</text>
+            <text class="meta-dot">·</text>
+            <text>{{guestsLabel}}</text>
+          </view>
+        </view>
+        <text class="field-row__arrow">›</text>
+      </button>
+    </view>
+
+    <button
+      class="primary-button search-button"
+      disabled="{{!canSearch || status !== 'ready'}}"
+      bindtap="searchProperties"
+    >
+      搜索旅店
+    </button>
+  </view>
+
+  <view class="promise">
+    <text class="promise__title">少一些选择，多一些笃定</text>
+    <text class="promise__text">我们只呈现已开通城市中的精选住宿。</text>
+  </view>
+</view>

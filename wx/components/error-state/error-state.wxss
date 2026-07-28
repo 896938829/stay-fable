@@ -1,0 +1,56 @@
+.state {
+  display: flex;
+  min-height: 320rpx;
+  padding: 48rpx 32rpx;
+  box-sizing: border-box;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+}
+
+.state__mark {
+  width: 72rpx;
+  height: 72rpx;
+  border: 2rpx solid #c9795f;
+  border-radius: 50%;
+  color: #a94d35;
+  font-size: 38rpx;
+  font-weight: 700;
+  line-height: 72rpx;
+}
+
+.state__title {
+  margin-top: 24rpx;
+  color: #2f2925;
+  font-size: 32rpx;
+  font-weight: 600;
+}
+
+.state__message {
+  max-width: 520rpx;
+  margin-top: 12rpx;
+  color: #766d67;
+  font-size: 26rpx;
+  line-height: 1.6;
+}
+
+.state__action {
+  min-height: 88rpx;
+  margin-top: 32rpx;
+  padding: 0 40rpx;
+  border: 0;
+  border-radius: 24rpx;
+  background: #b96445;
+  color: #ffffff;
+  font-size: 28rpx;
+  line-height: 88rpx;
+}
+
+.state__action::after {
+  border: 0;
+}
+
+.state__action--pressed {
+  opacity: 0.82;
+}

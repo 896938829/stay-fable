@@ -1,0 +1,8 @@
+{
+  "navigationBarTitleText": "选择城市",
+  "usingComponents": {
+    "loading-state": "/components/loading-state/loading-state",
+    "empty-state": "/components/empty-state/empty-state",
+    "error-state": "/components/error-state/error-state"
+  }
+}

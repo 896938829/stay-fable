@@ -1,0 +1,7 @@
+{
+  "navigationBarTitleText": "寻找一处好住处",
+  "usingComponents": {
+    "loading-state": "/components/loading-state/loading-state",
+    "error-state": "/components/error-state/error-state"
+  }
+}

@@ -1,0 +1,13 @@
+<view class="state" role="status">
+  <view class="state__mark">⌂</view>
+  <text class="state__title">{{title}}</text>
+  <text wx:if="{{description}}" class="state__description">{{description}}</text>
+  <button
+    wx:if="{{actionText}}"
+    class="state__action"
+    hover-class="state__action--pressed"
+    bindtap="handleAction"
+  >
+    {{actionText}}
+  </button>
+</view>

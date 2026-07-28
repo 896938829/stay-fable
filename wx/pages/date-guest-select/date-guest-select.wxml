@@ -1,0 +1,76 @@
+<view class="page-shell date-page">
+  <view class="page-heading">
+    <text class="section-title">安排这次停留</text>
+    <text class="page-heading__description">最多连续入住 30 晚，可选择 1 至 10 位住客。</text>
+  </view>
+
+  <view class="surface-card selection-card">
+    <picker mode="date" value="{{checkin}}" start="{{today}}" bindchange="changeCheckin">
+      <view class="selection-row">
+        <view>
+          <text class="selection-row__label">入住日期</text>
+          <text class="selection-row__value">{{checkin}}</text>
+          <text class="selection-row__hint">不能选择今天之前的日期</text>
+        </view>
+        <text class="selection-row__action">修改</text>
+      </view>
+    </picker>
+
+    <view class="divider"></view>
+
+    <picker
+      mode="date"
+      value="{{checkout}}"
+      start="{{checkoutMin}}"
+      end="{{checkoutMax}}"
+      bindchange="changeCheckout"
+    >
+      <view class="selection-row">
+        <view>
+          <text class="selection-row__label">离店日期</text>
+          <text class="selection-row__value">{{checkout}}</text>
+          <text class="selection-row__hint">最晚为入住后的第 30 天</text>
+        </view>
+        <text class="selection-row__action">修改</text>
+      </view>
+    </picker>
+
+    <view class="divider"></view>
+
+    <view class="selection-row guest-row">
+      <view>
+        <text class="selection-row__label">入住人数</text>
+        <text class="selection-row__value">{{guests}} 人</text>
+        <text class="selection-row__hint">包含所有成人与儿童住客</text>
+      </view>
+      <view class="stepper">
+        <button
+          class="stepper__button"
+          disabled="{{guests <= 1}}"
+          aria-label="减少一位住客"
+          bindtap="decrementGuests"
+        >
+          −
+        </button>
+        <text class="stepper__value">{{guests}}</text>
+        <button
+          class="stepper__button"
+          disabled="{{guests >= 10}}"
+          aria-label="增加一位住客"
+          bindtap="incrementGuests"
+        >
+          +
+        </button>
+      </view>
+    </view>
+  </view>
+
+  <button
+    class="primary-button save-button"
+    loading="{{saving}}"
+    disabled="{{saving}}"
+    bindtap="save"
+  >
+    保存日期与人数
+  </button>
+</view>
