@@ -25,26 +25,42 @@ Review cadence: At every Phase 0 verification run and weekly while any gate is b
 外部材料的权威交叉索引为
 [`launch-evidence-index.md`](../compliance/launch-evidence-index.md)。
 
-## 自动化仓库检查
+## 当前 HEAD 的微信优先验证契约
 
-| 证据                             | 结果                          | 范围与限制                                                                                                                                                                           |
-| -------------------------------- | ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `corepack pnpm check` 及其子检查 | 2026-07-27 本地通过           | 工作区契约、格式、代码检查、类型检查、测试和构建均以退出码 0 完成。这是仓库证据，不是托管 CI 执行证据。                                                                              |
-| Corepack pnpm 版本门禁           | 本地通过：精确版本 11.17.0    | 验证器通过 Corepack 调用每条 pnpm 命令；解析版本不符时，会在执行其他检查前失败。                                                                                                     |
-| 本地基础设施静态契约测试         | 本地通过                      | 只验证 Compose 配置和健康检查解析，不会启动 PostgreSQL/PostGIS 或 Redis。                                                                                                            |
-| 容器静态契约测试                 | 本地通过                      | 以文本方式验证固定镜像、非 root 的 `USER node`、构建阶段和运行命令。由于没有 Docker，本地未构建、检查、扫描或运行镜像。                                                              |
-| CI 静态契约测试                  | 本地通过                      | 将工作流结构、不可变 Action 固定版本、Gitleaks 调用和 Trivy 门禁作为仓库配置验证；GitHub Actions 尚未执行。                                                                          |
-| Phase 0 文档契约测试             | 本地通过                      | 验证必需控制项、负责人角色、证据链接和可审计状态值。                                                                                                                                 |
-| 已构建 API 运行冒烟测试          | 本地通过                      | [`smoke-api-runtime.mjs`](../../scripts/smoke-api-runtime.mjs) 使用安全且不可达的连接地址启动构建产物，验证 liveness 200、readiness 503/down、随后 liveness 仍为 200，以及有界关闭。 |
-| 管理后台产物冒烟测试             | 本地通过                      | [`smoke-frontend-artifacts.mjs`](../../scripts/smoke-frontend-artifacts.mjs) 通过临时本地 HTTP 服务提供构建产物，并检查状态码、标题和根挂载节点。                                    |
-| 小程序产物冒烟测试               | 本地通过                      | 同一脚本检查三个平台产物，并在虚拟机环境加载微信产物，确认只发生一次 App 注册；官方厂商 GUI 预览仍处于阻断状态。                                                                     |
-| `pnpm verify:phase-0`            | **按设计阻断**                | 所有仓库检查按确定顺序执行，最后的依赖审计以非零状态退出；验证器随即停止并返回非零，绝不会报告 Phase 0 已通过。                                                                      |
-| `pnpm audit --audit-level high`  | **阻断：2 个严重、11 个高危** | 当前机器可读且已复核的发现记录在 [`dependency-audit.md`](dependency-audit.md)。不得降低阈值或忽略退出码。                                                                            |
+当前默认的 `pnpm check` 包含 `pnpm wx:check`，后者通过
+[`scripts/check-wx-project.mjs`](../../scripts/check-wx-project.mjs) 对唯一正式用户端 `/wx`
+执行原生项目静态验证，包括 `project.config.json`、`app.json` 和页面文件完整性。
+`apps/consumer-miniapp` 是冻结的 Taro 多平台参考工程，不进入默认检查、测试或构建。
+
+Task 7 尚未执行当前 HEAD 的微信开发者工具编译与预览，因此本页不主张已有对应运行证据。
+完成后必须把与精确提交绑定的编译和预览证据补充到上线证据索引。
+
+## 2026-07-27 历史证据（Taro 三端）
+
+以下自动化仓库检查和运行证据是 2026-07-27 的历史快照。其中关于 Taro 三端、三个平台产物
+以及微信虚拟机 App 注册的事实予以保留，但不代表当前 HEAD 的 `/wx` 行为，也不可作为当前
+HEAD 已完成微信开发者工具编译或官方预览的证据。
+
+### 自动化仓库检查
+
+| 证据                             | 结果                             | 范围与限制                                                                                                                                                                           |
+| -------------------------------- | -------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `corepack pnpm check` 及其子检查 | 2026-07-27 本地通过              | 工作区契约、格式、代码检查、类型检查、测试和构建均以退出码 0 完成。这是仓库证据，不是托管 CI 执行证据。                                                                              |
+| Corepack pnpm 版本门禁           | 本地通过：精确版本 11.17.0       | 验证器通过 Corepack 调用每条 pnpm 命令；解析版本不符时，会在执行其他检查前失败。                                                                                                     |
+| 本地基础设施静态契约测试         | 本地通过                         | 只验证 Compose 配置和健康检查解析，不会启动 PostgreSQL/PostGIS 或 Redis。                                                                                                            |
+| 容器静态契约测试                 | 本地通过                         | 以文本方式验证固定镜像、非 root 的 `USER node`、构建阶段和运行命令。由于没有 Docker，本地未构建、检查、扫描或运行镜像。                                                              |
+| CI 静态契约测试                  | 本地通过                         | 将工作流结构、不可变 Action 固定版本、Gitleaks 调用和 Trivy 门禁作为仓库配置验证；GitHub Actions 尚未执行。                                                                          |
+| Phase 0 文档契约测试             | 本地通过                         | 验证必需控制项、负责人角色、证据链接和可审计状态值。                                                                                                                                 |
+| 已构建 API 运行冒烟测试          | 本地通过                         | [`smoke-api-runtime.mjs`](../../scripts/smoke-api-runtime.mjs) 使用安全且不可达的连接地址启动构建产物，验证 liveness 200、readiness 503/down、随后 liveness 仍为 200，以及有界关闭。 |
+| 管理后台产物冒烟测试             | 本地通过                         | [`smoke-frontend-artifacts.mjs`](../../scripts/smoke-frontend-artifacts.mjs) 通过临时本地 HTTP 服务提供构建产物，并检查状态码、标题和根挂载节点。                                    |
+| 小程序产物冒烟测试               | 2026-07-27 历史通过（Taro 三端） | 同一脚本检查三个平台产物，并在虚拟机环境加载微信产物，确认只发生一次 App 注册；这是历史 Taro 证据，官方厂商 GUI 预览仍处于阻断状态。                                                 |
+| `pnpm verify:phase-0`            | **按设计阻断**                   | 所有仓库检查按确定顺序执行，最后的依赖审计以非零状态退出；验证器随即停止并返回非零，绝不会报告 Phase 0 已通过。                                                                      |
+| `pnpm audit --audit-level high`  | **阻断：2 个严重、11 个高危**    | 当前机器可读且已复核的发现记录在 [`dependency-audit.md`](dependency-audit.md)。不得降低阈值或忽略退出码。                                                                            |
 
 静态契约测试有意安排在聚合的 `pnpm test` 之前：前置测试可在昂贵构建开始前快速失败，
 聚合测试则用于证明根级测试契约仍然包含这些测试。
 
-## 运行证据
+### 运行证据
 
 | 组件         | 已观察证据                                                                                                                                                                             | 状态      |
 | ------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------- |
@@ -53,10 +69,10 @@ Review cadence: At every Phase 0 verification run and weekly while any gate is b
 | API 健康路由 | 应用契约和 HTTP 冒烟测试使用根路径 `/health/live` 与 `/health/ready`；健康路由排除在全局 API 前缀之外，因此 `/api/v1/health/live` 与 `/api/v1/health/ready` 返回 404。                 | In review |
 | 任务消费者   | 单元测试覆盖配置、启动失败处理、消费者错误和优雅关闭；尚未针对真实 Redis 连续运行十分钟。                                                                                              | Blocked   |
 | 管理后台     | 仓库冒烟测试覆盖构建后首页 HTTP 200、预期标题和根节点；尚未在浏览器中执行 React 产物，也未验证正式托管环境。                                                                           | In review |
-| 小程序       | 仓库冒烟测试覆盖三个平台产物和微信虚拟机 App 注册；尚未执行微信、支付宝和抖音官方 GUI 预览。                                                                                           | Blocked   |
+| 小程序       | 2026-07-27 的历史 Taro 仓库冒烟测试覆盖三个平台产物和微信虚拟机 App 注册；尚未执行当前 HEAD `/wx` 的微信开发者工具编译或官方预览。                                                     | Blocked   |
 | 容器         | Dockerfile 静态契约验证了 `USER node`；尚未执行 `docker image inspect`、真实构建和非 root 运行检查。                                                                                   | Blocked   |
 
-## 外部运行检查
+### 外部运行检查
 
 确定性验证器不会伪造或静默跳过以下门禁：
 
@@ -66,7 +82,7 @@ Review cadence: At every Phase 0 verification run and weekly while any gate is b
 | API 与任务消费者镜像                          | 成功构建记录、不可变镜像摘要、`docker image inspect` 用户、非 root 运行身份、API 探针和任务消费者 Redis 稳定性观察 | Blocked     |
 | GitHub Actions                                | 精确提交对应的托管验证任务链接，并包含 PostgreSQL/Redis 服务证据                                                   | Not started |
 | Gitleaks 与 Trivy                             | 完整历史秘密扫描结果，以及 API/任务消费者镜像扫描报告和摘要                                                        | Not started |
-| 官方小程序工具                                | 与提交绑定的微信、支付宝、抖音 GUI 预览截图或日志                                                                  | Blocked     |
+| 官方小程序工具（2026-07-27 历史范围）         | 与提交绑定的微信、支付宝、抖音 GUI 预览截图或日志；当前 HEAD 仅保留微信正式用户端，且 Task 7 证据尚未采集          | Blocked     |
 | 云资源与账号                                  | 环境隔离清单、最小权限账号、KMS/CLS/WAF 证据、域名/ICP备案及支付渠道就绪证据                                       | Not started |
 | 法律、隐私与渗透测试                          | 已批准的处理方条款、隐私/法律签署、支付法律复核及限定范围的渗透测试报告                                            | Not started |
 

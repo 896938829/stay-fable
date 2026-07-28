@@ -333,6 +333,86 @@ test("launch evidence does not claim unfinished external gates are accepted", as
   }
 });
 
+test("launch evidence uses the native WeChat project and keeps official validation pending", async () => {
+  const markdown = await readFile(
+    path.join(root, "docs/compliance/launch-evidence-index.md"),
+    "utf8",
+  );
+  const row = markdown
+    .split(/\r?\n/)
+    .find((line) => line.startsWith("|") && line.includes("微信（WeChat）"));
+
+  assert.ok(row, "launch evidence must include the current WeChat row");
+  for (const evidencePath of [
+    "../../wx/project.config.json",
+    "../../wx/app.json",
+    "../../scripts/check-wx-project.mjs",
+  ]) {
+    assert.ok(row.includes(evidencePath), `WeChat evidence must reference ${evidencePath}`);
+  }
+  assert.doesNotMatch(
+    row,
+    /apps\/consumer-miniapp/,
+    "current WeChat evidence must not point to the frozen Taro reference",
+  );
+  assert.match(
+    row,
+    /尚未执行.*微信开发者工具.*编译.*官方预览/,
+    "official WeChat compilation and preview must remain explicitly pending",
+  );
+  assert.match(row, /\|\s*Blocked\s*\|?\s*$/, "pending official evidence must remain blocked");
+});
+
+test("Phase 0 verification separates current native WeChat checks from historical Taro evidence", async () => {
+  const markdown = await readFile(
+    path.join(root, "docs/operations/phase-0-verification.md"),
+    "utf8",
+  );
+  const currentSection = markdown.match(
+    /^## 当前 HEAD 的微信优先验证契约\r?\n[\s\S]*?(?=^## |(?![\s\S]))/m,
+  )?.[0];
+  const historicalSection = markdown.match(
+    /^## 2026-07-27 历史证据（Taro 三端）\r?\n[\s\S]*?(?=^## |(?![\s\S]))/m,
+  )?.[0];
+
+  assert.ok(currentSection, "verification evidence must describe the current HEAD contract");
+  for (const required of [
+    "`pnpm check`",
+    "`pnpm wx:check`",
+    "`scripts/check-wx-project.mjs`",
+    "`/wx`",
+    "`apps/consumer-miniapp`",
+  ]) {
+    assert.ok(currentSection.includes(required), `current HEAD contract must include ${required}`);
+  }
+  assert.match(currentSection, /冻结/);
+  assert.match(currentSection, /不进入.*默认.*(?:检查|构建)/s);
+  assert.match(
+    currentSection,
+    /Task 7.*尚未执行.*微信开发者工具.*编译.*预览/s,
+    "current HEAD must not claim Task 7 runtime evidence",
+  );
+
+  assert.ok(historicalSection, "verification evidence must retain a dated Taro history section");
+  assert.match(historicalSection, /历史/);
+  assert.match(historicalSection, /三个平台产物|三端/);
+  assert.match(historicalSection, /不代表当前 HEAD|不可作为当前 HEAD/);
+});
+
+test("the 2026-07-27 architecture marks its client strategy as superseded", async () => {
+  const markdown = await readFile(
+    path.join(root, "docs/superpowers/specs/2026-07-27-stay-fable-platform-architecture-design.md"),
+    "utf8",
+  );
+  const notice = markdown.slice(0, 900);
+
+  assert.match(notice, /历史架构记录/);
+  assert.match(notice, /客户端策略已由[\s\S]*?取代/);
+  assert.match(notice, /2026-07-28-wx-first-development-landscape-design\.md/);
+  assert.match(notice, /`\/wx`.*唯一正式用户端/s);
+  assert.match(notice, /Taro.*冻结/s);
+});
+
 test("dependency audit evidence remains blocked while audit evidence reports blockers", async () => {
   const audit = await readFile(path.join(root, "docs/operations/dependency-audit.md"), "utf8");
   const evidence = await readFile(
