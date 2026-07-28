@@ -56,3 +56,24 @@ test("excludes approved generated and planning artifacts from Prettier", async (
   assert.match(prettierIgnore, /^\.agents\/skills\/$/m);
   assert.match(prettierIgnore, /^wx\/$/m);
 });
+
+test("documents the WeChat-first agent workflow", async () => {
+  const agents = await readFile(new URL("AGENTS.md", rootUrl), "utf8");
+
+  assert.match(agents, /\/wx.*唯一正式用户端/s);
+  for (const skill of [
+    "initializer",
+    "compiler",
+    "previewer",
+    "automator",
+    "debugger",
+    "project-config",
+  ]) {
+    assert.match(agents, new RegExp(`\\b${skill}\\b`));
+  }
+  assert.match(agents, /Ubuntu-22\.04/);
+  assert.match(agents, /POSTGRES_PORT=55432/);
+  assert.match(agents, /REDIS_PORT=56379/);
+  assert.match(agents, /dev.*报告.*不阻断/s);
+  assert.match(agents, /release.*Critical.*High/s);
+});
