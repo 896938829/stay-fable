@@ -1,0 +1,26 @@
+packages:
+  - "apps/*"
+  - "packages/*"
+
+allowBuilds:
+  "@parcel/watcher": true
+  "@prisma/engines": true
+  "@scarf/scarf": true
+  "@swc/core": true
+  "@tarojs/binding": true
+  "@tarojs/cli": false
+  core-js: true
+  core-js-pure: true
+  esbuild: true
+  msgpackr-extract: true
+  prisma: true
+
+autoInstallPeers: false
+engineStrict: true
+injectWorkspacePackages: true
+strictPeerDependencies: true
+
+peerDependencyRules:
+  ignoreMissing:
+    - react
+    - react-dom

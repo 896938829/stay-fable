@@ -1,0 +1,8 @@
+title = "Stay Fable secret scanning policy"
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Deliberately fake credentials used only by secret-scanner fixtures"
+paths = ['''^tests/fixtures/fake-credentials\.txt$''']
