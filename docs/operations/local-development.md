@@ -34,6 +34,10 @@ docker compose -f infrastructure/compose.yaml up -d --wait --wait-timeout 120
 
 Use the selected PostgreSQL and Redis ports in `.env` for that session.
 
+完整的 WSL2 API、Worker、PostgreSQL/PostGIS 和 Redis 实机验收步骤见
+[`wsl-runtime-validation.md`](wsl-runtime-validation.md)。该流程不得停止无关容器，
+并在结束时保留 Compose 数据卷。
+
 ## Stop
 
 Stop the local services without deleting their data:

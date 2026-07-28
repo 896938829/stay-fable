@@ -30,6 +30,57 @@ test("documents a bounded first-start health wait", async () => {
   assert.match(guide, /\$env:REDIS_PORT\s*=\s*"56379"/);
 });
 
+test("documents the required WSL2 runtime verification", async () => {
+  const guide = await readFile(
+    new URL("docs/operations/wsl-runtime-validation.md", rootUrl),
+    "utf8",
+  );
+
+  assert.match(guide, /wsl\.exe -l -v[\s\S]*Ubuntu-22\.04[\s\S]*WSL\s*2/i);
+  assert.match(
+    guide,
+    /POSTGRES_PORT=55432 REDIS_PORT=56379 docker compose -f infrastructure\/compose\.yaml up -d --wait --wait-timeout 120/,
+  );
+  assert.match(guide, /SELECT PostGIS_Lib_Version\(\);[\s\S]*redis-cli ping/i);
+  assert.match(guide, /postgis_lib_version[\s\S]*\d+\.\d+[\s\S]*PONG/i);
+  const runCommands =
+    guide.match(
+      /^docker run -d --name [^\r\n]+[\s\S]*?^  node:24\.14\.1-bookworm-slim node dist\/main\.js$/gm,
+    ) ?? [];
+
+  for (const containerName of ["stay-fable-wsl-api", "stay-fable-wsl-worker"]) {
+    const runCommand = runCommands.find((command) => command.includes(`--name ${containerName}`));
+
+    assert.ok(runCommand, `missing docker run command for ${containerName}`);
+    assert.match(runCommand, /--user node/);
+    assert.match(runCommand, /--read-only/);
+    assert.match(runCommand, /--tmpfs \/tmp/);
+    assert.match(runCommand, /--network stay-fable-local_default/);
+  }
+  assert.match(guide, /health\/live[\s\S]*HTTP 200[\s\S]*health\/ready[\s\S]*HTTP 200/i);
+  assert.match(
+    guide,
+    /docker inspect[\s\S]*Config\.User[\s\S]*HostConfig\.ReadonlyRootfs[\s\S]*user=node[\s\S]*ReadonlyRootfs=true/i,
+  );
+  assert.match(
+    guide,
+    /10 分钟[\s\S]*RestartCount=0[\s\S]*(无|没有).*(重连循环|reconnect loop).*错误/is,
+  );
+  assert.match(guide, /不得(停止|删除).*无关容器/s);
+  assert.deepEqual(guide.match(/^docker (?:rm|stop|kill)[^\r\n]+/gm), [
+    "docker rm -f stay-fable-wsl-api stay-fable-wsl-worker",
+  ]);
+  assert.match(
+    guide,
+    /^POSTGRES_PORT=55432 REDIS_PORT=56379 docker compose -f infrastructure\/compose\.yaml down$/m,
+  );
+  assert.doesNotMatch(guide, /docker compose[^\r\n]*(down|rm)[^\r\n]*--volumes/);
+  assert.match(
+    guide,
+    /删除 `.wsl-runtime\/`[\s\S]*git status --short[\s\S]*(保留|不会删除).*Compose.*数据卷/s,
+  );
+});
+
 test("parses Docker Compose JSON array output", () => {
   const services = parseComposePs(
     JSON.stringify([
