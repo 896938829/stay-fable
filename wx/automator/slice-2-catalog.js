@@ -4,11 +4,9 @@ const assert = require("node:assert/strict");
 const { spawn } = require("node:child_process");
 const { randomUUID } = require("node:crypto");
 const {
-  access,
   link,
   mkdir,
   mkdtemp,
-  readdir,
   realpath,
   rm,
   rmdir,
@@ -42,17 +40,28 @@ const BOOKING_MODAL_PROBE_STATE_KEY =
 const ACTION_TIMEOUT_MS = 10_000;
 const WORKFLOW_TIMEOUT_MS = 120_000;
 const WINDOWS_CLI_CONNECT_TIMEOUT_MS = 20_000;
+const WINDOWS_CLI_CLEANUP_TIMEOUT_MS = 2_000;
 const WINDOWS_CLI_EXIT_GRACE_MS = 1_000;
 const WINDOWS_CLI_POST_CONNECT_MS = 5_000;
 const WINDOWS_CLI_BOOTSTRAP =
   "const e=process.argv[1],a=process.argv.slice(2).filter(function(x){return x!=='--electron'});if(!process.env.cwd)process.env.cwd=process.cwd();process.argv=[process.execPath,'--ms-enable-electron-run-as-node',e,'--electron'].concat(a);require(e)";
-const WINDOWS_NON_ELECTRON_EXECUTABLES = new Set([
-  "node.exe",
-  "node-18.exe",
-  "wxfilewatcher.exe",
-  "wxfilewatcher_x64.exe",
-  "notification_helper.exe",
-  "wechatdevtools.exe",
+const WINDOWS_CLI_ENTRY_PARTS = [
+  "resources",
+  "app.asar.unpacked",
+  "js",
+  "common",
+  "cli",
+  "index.js",
+];
+const WINDOWS_ELECTRON_RUNTIME = "微信开发者工具.exe";
+const WINDOWS_LOADER_ENVIRONMENT_KEYS = new Set([
+  "ELECTRON",
+  "ELECTRON_RUN_AS_NODE",
+  "NODE_OPTIONS",
+  "NODE_PATH",
+  "NODE_REPL_EXTERNAL_MODULE",
+  "NODE_CHANNEL_FD",
+  "NODE_CHANNEL_SERIALIZATION_MODE",
 ]);
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 const CATALOG_SEARCH_FIXTURE = Object.freeze({
@@ -220,40 +229,48 @@ function isWindowsBatchCli(cliPath, platform = process.platform) {
   );
 }
 
-async function resolveWindowsCliRuntime(cliPath) {
-  const installRoot = path.dirname(cliPath);
-  const cliEntryPath = path.join(
-    installRoot,
-    "resources",
-    "app.asar.unpacked",
-    "js",
-    "common",
-    "cli",
-    "index.js",
-  );
-  await access(cliEntryPath);
-  const candidates = [];
-  for (const entry of await readdir(installRoot, {
-    withFileTypes: true,
-  })) {
-    if (
-      !entry.isFile() ||
-      path.extname(entry.name).toLowerCase() !== ".exe" ||
-      WINDOWS_NON_ELECTRON_EXECUTABLES.has(entry.name.toLowerCase())
-    ) {
-      continue;
+async function resolveRegularFile(candidate, label) {
+  try {
+    const canonicalPath = await realpath(candidate);
+    const file = await stat(canonicalPath);
+    if (!file.isFile()) {
+      throw new Error("not a regular file");
     }
-    const executablePath = path.join(installRoot, entry.name);
-    if ((await stat(executablePath)).size > 50_000_000) {
-      candidates.push(executablePath);
-    }
+    return canonicalPath;
+  } catch {
+    throw new Error(`WeChat DevTools ${label} is unavailable`);
   }
-  if (candidates.length !== 1) {
+}
+
+async function resolveWindowsCliRuntime(cliPath) {
+  if (
+    typeof cliPath !== "string" ||
+    path.extname(cliPath).toLowerCase() !== ".bat"
+  ) {
+    throw new Error("WeChat DevTools batch CLI is unavailable");
+  }
+  const canonicalCliPath = await resolveRegularFile(cliPath, "batch CLI");
+  if (path.extname(canonicalCliPath).toLowerCase() !== ".bat") {
+    throw new Error("WeChat DevTools batch CLI is unavailable");
+  }
+  const installRoot = await realpath(path.dirname(canonicalCliPath));
+  const cliEntryPath = await resolveRegularFile(
+    path.join(installRoot, ...WINDOWS_CLI_ENTRY_PARTS),
+    "CLI entry",
+  );
+  if (!isWithin(installRoot, cliEntryPath)) {
+    throw new Error("WeChat DevTools CLI entry is unavailable");
+  }
+  const electronPath = await resolveRegularFile(
+    path.join(installRoot, WINDOWS_ELECTRON_RUNTIME),
+    "Electron runtime",
+  );
+  if (!isWithin(installRoot, electronPath)) {
     throw new Error("WeChat DevTools Electron runtime is unavailable");
   }
   return {
     cliEntryPath,
-    electronPath: candidates[0],
+    electronPath,
     installRoot,
   };
 }
@@ -294,107 +311,312 @@ async function launchWindowsBatchMiniProgram(
   const wait = dependencies.sleep || sleep;
   const environment = dependencies.environment || process.env;
   const runtime = await resolveRuntime(options.cliPath);
-  const port = await selectPort();
-  const cliEnvironment = {
-    ...environment,
-    ELECTRON_RUN_AS_NODE: "1",
-    cwd: options.cwd || process.cwd(),
-  };
-  delete cliEnvironment.ELECTRON;
-  const cliArguments = [
-    "-e",
-    WINDOWS_CLI_BOOTSTRAP,
-    runtime.cliEntryPath,
-    "auto",
-    "--project",
-    options.projectPath,
-    "--auto-port",
-    String(port),
-  ];
-  const state = {
-    error: null,
-    exitCode: null,
-    exitedAt: null,
-  };
-  let child;
-  try {
-    child = spawnProcess(runtime.electronPath, cliArguments, {
-      cwd: runtime.installRoot,
-      env: cliEnvironment,
-      stdio: "ignore",
-      windowsHide: true,
-    });
-    child.once("error", (error) => {
-      state.error = error;
-    });
-    child.once("exit", (code) => {
-      state.exitCode = code;
-      state.exitedAt = Date.now();
-      if (code !== 0) {
-        state.error = new Error("WeChat DevTools CLI exited unexpectedly");
-      }
-    });
-    child.unref();
+  const cliEnvironment = {};
+  for (const [key, value] of Object.entries(environment)) {
+    if (!WINDOWS_LOADER_ENVIRONMENT_KEYS.has(key.toUpperCase())) {
+      cliEnvironment[key] = value;
+    }
+  }
+  cliEnvironment.ELECTRON_RUN_AS_NODE = "1";
+  cliEnvironment.cwd = options.cwd || process.cwd();
 
-    const deadline =
-      Date.now() +
-      (dependencies.connectTimeoutMs ??
-        WINDOWS_CLI_CONNECT_TIMEOUT_MS);
-    let lastConnectionError;
-    while (Date.now() < deadline) {
-      if (state.error) {
-        throw state.error;
-      }
-      let miniprogram;
-      try {
-        miniprogram = await automatorApi.connect({
-          wsEndpoint: `ws://127.0.0.1:${port}`,
-        });
-      } catch (error) {
-        lastConnectionError = error;
-      }
-      if (miniprogram) {
-        await wait(
-          dependencies.postConnectMs ??
-            WINDOWS_CLI_POST_CONNECT_MS,
+  const connectTimeoutMs =
+    dependencies.connectTimeoutMs ?? WINDOWS_CLI_CONNECT_TIMEOUT_MS;
+  const cleanupTimeoutMs =
+    dependencies.cleanupTimeoutMs ?? WINDOWS_CLI_CLEANUP_TIMEOUT_MS;
+  const signal = dependencies.signal;
+
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    if (signal?.aborted) {
+      throw new Error("catalog automation launch cancelled");
+    }
+    const port = await selectPort();
+    if (signal?.aborted) {
+      throw new Error("catalog automation launch cancelled");
+    }
+    const cliArguments = [
+      "-e",
+      WINDOWS_CLI_BOOTSTRAP,
+      runtime.cliEntryPath,
+      "auto",
+      "--project",
+      options.projectPath,
+      "--auto-port",
+      String(port),
+    ];
+    let child;
+    try {
+      child = spawnProcess(runtime.electronPath, cliArguments, {
+        cwd: runtime.installRoot,
+        env: cliEnvironment,
+        stdio: "ignore",
+        windowsHide: true,
+      });
+    } catch {
+      throw new Error("WeChat DevTools CLI exited unexpectedly");
+    }
+    const state = observeChildProcess(child);
+    child.unref();
+    const deadline = Date.now() + connectTimeoutMs;
+    let retryOccupiedPort = false;
+    let launchError;
+
+    while (!launchError && Date.now() < deadline) {
+      const outcome = await connectWithinDeadline(
+        automatorApi,
+        port,
+        deadline,
+        signal,
+        state,
+        dependencies.exitGraceMs ?? WINDOWS_CLI_EXIT_GRACE_MS,
+      );
+      if (outcome.kind === "connected") {
+        const postConnect = await waitAfterConnect(
+          wait,
+          dependencies.postConnectMs ?? WINDOWS_CLI_POST_CONNECT_MS,
+          signal,
+          state,
         );
-        if (state.error) {
-          try {
-            miniprogram.disconnect();
-          } catch {
-            // The CLI failure remains the useful launch error.
-          }
-          throw state.error;
+        if (postConnect === "ready") {
+          return outcome.miniprogram;
         }
-        return miniprogram;
+        disconnectMiniProgram(outcome.miniprogram);
+        launchError =
+          postConnect === "aborted"
+            ? new Error("catalog automation launch cancelled")
+            : childLaunchError(state);
+        break;
+      }
+      if (outcome.kind === "aborted") {
+        launchError = new Error("catalog automation launch cancelled");
+        break;
+      }
+      if (outcome.kind === "child-exit") {
+        if (state.exitCode === 0 && state.errorCode === undefined) {
+          launchError = new Error(
+            "WeChat DevTools project window must be closed before automation launch",
+          );
+        } else if (state.errorCode === "EADDRINUSE") {
+          retryOccupiedPort = true;
+          launchError = new Error("automation port became unavailable");
+        } else {
+          launchError = childLaunchError(state);
+        }
+        break;
       }
       if (
-        state.exitCode === 0 &&
-        state.exitedAt !== null &&
-        Date.now() - state.exitedAt >=
-          (dependencies.exitGraceMs ??
-            WINDOWS_CLI_EXIT_GRACE_MS)
+        outcome.kind === "connection-error" &&
+        outcome.error?.code === "EADDRINUSE"
       ) {
-        throw new Error(
-          "WeChat DevTools project window must be closed before automation launch",
+        retryOccupiedPort = true;
+        launchError = new Error("automation port became unavailable");
+        break;
+      }
+      if (outcome.kind === "timeout") {
+        launchError = new Error(
+          "WeChat DevTools automation endpoint is unavailable",
         );
+        break;
       }
-      await wait(dependencies.pollIntervalMs ?? 200);
+      await wait(
+        Math.min(
+          dependencies.pollIntervalMs ?? 200,
+          Math.max(0, deadline - Date.now()),
+        ),
+      );
     }
-    throw (
-      lastConnectionError ||
-      new Error("WeChat DevTools automation endpoint is unavailable")
+
+    launchError ||= new Error(
+      "WeChat DevTools automation endpoint is unavailable",
     );
-  } catch (error) {
-    if (child && state.exitedAt === null) {
-      try {
-        child.kill();
-      } catch {
-        // The original launch failure remains authoritative.
-      }
+    const childStopped = await stopChildProcess(
+      child,
+      state,
+      cleanupTimeoutMs,
+    );
+    if (retryOccupiedPort && attempt === 0 && childStopped) {
+      continue;
     }
-    throw error;
+    throw launchError;
   }
+  throw new Error("WeChat DevTools automation endpoint is unavailable");
+}
+
+function observeChildProcess(child) {
+  let settleTerminal;
+  const state = {
+    errorCode: undefined,
+    exitCode: undefined,
+    exited: false,
+    terminal: new Promise((resolve) => {
+      settleTerminal = resolve;
+    }),
+  };
+  const settle = () => {
+    if (!state.exited) {
+      state.exited = true;
+      settleTerminal();
+    }
+  };
+  child.once("error", (error) => {
+    state.errorCode =
+      typeof error?.code === "string" ? error.code : "UNKNOWN";
+    settle();
+  });
+  child.once("exit", (code) => {
+    state.exitCode = code;
+    settle();
+  });
+  child.once("close", (code) => {
+    if (state.exitCode === undefined) {
+      state.exitCode = code;
+    }
+    settle();
+  });
+  return state;
+}
+
+function disconnectMiniProgram(miniprogram) {
+  try {
+    miniprogram?.disconnect?.();
+  } catch {
+    // Disconnect is best effort after a launch path has been abandoned.
+  }
+}
+
+async function connectWithinDeadline(
+  automatorApi,
+  port,
+  deadline,
+  signal,
+  state,
+  cleanExitGraceMs,
+) {
+  if (signal?.aborted) {
+    return { kind: "aborted" };
+  }
+  const remainingMs = Math.max(0, deadline - Date.now());
+  if (remainingMs === 0) {
+    return { kind: "timeout" };
+  }
+  const connection = Promise.resolve().then(() =>
+    automatorApi.connect({
+      wsEndpoint: `ws://127.0.0.1:${port}`,
+    }),
+  );
+  const observedConnection = connection.then(
+    (miniprogram) => ({ kind: "connected", miniprogram }),
+    (error) => ({ error, kind: "connection-error" }),
+  );
+  let timer;
+  let onAbort;
+  const timeout = new Promise((resolve) => {
+    timer = setTimeout(() => resolve({ kind: "timeout" }), remainingMs);
+  });
+  const aborted = new Promise((resolve) => {
+    if (!signal) {
+      return;
+    }
+    onAbort = () => resolve({ kind: "aborted" });
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
+  let outcome = await Promise.race([
+    observedConnection,
+    timeout,
+    aborted,
+    state.terminal.then(() => ({ kind: "child-exit" })),
+  ]);
+  if (
+    outcome.kind === "child-exit" &&
+    state.exitCode === 0 &&
+    state.errorCode === undefined &&
+    cleanExitGraceMs > 0
+  ) {
+    let graceTimer;
+    const grace = new Promise((resolve) => {
+      graceTimer = setTimeout(
+        () => resolve({ kind: "child-exit" }),
+        Math.min(cleanExitGraceMs, Math.max(0, deadline - Date.now())),
+      );
+    });
+    const afterCleanExit = await Promise.race([
+      observedConnection,
+      aborted,
+      grace,
+    ]);
+    clearTimeout(graceTimer);
+    outcome =
+      afterCleanExit.kind === "connected" ||
+      afterCleanExit.kind === "aborted"
+        ? afterCleanExit
+        : { kind: "child-exit" };
+  }
+  clearTimeout(timer);
+  if (signal && onAbort) {
+    signal.removeEventListener("abort", onAbort);
+  }
+  if (outcome.kind !== "connected") {
+    connection.then(disconnectMiniProgram, () => undefined);
+  }
+  return outcome;
+}
+
+async function waitAfterConnect(wait, milliseconds, signal, state) {
+  if (signal?.aborted) {
+    return "aborted";
+  }
+  let onAbort;
+  const aborted = new Promise((resolve) => {
+    if (!signal) {
+      return;
+    }
+    onAbort = () => resolve("aborted");
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
+  const outcome = await Promise.race([
+    Promise.resolve().then(() => wait(milliseconds)).then(() => "ready"),
+    aborted,
+    state.terminal.then(() =>
+      state.exitCode === 0 && state.errorCode === undefined
+        ? new Promise(() => {})
+        : "child-exit",
+    ),
+  ]);
+  if (signal && onAbort) {
+    signal.removeEventListener("abort", onAbort);
+  }
+  return outcome;
+}
+
+async function stopChildProcess(child, state, timeoutMs) {
+  if (state.exited) {
+    return true;
+  }
+  let killAccepted = false;
+  try {
+    killAccepted = child.kill() !== false;
+  } catch {
+    // The bounded exit wait below determines whether cleanup completed.
+  }
+  if (state.exited) {
+    return true;
+  }
+  let timer;
+  const timedOut = new Promise((resolve) => {
+    timer = setTimeout(() => resolve(false), Math.max(0, timeoutMs));
+  });
+  const stopped = await Promise.race([
+    state.terminal.then(() => true),
+    timedOut,
+  ]);
+  clearTimeout(timer);
+  return stopped && (killAccepted || state.exited);
+}
+
+function childLaunchError(state) {
+  return state.errorCode === "EADDRINUSE"
+    ? new Error("automation port became unavailable")
+    : new Error("WeChat DevTools CLI exited unexpectedly");
 }
 
 function selectDefaultAutomatorApi(
@@ -410,13 +632,41 @@ function selectDefaultAutomatorApi(
   ) {
     return automatorApi;
   }
+  let activeLaunch;
   return {
     launch(launchOptions) {
-      return launchWindowsBatchMiniProgram(
+      const controller = new AbortController();
+      const launched = launchWindowsBatchMiniProgram(
         automatorApi,
         launchOptions,
-        dependencies,
+        { ...dependencies, signal: controller.signal },
       );
+      activeLaunch = { controller, launched };
+      launched.then(
+        () => {
+          if (activeLaunch?.launched === launched) {
+            activeLaunch = undefined;
+          }
+        },
+        () => {
+          if (activeLaunch?.launched === launched) {
+            activeLaunch = undefined;
+          }
+        },
+      );
+      return launched;
+    },
+    async cancelLaunch() {
+      const launch = activeLaunch;
+      if (!launch) {
+        return;
+      }
+      launch.controller.abort();
+      try {
+        await launch.launched;
+      } catch {
+        // The outer launch timeout remains the public failure.
+      }
     },
   };
 }
@@ -436,11 +686,19 @@ function launchMiniProgram(
       return undefined;
     })
     .catch(() => undefined);
-  return withTimeout("launch mini-program", () => launched, timeoutMs).finally(
-    () => {
+  return withTimeout("launch mini-program", () => launched, timeoutMs)
+    .catch(async (error) => {
+      if (
+        error?.message === "launch mini-program timed out" &&
+        typeof automatorApi.cancelLaunch === "function"
+      ) {
+        await automatorApi.cancelLaunch();
+      }
+      throw error;
+    })
+    .finally(() => {
       launchIsActive = false;
-    },
-  );
+    });
 }
 
 async function closeMiniProgram(
@@ -1797,6 +2055,7 @@ module.exports = {
   installBookingModalProbe,
   launchWindowsBatchMiniProgram,
   restoreBookingModalProbe,
+  resolveWindowsCliRuntime,
   selectDefaultAutomatorApi,
   withBookingModalProbe,
   formatCatalogFailure,
