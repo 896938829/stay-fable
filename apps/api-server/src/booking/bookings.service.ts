@@ -20,8 +20,10 @@ import {
 const UUID_PATTERN =
   /^(?:[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/i;
 
-export type BookingCreationResult =
-  { kind: "CREATED"; booking: BookingSummary } | { kind: "REPLAYED"; booking: BookingSummary };
+export interface BookingCreationResult {
+  replayed: boolean;
+  booking: BookingSummary;
+}
 
 const unavailable = (): BusinessException =>
   new BusinessException(503, "BOOKING_SERVICE_UNAVAILABLE", "预订服务暂时不可用，请稍后重试");
@@ -112,7 +114,7 @@ export class BookingsService {
       if (!booking.success) {
         throw unavailable();
       }
-      return { kind: result.kind, booking: booking.data };
+      return { replayed: result.kind === "REPLAYED", booking: booking.data };
     }
     if (result.kind === "QUOTE_EXPIRED") {
       throw domainError("QUOTE_EXPIRED", "报价已失效，请重新获取");

@@ -4,6 +4,9 @@ import { Test } from "@nestjs/testing";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { configureApplication, OPEN_API_CONFIG } from "../src/application-configuration.js";
+import { BookingModule } from "../src/booking/booking.module.js";
+import { BookingsController } from "../src/booking/bookings.controller.js";
+import { BookingsService } from "../src/booking/bookings.service.js";
 import { SessionAuthGuard } from "../src/identity/session-auth.guard.js";
 import { PricingModule } from "../src/pricing/pricing.module.js";
 import { QuotesController } from "../src/pricing/quotes.controller.js";
@@ -14,7 +17,9 @@ type Schema = {
   enum?: string[];
   format?: string;
   items?: Schema;
+  maxLength?: number;
   maximum?: number;
+  minLength?: number;
   minimum?: number;
   pattern?: string;
   properties?: Record<string, Schema>;
@@ -23,6 +28,12 @@ type Schema = {
   $ref?: string;
 };
 type Operation = {
+  parameters?: Array<{
+    in?: string;
+    name?: string;
+    required?: boolean;
+    schema?: Schema;
+  }>;
   requestBody?: { content?: { "application/json"?: { schema?: Schema } } };
   responses?: Record<string, { content?: { "application/json"?: { schema?: Schema } } }>;
   security?: Array<Record<string, string[]>>;
@@ -39,10 +50,13 @@ describe("Booking slice OpenAPI", () => {
     await app?.close();
   });
 
-  it("documents only the authenticated strict quote POST contract for this task", async () => {
+  it("documents only the authenticated strict quote and booking POST contracts", async () => {
     const module = await Test.createTestingModule({
-      controllers: [QuotesController],
-      providers: [{ provide: QuotesService, useValue: { create: vi.fn() } }],
+      controllers: [QuotesController, BookingsController],
+      providers: [
+        { provide: QuotesService, useValue: { create: vi.fn() } },
+        { provide: BookingsService, useValue: { create: vi.fn() } },
+      ],
     })
       .overrideGuard(SessionAuthGuard)
       .useValue({ canActivate: () => true })
@@ -51,8 +65,7 @@ describe("Booking slice OpenAPI", () => {
     configureApplication(app, "production");
     await app.init();
     const document = SwaggerModule.createDocument(app, OPEN_API_CONFIG) as unknown as Document;
-    expect(Object.keys(document.paths)).toEqual(["/api/v1/quotes"]);
-    expect(document.paths).not.toHaveProperty("/api/v1/bookings");
+    expect(Object.keys(document.paths).sort()).toEqual(["/api/v1/bookings", "/api/v1/quotes"]);
     const operation = document.paths["/api/v1/quotes"]?.post;
     expect(operation?.security).toEqual([{ session: [] }]);
     expect(operation?.requestBody?.content?.["application/json"]?.schema).toEqual({
@@ -107,9 +120,67 @@ describe("Booking slice OpenAPI", () => {
     expect(JSON.stringify(schemas?.QuoteResponseDto)).not.toMatch(
       /inventory|fingerprint|user_id|version|held|sold/,
     );
+
+    const bookingOperation = document.paths["/api/v1/bookings"]?.post;
+    expect(bookingOperation?.security).toEqual([{ session: [] }]);
+    expect(bookingOperation?.parameters).toContainEqual({
+      in: "header",
+      name: "Idempotency-Key",
+      required: true,
+      schema: {
+        type: "string",
+        pattern: "^[A-Za-z0-9._~-]{32,80}$",
+        minLength: 32,
+        maxLength: 80,
+      },
+    });
+    expect(bookingOperation?.requestBody?.content?.["application/json"]?.schema).toEqual({
+      type: "object",
+      additionalProperties: false,
+      required: ["quote_id"],
+      properties: {
+        quote_id: { type: "string", format: "uuid" },
+      },
+    });
+    for (const status of ["200", "201"]) {
+      expect(bookingOperation?.responses?.[status]?.content?.["application/json"]?.schema).toEqual({
+        $ref: "#/components/schemas/BookingEnvelopeDto",
+      });
+    }
+    for (const status of ["400", "401", "403", "409", "429", "503"]) {
+      expect(bookingOperation?.responses?.[status]?.content?.["application/json"]?.schema).toEqual({
+        $ref: "#/components/schemas/BookingErrorEnvelopeDto",
+      });
+    }
+    expect(schemas?.BookingEnvelopeDto?.required).toEqual(["data", "request_id"]);
+    expect(schemas?.BookingResponseDto?.required).toEqual([
+      "booking_id",
+      "booking_number",
+      "status",
+      "property_name",
+      "room_type_name",
+      "checkin",
+      "checkout",
+      "nights",
+      "guests",
+      "total_price_cents",
+      "currency",
+      "expires_at",
+      "created_at",
+    ]);
+    expect(schemas?.QuoteChangedDetailsDto?.required).toEqual([
+      "previous_total_price_cents",
+      "replacement_quote",
+    ]);
+    expect(schemas?.QuoteChangedDetailsDto?.properties?.replacement_quote).toEqual({
+      $ref: "#/components/schemas/QuoteResponseDto",
+    });
+    expect(JSON.stringify(schemas?.BookingResponseDto)).not.toMatch(
+      /inventory|fingerprint|user_id|version|history|held|sold/,
+    );
   });
 
-  it("keeps the production module wiring explicit without exposing bookings early", async () => {
+  it("wires the booking module and exposes only its create controller", async () => {
     const previousEnvironment = {
       DATABASE_URL: process.env.DATABASE_URL,
       REDIS_URL: process.env.REDIS_URL,
@@ -122,8 +193,11 @@ describe("Booking slice OpenAPI", () => {
       const { AppModule } = await import("../src/app.module.js");
       const appImports = Reflect.getMetadata("imports", AppModule) as unknown[];
       const pricingControllers = Reflect.getMetadata("controllers", PricingModule) as unknown[];
+      const bookingControllers = Reflect.getMetadata("controllers", BookingModule) as unknown[];
       expect(appImports).toContain(PricingModule);
+      expect(appImports).toContain(BookingModule);
       expect(pricingControllers).toEqual([QuotesController]);
+      expect(bookingControllers).toEqual([BookingsController]);
     } finally {
       for (const [key, value] of Object.entries(previousEnvironment)) {
         if (value === undefined) {

@@ -3,6 +3,7 @@ import { ConfigModule } from "@nestjs/config";
 import { LoggerModule } from "nestjs-pino";
 
 import { validateRuntimeConfig } from "./config/runtime-config.js";
+import { BookingModule } from "./booking/booking.module.js";
 import { CatalogModule } from "./catalog/catalog.module.js";
 import { DatabaseModule } from "./database/database.module.js";
 import { HealthController } from "./health/health.controller.js";
@@ -32,6 +33,7 @@ import { PricingModule } from "./pricing/pricing.module.js";
     LocationModule,
     CatalogModule,
     PricingModule,
+    BookingModule,
   ],
   controllers: [HealthController],
   providers: [HealthService],

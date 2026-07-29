@@ -6,10 +6,12 @@ import { IdentityModule } from "../identity/identity.module.js";
 import { PricingModule } from "../pricing/pricing.module.js";
 import { BOOKING_NUMBER_GENERATOR, createBookingNumberGenerator } from "./booking-number.js";
 import { BookingRepository } from "./booking.repository.js";
+import { BookingsController } from "./bookings.controller.js";
 import { BookingsService } from "./bookings.service.js";
 
 @Module({
   imports: [DatabaseModule, IdentityModule, PricingModule],
+  controllers: [BookingsController],
   providers: [
     BookingRepository,
     BookingsService,

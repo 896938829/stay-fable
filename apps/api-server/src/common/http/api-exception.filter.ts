@@ -84,12 +84,13 @@ export class ApiExceptionFilter implements ExceptionFilter {
       exception instanceof HttpException &&
       exception.getStatus() === 400 &&
       request.method === "POST" &&
-      request.path === "/api/v1/quotes"
+      (request.path === "/api/v1/quotes" || request.path === "/api/v1/bookings")
     ) {
+      const bookingRequest = request.path === "/api/v1/bookings";
       response.status(HttpStatus.BAD_REQUEST).json({
         error: {
-          code: "QUOTE_REQUEST_INVALID",
-          message: "报价请求无效，请检查入住信息",
+          code: bookingRequest ? "BOOKING_REQUEST_INVALID" : "QUOTE_REQUEST_INVALID",
+          message: bookingRequest ? "下单请求无效" : "报价请求无效，请检查入住信息",
         },
         request_id: request.requestId,
       } satisfies ErrorBody);

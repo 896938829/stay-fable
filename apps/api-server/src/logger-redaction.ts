@@ -2,6 +2,7 @@ export const LOGGER_REDACTION = {
   paths: [
     "req.headers.authorization",
     "req.headers.cookie",
+    'req.headers["idempotency-key"]',
     "req.body.code",
     "req.body.password",
     "req.body.idCardNumber",

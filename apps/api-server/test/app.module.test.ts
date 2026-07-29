@@ -35,6 +35,7 @@ describe("AppModule logging middleware", () => {
         "req.body.refresh_token",
         "req.body.longitude",
         "req.body.latitude",
+        'req.headers["idempotency-key"]',
       ]),
     );
   });

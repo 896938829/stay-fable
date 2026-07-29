@@ -12,6 +12,7 @@ import {
   type BookingNumberGenerator,
 } from "../src/booking/booking-number.js";
 import { BookingModule } from "../src/booking/booking.module.js";
+import { BookingsController } from "../src/booking/bookings.controller.js";
 import {
   BookingNumberConflictError,
   BookingRepository,
@@ -174,7 +175,7 @@ describe("BookingsService", () => {
     );
 
     await expect(service.create(USER_ID, IDEMPOTENCY_KEY, { quote_id: QUOTE_ID })).resolves.toEqual(
-      { kind, booking },
+      { replayed: kind === "REPLAYED", booking },
     );
     expect(rateLimit.checkBookings).toHaveBeenCalledWith(USER_ID);
     expect(clock.now).toHaveBeenCalledTimes(1);
@@ -303,7 +304,7 @@ describe("BookingsService", () => {
     );
 
     await expect(service.create(USER_ID, IDEMPOTENCY_KEY, { quote_id: QUOTE_ID })).resolves.toEqual(
-      { kind: "CREATED", booking },
+      { replayed: false, booking },
     );
     expect(repository.createFromQuote).toHaveBeenCalledTimes(2);
     expect(repository.createFromQuote.mock.calls.map(([input]) => input.bookingNumber)).toEqual([
@@ -1173,7 +1174,7 @@ describe("BookingRepository", () => {
 
     await expect(service.create(USER_ID, IDEMPOTENCY_KEY, { quote_id: QUOTE_ID })).resolves.toEqual(
       {
-        kind: "CREATED",
+        replayed: false,
         booking: {
           ...booking,
           booking_number: "SF20260730BBBBBBBBBBBB",
@@ -1313,7 +1314,7 @@ describe("BookingRepository", () => {
 });
 
 describe("BookingModule", () => {
-  it("reuses the pricing rate limiter and registers no controller", () => {
+  it("reuses the pricing rate limiter and registers only the create controller", () => {
     const imports = Reflect.getMetadata("imports", BookingModule) as unknown[];
     const providers = Reflect.getMetadata("providers", BookingModule) as unknown[];
     const controllers = Reflect.getMetadata("controllers", BookingModule) as unknown[] | undefined;
@@ -1327,6 +1328,6 @@ describe("BookingModule", () => {
       ]),
     );
     expect(providers).not.toContain(WriteRateLimitService);
-    expect(controllers ?? []).toEqual([]);
+    expect(controllers ?? []).toEqual([BookingsController]);
   });
 });
