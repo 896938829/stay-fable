@@ -209,7 +209,7 @@ function isValidHttpsResource(value) {
   );
 }
 
-function isCatalogResource(value) {
+function isSafeCatalogResourceUrl(value) {
   if (typeof value !== "string" || value.length > 500) {
     return false;
   }
@@ -269,7 +269,7 @@ function assertMoneyCents(value) {
 }
 
 function assertResource(value) {
-  if (!isCatalogResource(value)) {
+  if (!isSafeCatalogResourceUrl(value)) {
     throw invalidResponse();
   }
   return value;
@@ -585,4 +585,5 @@ module.exports = {
   assertPropertyListResponse,
   assertResolvedLocation,
   assertRoomTypeDetail,
+  isSafeCatalogResourceUrl,
 };

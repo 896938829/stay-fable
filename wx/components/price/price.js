@@ -9,14 +9,21 @@ const definition = {
     suffix: { type: String, value: "起" },
   },
   data: {
+    available: true,
     formatted: "¥0.00",
   },
   observers: {
     cents(cents) {
-      const safeCents =
-        Number.isSafeInteger(cents) && cents >= 0 ? cents : 0;
+      if (!Number.isSafeInteger(cents) || cents < 0) {
+        this.setData({
+          available: false,
+          formatted: "价格暂不可用",
+        });
+        return;
+      }
       this.setData({
-        formatted: formatMoney(safeCents),
+        available: true,
+        formatted: formatMoney(cents),
       });
     },
   },

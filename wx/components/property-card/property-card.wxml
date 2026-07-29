@@ -1,10 +1,7 @@
 <view
   class="property-card {{viewModel.interactive ? '' : 'property-card--disabled'}}"
-  hover-class="property-card--pressed"
-  hover-stay-time="80"
-  bindtap="handleTap"
-  aria-role="button"
-  aria-label="查看{{viewModel.name}}"
+  aria-role="group"
+  aria-disabled="{{!viewModel.interactive}}"
 >
   <image
     wx:if="{{viewModel.coverUrl}}"
@@ -45,7 +42,17 @@
       <text class="property-card__availability">
         {{viewModel.availableCount}} 个可售房型
       </text>
-      <price cents="{{viewModel.priceCents}}" />
+      <price wx:if="{{viewModel.priceAvailable}}" cents="{{viewModel.priceCents}}" />
+      <text wx:else class="property-card__price-unavailable">价格暂不可用</text>
     </view>
   </view>
+
+  <button
+    wx:if="{{viewModel.interactive}}"
+    class="property-card__tap-target"
+    hover-class="property-card__tap-target--pressed"
+    hover-stay-time="80"
+    bindtap="handleTap"
+    aria-label="查看{{viewModel.name}}"
+  ></button>
 </view>

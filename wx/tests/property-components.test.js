@@ -2,6 +2,9 @@ import { readFile } from "node:fs/promises";
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import contracts from "../services/contracts.js";
+
+const { isSafeCatalogResourceUrl } = contracts;
 const PROPERTY_ID = "20000000-0000-4000-8000-000000000002";
 
 const property = {
@@ -70,7 +73,17 @@ describe("catalog display components", () => {
 
     const setData = vi.fn();
     definition.observers.cents.call({ setData }, 42800);
-    expect(setData).toHaveBeenCalledWith({ formatted: "¥428.00" });
+    expect(setData).toHaveBeenCalledWith({
+      available: true,
+      formatted: "¥428.00",
+    });
+
+    setData.mockClear();
+    definition.observers.cents.call({ setData }, 0);
+    expect(setData).toHaveBeenCalledWith({
+      available: true,
+      formatted: "¥0.00",
+    });
   });
 
   it.each([Number.NaN, -1, 1.5, Number.MAX_SAFE_INTEGER + 1])(
@@ -80,7 +93,10 @@ describe("catalog display components", () => {
       const setData = vi.fn();
 
       expect(() => definition.observers.cents.call({ setData }, cents)).not.toThrow();
-      expect(setData).toHaveBeenCalledWith({ formatted: "¥0.00" });
+      expect(setData).toHaveBeenCalledWith({
+        available: false,
+        formatted: "价格暂不可用",
+      });
     },
   );
 
@@ -106,6 +122,9 @@ describe("catalog display components", () => {
     expect(cardWxml).toContain("可售房型");
     expect(cardWxml).not.toMatch(/room_types|roomType|房型列表/);
     expect(cardWxml).not.toContain("data-property");
+    expect(cardWxml).toContain('aria-disabled="{{!viewModel.interactive}}"');
+    expect(cardWxml).toContain('wx:if="{{viewModel.interactive}}"');
+    expect(cardWxml).not.toContain('aria-role="button"');
     expect(cardWxss).toContain("min-height: 88rpx");
   });
 
@@ -138,6 +157,7 @@ describe("catalog display components", () => {
         facilities: ["免费停车", "早餐", "湖景", "接送"],
         availableCount: 2,
         priceCents: 42800,
+        priceAvailable: true,
         interactive: true,
       },
     });
@@ -173,13 +193,70 @@ describe("catalog display components", () => {
         coverAlt: "旅店封面",
         facilities: [],
         availableCount: 0,
-        priceCents: 0,
+        priceCents: null,
+        priceAvailable: false,
         interactive: false,
       },
     });
   });
 
-  it("emits only the property UUID and ignores invalid property input", async () => {
+  it("marks an otherwise valid property with invalid price unavailable", async () => {
+    const definition = await loadDefinition("property-card");
+    const setData = vi.fn();
+
+    definition.observers.property.call(
+      { setData },
+      {
+        ...property,
+        from_nightly_price_cents: -1,
+      },
+    );
+
+    expect(setData).toHaveBeenCalledWith({
+      viewModel: expect.objectContaining({
+        id: PROPERTY_ID,
+        priceCents: null,
+        priceAvailable: false,
+        interactive: false,
+      }),
+    });
+  });
+
+  it("uses the shared catalog resource rule for untrusted cover URLs", async () => {
+    const rejectedUrls = [
+      "https://user:password@cdn.example.com/photo.jpg",
+      "https://127.0.0.1/photo.jpg",
+      "https://0x7f000001/photo.jpg",
+      "https://xn--fsqu00a.xn--0zwm56d/photo.jpg",
+      "https://cdn.example.com/photo%ZZ.jpg",
+    ];
+
+    expect(isSafeCatalogResourceUrl("/images/properties/xihu.jpg")).toBe(true);
+    expect(isSafeCatalogResourceUrl("https://cdn.example.com/photo%20one.jpg")).toBe(true);
+    for (const coverUrl of rejectedUrls) {
+      expect(isSafeCatalogResourceUrl(coverUrl)).toBe(false);
+    }
+
+    const definition = await loadDefinition("property-card");
+    for (const coverUrl of rejectedUrls) {
+      const setData = vi.fn();
+      definition.observers.property.call(
+        { setData },
+        {
+          ...property,
+          cover_url: coverUrl,
+        },
+      );
+      expect(setData).toHaveBeenCalledWith({
+        viewModel: expect.objectContaining({
+          coverUrl: "",
+          interactive: true,
+        }),
+      });
+    }
+  });
+
+  it("emits only the property UUID and ignores invalid or unavailable input", async () => {
     const definition = await loadDefinition("property-card");
     const triggerEvent = vi.fn();
 
@@ -194,6 +271,12 @@ describe("catalog display components", () => {
     triggerEvent.mockClear();
     definition.methods.handleTap.call({
       data: { property: { ...property, id: "not-a-uuid" } },
+      triggerEvent,
+    });
+    expect(triggerEvent).not.toHaveBeenCalled();
+
+    definition.methods.handleTap.call({
+      data: { property: { ...property, from_nightly_price_cents: -1 } },
       triggerEvent,
     });
     expect(triggerEvent).not.toHaveBeenCalled();

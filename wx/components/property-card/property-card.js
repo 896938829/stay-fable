@@ -1,9 +1,11 @@
 "use strict";
 
+const {
+  isSafeCatalogResourceUrl,
+} = require("../../services/contracts");
+
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-const LOCAL_IMAGE_PATTERN =
-  /^\/images\/[A-Za-z0-9._-]+(?:\/[A-Za-z0-9._-]+)*$/;
 const TYPE_LABELS = {
   HOTEL: "酒店",
   HOMESTAY: "民宿",
@@ -21,16 +23,11 @@ function boundedText(value, maximum, fallback) {
 }
 
 function safeCoverUrl(value) {
-  if (typeof value !== "string" || value.length > 500) {
-    return "";
-  }
-  if (value.startsWith("/images/")) {
-    return LOCAL_IMAGE_PATTERN.test(value) &&
-      value.split("/").every((segment) => segment !== "..")
-      ? value
-      : "";
-  }
-  return value.startsWith("https://") && !/[\s\\]/.test(value) ? value : "";
+  return isSafeCatalogResourceUrl(value) ? value : "";
+}
+
+function isAvailablePrice(value) {
+  return Number.isSafeInteger(value) && value >= 0;
 }
 
 function viewModelFor(property) {
@@ -49,6 +46,7 @@ function viewModelFor(property) {
         .filter(Boolean)
         .slice(0, 4)
     : [];
+  const priceAvailable = isAvailablePrice(source.from_nightly_price_cents);
 
   return {
     id,
@@ -64,12 +62,9 @@ function viewModelFor(property) {
       source.available_room_type_count > 0
         ? source.available_room_type_count
         : 0,
-    priceCents:
-      Number.isSafeInteger(source.from_nightly_price_cents) &&
-      source.from_nightly_price_cents >= 0
-        ? source.from_nightly_price_cents
-        : 0,
-    interactive: id !== "",
+    priceCents: priceAvailable ? source.from_nightly_price_cents : null,
+    priceAvailable,
+    interactive: id !== "" && priceAvailable,
   };
 }
 
@@ -97,7 +92,8 @@ const definition = {
         property === null ||
         typeof property !== "object" ||
         typeof property.id !== "string" ||
-        !UUID_PATTERN.test(property.id)
+        !UUID_PATTERN.test(property.id) ||
+        !isAvailablePrice(property.from_nightly_price_cents)
       ) {
         return;
       }

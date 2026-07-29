@@ -1,18 +1,12 @@
 .property-card {
+  position: relative;
   min-height: 88rpx;
   overflow: hidden;
   border: 1rpx solid var(--color-border);
   border-radius: var(--radius-large);
   background: var(--color-surface);
   box-shadow: var(--shadow-card);
-  transition:
-    opacity 120ms ease,
-    transform 120ms ease;
-}
-
-.property-card--pressed {
-  opacity: 0.88;
-  transform: scale(0.99);
+  transition: opacity 120ms ease;
 }
 
 .property-card--disabled {
@@ -114,4 +108,34 @@
   margin-right: 20rpx;
   color: var(--color-muted);
   font-size: 24rpx;
+}
+
+.property-card__price-unavailable {
+  color: var(--color-muted);
+  font-size: 24rpx;
+  font-weight: 600;
+}
+
+.property-card__tap-target {
+  position: absolute;
+  z-index: 1;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  width: 100%;
+  min-height: 88rpx;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-large);
+  background: transparent;
+}
+
+.property-card__tap-target::after {
+  border: 0;
+}
+
+.property-card__tap-target--pressed {
+  background: rgba(82, 54, 40, 0.08);
 }
