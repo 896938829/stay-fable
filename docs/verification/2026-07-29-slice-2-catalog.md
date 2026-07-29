@@ -4,7 +4,7 @@
 
 范围：原生微信小程序 `/wx`、PostgreSQL/PostGIS、Redis、NestJS API 和 Worker。
 输入提交：`65af2512da46e6da47ab04b2cd79a0d8b5e3ad09`；对应 `/wx` tree：
-`65af2512da46e6da47ab04b2cd79a0d8b5e3ad09`。本记录仅提交验证文档和脱敏的诊断截图，
+`0cf64badcf937a2d4e5affaf7ed36d7b9b19cb83`。本记录仅提交验证文档和脱敏的诊断截图，
 不改写 `/wx` tree。
 
 ## 结论
@@ -66,7 +66,10 @@ network 以 `401|error|fail|inventory|pagination|cursor` 筛查均无命中。�
 已实际运行以下命令（证据父目录位于 `/wx` 外且预先存在）：
 
 ```powershell
-node wx/automator/slice-2-catalog.js <wx absolute path> <evidence parent absolute path> --cli-path "D:\Soft\微信web开发者工具\cli.bat"
+$repo = (Resolve-Path '.').Path
+$wxPath = (Resolve-Path 'wx').Path
+$evidenceParent = (Resolve-Path 'docs/verification/evidence/slice-2-catalog').Path
+node wx/automator/slice-2-catalog.js $wxPath $evidenceParent --cli-path 'D:\Soft\微信web开发者工具\cli.bat'
 ```
 
 脚本安全输出为 `status=fail`、`step=launch`、`currentPage=unknown`，退出码 1；因此未生成
