@@ -16,6 +16,26 @@ enum IdentityProvider {
   WECHAT
 }
 
+enum PropertyType {
+  HOTEL
+  HOMESTAY
+  FARM_STAY
+}
+
+enum PropertyStatus {
+  OPEN
+  CLOSED
+}
+
+enum RoomTypeStatus {
+  ON_SALE
+  OFF_SALE
+}
+
+enum PropertyMediaType {
+  IMAGE
+}
+
 model User {
   id             String         @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   status         UserStatus     @default(ACTIVE)
@@ -50,8 +70,122 @@ model City {
   displayOrder Int                                  @default(0) @map("display_order")
   createdAt    DateTime                             @default(now()) @map("created_at") @db.Timestamptz(3)
   updatedAt    DateTime                             @updatedAt @map("updated_at") @db.Timestamptz(3)
+  properties   Property[]
 
   @@index([enabled, displayOrder], map: "city_enabled_display_order_idx")
   @@index([center], type: Gist, map: "city_center_gix")
   @@map("city")
+}
+
+model Property {
+  id                 String                               @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  cityId             String                               @map("city_id") @db.Uuid
+  type               PropertyType
+  nameZh             String                               @map("name_zh") @db.VarChar(120)
+  addressZh          String                               @map("address_zh") @db.VarChar(240)
+  location           Unsupported("geography(Point,4326)")
+  shortDescriptionZh String                               @map("short_description_zh") @db.VarChar(240)
+  descriptionZh      String                               @map("description_zh") @db.VarChar(2000)
+  policiesZh         String                               @map("policies_zh") @db.VarChar(2000)
+  coverUrl           String                               @map("cover_url") @db.VarChar(500)
+  status             PropertyStatus                       @default(OPEN)
+  displayOrder       Int                                  @default(0) @map("display_order")
+  createdAt          DateTime                             @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt          DateTime                             @updatedAt @map("updated_at") @db.Timestamptz(3)
+  city               City                                 @relation(fields: [cityId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  media              PropertyMedia[]
+  propertyFacilities PropertyFacility[]
+  roomTypes          RoomType[]
+
+  @@unique([cityId, nameZh], map: "property_city_id_name_zh_key")
+  @@index([cityId, status, type, displayOrder, id], map: "property_city_status_type_order_id_idx")
+  @@index([location], type: Gist, map: "property_location_gix")
+  @@map("property")
+}
+
+model PropertyMedia {
+  id           String            @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  propertyId   String            @map("property_id") @db.Uuid
+  type         PropertyMediaType @default(IMAGE)
+  url          String            @db.VarChar(500)
+  altZh        String            @map("alt_zh") @db.VarChar(120)
+  displayOrder Int               @default(0) @map("display_order")
+  property     Property          @relation(fields: [propertyId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+
+  @@unique([propertyId, displayOrder], map: "property_media_property_id_display_order_key")
+  @@map("property_media")
+}
+
+model Facility {
+  id                 String             @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  code               String             @unique(map: "facility_code_key") @db.VarChar(64)
+  nameZh             String             @map("name_zh") @db.VarChar(80)
+  displayOrder       Int                @default(0) @map("display_order")
+  propertyFacilities PropertyFacility[]
+
+  @@map("facility")
+}
+
+model PropertyFacility {
+  propertyId String   @map("property_id") @db.Uuid
+  facilityId String   @map("facility_id") @db.Uuid
+  property   Property @relation(fields: [propertyId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+  facility   Facility @relation(fields: [facilityId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+
+  @@id([propertyId, facilityId], map: "property_facility_pkey")
+  @@index([facilityId], map: "property_facility_facility_id_idx")
+  @@map("property_facility")
+}
+
+model RoomType {
+  id              String           @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  propertyId      String           @map("property_id") @db.Uuid
+  nameZh          String           @map("name_zh") @db.VarChar(120)
+  bedTypeZh       String           @map("bed_type_zh") @db.VarChar(120)
+  areaSqm         Decimal          @map("area_sqm") @db.Decimal(5, 2)
+  maxGuests       Int              @map("max_guests")
+  coverUrl        String           @map("cover_url") @db.VarChar(500)
+  descriptionZh   String           @map("description_zh") @db.VarChar(2000)
+  bookingPolicyZh String           @map("booking_policy_zh") @db.VarChar(2000)
+  status          RoomTypeStatus   @default(ON_SALE)
+  displayOrder    Int              @default(0) @map("display_order")
+  createdAt       DateTime         @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt       DateTime         @updatedAt @map("updated_at") @db.Timestamptz(3)
+  property        Property         @relation(fields: [propertyId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+  dailyPrices     DailyPrice[]
+  dailyInventory  DailyInventory[]
+
+  @@unique([propertyId, nameZh], map: "room_type_property_id_name_zh_key")
+  @@index([propertyId, status, maxGuests, displayOrder, id], map: "room_type_property_status_capacity_order_id_idx")
+  @@map("room_type")
+}
+
+model DailyPrice {
+  roomTypeId     String   @map("room_type_id") @db.Uuid
+  businessDate   DateTime @map("business_date") @db.Date
+  salePriceCents Int      @map("sale_price_cents")
+  rackPriceCents Int      @map("rack_price_cents")
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt      DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+  roomType       RoomType @relation(fields: [roomTypeId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+
+  @@id([roomTypeId, businessDate], map: "daily_price_pkey")
+  @@index([businessDate, roomTypeId], map: "daily_price_date_room_idx")
+  @@map("daily_price")
+}
+
+model DailyInventory {
+  roomTypeId   String   @map("room_type_id") @db.Uuid
+  businessDate DateTime @map("business_date") @db.Date
+  total        Int
+  held         Int
+  sold         Int
+  version      Int      @default(0)
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt    DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+  roomType     RoomType @relation(fields: [roomTypeId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+
+  @@id([roomTypeId, businessDate], map: "daily_inventory_pkey")
+  @@index([businessDate, roomTypeId], map: "daily_inventory_date_room_idx")
+  @@map("daily_inventory")
 }

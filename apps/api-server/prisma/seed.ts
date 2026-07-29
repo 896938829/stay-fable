@@ -3,6 +3,13 @@ import { pathToFileURL } from "node:url";
 import { PrismaPg } from "@prisma/adapter-pg";
 
 import { Prisma, PrismaClient } from "../src/generated/prisma/client.js";
+import {
+  catalogDailySupply,
+  catalogFacilities,
+  catalogProperties,
+  catalogPropertyMedia,
+  catalogRoomTypes,
+} from "./catalog-seed-data.js";
 
 type SeedCity = {
   id: string;
@@ -34,6 +41,9 @@ const cities: SeedCity[] = [
 
 export const CITY_SEED_IDENTITY_CONFLICT_ERROR =
   "City seed identity conflict: existing id/code mapping does not match fixed reference data";
+
+export const CATALOG_SEED_IDENTITY_CONFLICT_ERROR =
+  "Catalog seed identity conflict: existing id/business-key mapping does not match fixed reference data";
 
 const citySeedAdvisoryLockId = 3_301_005_201;
 
@@ -117,6 +127,380 @@ export async function runSeed(prisma: PrismaClient): Promise<void> {
         `,
       );
     }
+
+    for (const facility of catalogFacilities) {
+      await transaction.$executeRaw(
+        Prisma.sql`
+          INSERT INTO "facility" ("id", "code", "name_zh", "display_order")
+          VALUES (
+            ${facility.id}::uuid,
+            ${facility.code},
+            ${facility.nameZh},
+            ${facility.displayOrder}
+          )
+          ON CONFLICT DO NOTHING
+        `,
+      );
+
+      const existingIdentities = await transaction.$queryRaw<Array<{ id: string; code: string }>>(
+        Prisma.sql`
+          SELECT "id"::text AS "id", "code"
+          FROM "facility"
+          WHERE "id" = ${facility.id}::uuid OR "code" = ${facility.code}
+          FOR UPDATE
+        `,
+      );
+      const identity = existingIdentities[0];
+      if (
+        existingIdentities.length !== 1 ||
+        identity?.id !== facility.id ||
+        identity.code !== facility.code
+      ) {
+        throw new Error(CATALOG_SEED_IDENTITY_CONFLICT_ERROR);
+      }
+
+      await transaction.$executeRaw(
+        Prisma.sql`
+          UPDATE "facility"
+          SET
+            "name_zh" = ${facility.nameZh},
+            "display_order" = ${facility.displayOrder}
+          WHERE "id" = ${facility.id}::uuid
+            AND "code" = ${facility.code}
+        `,
+      );
+    }
+
+    for (const property of catalogProperties) {
+      await transaction.$executeRaw(
+        Prisma.sql`
+          INSERT INTO "property" (
+            "id",
+            "city_id",
+            "type",
+            "name_zh",
+            "address_zh",
+            "location",
+            "short_description_zh",
+            "description_zh",
+            "policies_zh",
+            "cover_url",
+            "status",
+            "display_order",
+            "created_at",
+            "updated_at"
+          )
+          VALUES (
+            ${property.id}::uuid,
+            ${property.cityId}::uuid,
+            ${property.type}::"PropertyType",
+            ${property.nameZh},
+            ${property.addressZh},
+            ST_SetSRID(
+              ST_MakePoint(${property.longitude}, ${property.latitude}),
+              4326
+            )::geography,
+            ${property.shortDescriptionZh},
+            ${property.descriptionZh},
+            ${property.policiesZh},
+            ${property.coverUrl},
+            'OPEN'::"PropertyStatus",
+            ${property.displayOrder},
+            CURRENT_TIMESTAMP,
+            CURRENT_TIMESTAMP
+          )
+          ON CONFLICT DO NOTHING
+        `,
+      );
+
+      const existingIdentities = await transaction.$queryRaw<
+        Array<{ id: string; cityId: string; nameZh: string }>
+      >(
+        Prisma.sql`
+          SELECT
+            "id"::text AS "id",
+            "city_id"::text AS "cityId",
+            "name_zh" AS "nameZh"
+          FROM "property"
+          WHERE "id" = ${property.id}::uuid
+             OR (
+               "city_id" = ${property.cityId}::uuid
+               AND "name_zh" = ${property.nameZh}
+             )
+          FOR UPDATE
+        `,
+      );
+      const identity = existingIdentities[0];
+      if (
+        existingIdentities.length !== 1 ||
+        identity?.id !== property.id ||
+        identity.cityId !== property.cityId ||
+        identity.nameZh !== property.nameZh
+      ) {
+        throw new Error(CATALOG_SEED_IDENTITY_CONFLICT_ERROR);
+      }
+
+      await transaction.$executeRaw(
+        Prisma.sql`
+          UPDATE "property"
+          SET
+            "type" = ${property.type}::"PropertyType",
+            "address_zh" = ${property.addressZh},
+            "location" = ST_SetSRID(
+              ST_MakePoint(${property.longitude}, ${property.latitude}),
+              4326
+            )::geography,
+            "short_description_zh" = ${property.shortDescriptionZh},
+            "description_zh" = ${property.descriptionZh},
+            "policies_zh" = ${property.policiesZh},
+            "cover_url" = ${property.coverUrl},
+            "status" = 'OPEN'::"PropertyStatus",
+            "display_order" = ${property.displayOrder},
+            "updated_at" = CURRENT_TIMESTAMP
+          WHERE "id" = ${property.id}::uuid
+            AND "city_id" = ${property.cityId}::uuid
+            AND "name_zh" = ${property.nameZh}
+        `,
+      );
+    }
+
+    for (const media of catalogPropertyMedia) {
+      await transaction.$executeRaw(
+        Prisma.sql`
+          INSERT INTO "property_media" (
+            "id",
+            "property_id",
+            "type",
+            "url",
+            "alt_zh",
+            "display_order"
+          )
+          VALUES (
+            ${media.id}::uuid,
+            ${media.propertyId}::uuid,
+            'IMAGE'::"PropertyMediaType",
+            ${media.url},
+            ${media.altZh},
+            ${media.displayOrder}
+          )
+          ON CONFLICT DO NOTHING
+        `,
+      );
+
+      const existingIdentities = await transaction.$queryRaw<
+        Array<{ id: string; propertyId: string; displayOrder: number }>
+      >(
+        Prisma.sql`
+          SELECT
+            "id"::text AS "id",
+            "property_id"::text AS "propertyId",
+            "display_order" AS "displayOrder"
+          FROM "property_media"
+          WHERE "id" = ${media.id}::uuid
+             OR (
+               "property_id" = ${media.propertyId}::uuid
+               AND "display_order" = ${media.displayOrder}
+             )
+          FOR UPDATE
+        `,
+      );
+      const identity = existingIdentities[0];
+      if (
+        existingIdentities.length !== 1 ||
+        identity?.id !== media.id ||
+        identity.propertyId !== media.propertyId ||
+        identity.displayOrder !== media.displayOrder
+      ) {
+        throw new Error(CATALOG_SEED_IDENTITY_CONFLICT_ERROR);
+      }
+
+      await transaction.$executeRaw(
+        Prisma.sql`
+          UPDATE "property_media"
+          SET
+            "type" = 'IMAGE'::"PropertyMediaType",
+            "url" = ${media.url},
+            "alt_zh" = ${media.altZh}
+          WHERE "id" = ${media.id}::uuid
+            AND "property_id" = ${media.propertyId}::uuid
+            AND "display_order" = ${media.displayOrder}
+        `,
+      );
+    }
+
+    const facilitiesByCode = new Map(
+      catalogFacilities.map((facility) => [facility.code, facility] as const),
+    );
+    for (const property of catalogProperties) {
+      for (const facilityCode of property.facilityCodes) {
+        const facility = facilitiesByCode.get(facilityCode);
+        if (facility === undefined) {
+          throw new Error(`Missing catalog facility seed: ${facilityCode}`);
+        }
+        await transaction.$executeRaw(
+          Prisma.sql`
+            INSERT INTO "property_facility" ("property_id", "facility_id")
+            VALUES (${property.id}::uuid, ${facility.id}::uuid)
+            ON CONFLICT ("property_id", "facility_id") DO NOTHING
+          `,
+        );
+      }
+    }
+
+    for (const room of catalogRoomTypes) {
+      await transaction.$executeRaw(
+        Prisma.sql`
+          INSERT INTO "room_type" (
+            "id",
+            "property_id",
+            "name_zh",
+            "bed_type_zh",
+            "area_sqm",
+            "max_guests",
+            "cover_url",
+            "description_zh",
+            "booking_policy_zh",
+            "status",
+            "display_order",
+            "created_at",
+            "updated_at"
+          )
+          VALUES (
+            ${room.id}::uuid,
+            ${room.propertyId}::uuid,
+            ${room.nameZh},
+            ${room.bedTypeZh},
+            ${room.areaSqm}::decimal(5,2),
+            ${room.maxGuests},
+            ${room.coverUrl},
+            ${room.descriptionZh},
+            ${room.bookingPolicyZh},
+            'ON_SALE'::"RoomTypeStatus",
+            ${room.displayOrder},
+            CURRENT_TIMESTAMP,
+            CURRENT_TIMESTAMP
+          )
+          ON CONFLICT DO NOTHING
+        `,
+      );
+
+      const existingIdentities = await transaction.$queryRaw<
+        Array<{ id: string; propertyId: string; nameZh: string }>
+      >(
+        Prisma.sql`
+          SELECT
+            "id"::text AS "id",
+            "property_id"::text AS "propertyId",
+            "name_zh" AS "nameZh"
+          FROM "room_type"
+          WHERE "id" = ${room.id}::uuid
+             OR (
+               "property_id" = ${room.propertyId}::uuid
+               AND "name_zh" = ${room.nameZh}
+             )
+          FOR UPDATE
+        `,
+      );
+      const identity = existingIdentities[0];
+      if (
+        existingIdentities.length !== 1 ||
+        identity?.id !== room.id ||
+        identity.propertyId !== room.propertyId ||
+        identity.nameZh !== room.nameZh
+      ) {
+        throw new Error(CATALOG_SEED_IDENTITY_CONFLICT_ERROR);
+      }
+
+      await transaction.$executeRaw(
+        Prisma.sql`
+          UPDATE "room_type"
+          SET
+            "bed_type_zh" = ${room.bedTypeZh},
+            "area_sqm" = ${room.areaSqm}::decimal(5,2),
+            "max_guests" = ${room.maxGuests},
+            "cover_url" = ${room.coverUrl},
+            "description_zh" = ${room.descriptionZh},
+            "booking_policy_zh" = ${room.bookingPolicyZh},
+            "status" = 'ON_SALE'::"RoomTypeStatus",
+            "display_order" = ${room.displayOrder},
+            "updated_at" = CURRENT_TIMESTAMP
+          WHERE "id" = ${room.id}::uuid
+            AND "property_id" = ${room.propertyId}::uuid
+            AND "name_zh" = ${room.nameZh}
+        `,
+      );
+    }
+
+    const dailySupplyJson = JSON.stringify(catalogDailySupply);
+    await transaction.$executeRaw(
+      Prisma.sql`
+        INSERT INTO "daily_price" (
+          "room_type_id",
+          "business_date",
+          "sale_price_cents",
+          "rack_price_cents",
+          "created_at",
+          "updated_at"
+        )
+        SELECT
+          supply."roomTypeId"::uuid,
+          supply."businessDate"::date,
+          supply."salePriceCents",
+          supply."rackPriceCents",
+          CURRENT_TIMESTAMP,
+          CURRENT_TIMESTAMP
+        FROM jsonb_to_recordset(${dailySupplyJson}::jsonb) AS supply(
+          "roomTypeId" text,
+          "businessDate" text,
+          "salePriceCents" integer,
+          "rackPriceCents" integer,
+          "total" integer
+        )
+        ON CONFLICT ("room_type_id", "business_date") DO UPDATE
+        SET
+          "sale_price_cents" = EXCLUDED."sale_price_cents",
+          "rack_price_cents" = EXCLUDED."rack_price_cents",
+          "updated_at" = CURRENT_TIMESTAMP
+      `,
+    );
+
+    await transaction.$executeRaw(
+      Prisma.sql`
+        INSERT INTO "daily_inventory" (
+          "room_type_id",
+          "business_date",
+          "total",
+          "held",
+          "sold",
+          "version",
+          "created_at",
+          "updated_at"
+        )
+        SELECT
+          supply."roomTypeId"::uuid,
+          supply."businessDate"::date,
+          supply."total",
+          0,
+          0,
+          0,
+          CURRENT_TIMESTAMP,
+          CURRENT_TIMESTAMP
+        FROM jsonb_to_recordset(${dailySupplyJson}::jsonb) AS supply(
+          "roomTypeId" text,
+          "businessDate" text,
+          "salePriceCents" integer,
+          "rackPriceCents" integer,
+          "total" integer
+        )
+        ON CONFLICT ("room_type_id", "business_date") DO UPDATE
+        SET
+          "total" = EXCLUDED."total",
+          "held" = 0,
+          "sold" = 0,
+          "version" = 0,
+          "updated_at" = CURRENT_TIMESTAMP
+      `,
+    );
   });
 }
 
