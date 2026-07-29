@@ -23,6 +23,40 @@ const quoteGeneratedTestSchema = (schemaName: string): string => {
   return `"${schemaName}"`;
 };
 
+const migrationSqlHasForbiddenStatements = (migrationSql: string): boolean => {
+  const destructiveStatement =
+    /(?:^|;|\r?\n)\s*(?:(?:--[^\r\n]*(?:\r?\n|$)|\/\*[\s\S]*?\*\/)\s*)*(?:UPDATE\b|DELETE\s+FROM\b|TRUNCATE\b|DROP\s+TABLE\b)/i;
+  const explicitDownSection =
+    /(?:^|\r?\n)\s*--\s*(?:\+?migrate:\s*)?down\b|\/\*\s*(?:\+?migrate:\s*)?down\b[\s\S]*?\*\//i;
+
+  return destructiveStatement.test(migrationSql) || explicitDownSection.test(migrationSql);
+};
+
+test.each([
+  [
+    "allows foreign-key actions",
+    'ALTER TABLE "booking" ADD CONSTRAINT "booking_user_id_fkey" FOREIGN KEY ("user_id") REFERENCES "user"("id") ON DELETE RESTRICT ON UPDATE CASCADE;',
+    false,
+  ],
+  [
+    "allows ordinary words in comments",
+    "-- update this constraint later\nCREATE TABLE quote (id uuid);",
+    false,
+  ],
+  [
+    "allows ordinary down text",
+    "CREATE TABLE quote (status text CHECK (status <> 'down'));",
+    false,
+  ],
+  ["rejects UPDATE statements", "UPDATE quote SET currency = 'CNY';", true],
+  ["rejects DELETE FROM statements", "DELETE FROM quote;", true],
+  ["rejects TRUNCATE statements", "TRUNCATE TABLE quote;", true],
+  ["rejects DROP TABLE statements", "DROP TABLE quote;", true],
+  ["rejects explicit down sections", "-- migrate:down\nSELECT 1;", true],
+])("migration SQL guard %s", (_name, migrationSql, expected) => {
+  expect(migrationSqlHasForbiddenStatements(migrationSql)).toBe(expected);
+});
+
 describeDatabase(suiteName, () => {
   let client: PoolClient | undefined;
   let pool: Pool | undefined;
@@ -108,7 +142,7 @@ describeDatabase(suiteName, () => {
 
   const readTargetMigration = async (): Promise<string> => {
     const migrationSql = await readFile(targetMigration, "utf8");
-    expect(migrationSql).not.toMatch(/\b(?:UPDATE|DELETE|TRUNCATE|DROP\s+TABLE|down)\b/i);
+    expect(migrationSqlHasForbiddenStatements(migrationSql)).toBe(false);
     expect(migrationSql).toMatch(
       /ALTER\s+TABLE\s+"daily_inventory"\s+DROP\s+CONSTRAINT\s+"daily_inventory_available_check"/i,
     );
