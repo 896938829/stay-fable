@@ -660,6 +660,20 @@ describe("BookingRepository", () => {
       meta,
     });
 
+  const nestedRawUnique = (fields: unknown, overrides: Record<string, unknown> = {}) =>
+    knownRequestError("P2010", {
+      driverAdapterError: {
+        cause: {
+          originalCode: "23505",
+          kind: "UniqueConstraintViolation",
+          constraint: { fields },
+          originalMessage:
+            'duplicate key value violates unique constraint "booking_booking_number_key"',
+          ...overrides,
+        },
+      },
+    });
+
   it.each([
     [
       "P2002 target columns",
@@ -677,8 +691,9 @@ describe("BookingRepository", () => {
       "idempotency",
     ],
     ["P2002 quote column", knownRequestError("P2002", { target: ["quote_id"] }), "quote"],
+    ["P2010 nested booking-number fields", nestedRawUnique(["booking_number"]), "booking_number"],
     [
-      "P2010 trusted constraint",
+      "P2010 flat trusted constraint compatibility",
       knownRequestError("P2010", {
         code: "23505",
         constraint: "booking_booking_number_key",
@@ -686,29 +701,11 @@ describe("BookingRepository", () => {
       "booking_number",
     ],
     [
-      "P2010 standard message",
-      knownRequestError("P2010", {
-        code: "23505",
-        message: 'duplicate key value violates unique constraint "booking_booking_number_key"',
-      }),
-      "booking_number",
-    ],
-    [
-      "P2010 idempotency constraint",
-      knownRequestError("P2010", {
-        code: "23505",
-        constraint: "booking_user_id_idempotency_key_key",
-      }),
+      "P2010 nested idempotency fields",
+      nestedRawUnique(["user_id", "idempotency_key"]),
       "idempotency",
     ],
-    [
-      "P2010 quote constraint",
-      knownRequestError("P2010", {
-        code: "23505",
-        constraint: "booking_quote_id_key",
-      }),
-      "quote",
-    ],
+    ["P2010 nested quote fields", nestedRawUnique(["quote_id"]), "quote"],
   ])("checks user/key after confirmed unique: %s", async (_name, error, classification) => {
     const { database } = createBookingDatabase([]);
     database.$transaction.mockRejectedValueOnce(error);
@@ -730,10 +727,7 @@ describe("BookingRepository", () => {
   });
 
   it("retries only a confirmed booking-number unique after rollback and empty user/key lookup", async () => {
-    const error = knownRequestError("P2010", {
-      code: "23505",
-      message: 'duplicate key value violates unique constraint "booking_booking_number_key"',
-    });
+    const error = nestedRawUnique(["booking_number"]);
     const { database } = createBookingDatabase([]);
     database.$transaction.mockRejectedValueOnce(error);
     database.$queryRaw.mockResolvedValueOnce([]);
@@ -746,10 +740,7 @@ describe("BookingRepository", () => {
   });
 
   it("makes exactly one full service retry for a raw P2010 booking-number conflict", async () => {
-    const error = knownRequestError("P2010", {
-      code: "23505",
-      constraint: "booking_booking_number_key",
-    });
+    const error = nestedRawUnique(["booking_number"]);
     const { database } = createBookingDatabase([[{ locked: null }], [bookingRecord]]);
     database.$transaction.mockRejectedValueOnce(error);
     database.$queryRaw.mockResolvedValueOnce([]);
@@ -786,19 +777,10 @@ describe("BookingRepository", () => {
       }),
     ],
     [
-      "unknown constraint",
-      knownRequestError("P2010", {
-        code: "23505",
-        constraint: "some_other_unique_key",
-      }),
+      "wrong nested kind",
+      nestedRawUnique(["booking_number"], { kind: "ForeignKeyConstraintViolation" }),
     ],
-    [
-      "malformed meta",
-      knownRequestError("P2010", {
-        code: "23505",
-        constraint: { toString: () => "booking_booking_number_key" },
-      }),
-    ],
+    ["wrong nested SQLSTATE", nestedRawUnique(["booking_number"], { originalCode: "23503" })],
   ])("does not treat %s as a confirmed unique conflict", async (_name, error) => {
     const { database } = createBookingDatabase([]);
     database.$transaction.mockRejectedValueOnce(error);
@@ -807,11 +789,63 @@ describe("BookingRepository", () => {
     expect(database.$queryRaw).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ["inventory hold fields", nestedRawUnique(["booking_id", "business_date"])],
+    ["unknown fields", nestedRawUnique(["unknown_unique_column"])],
+    ["P2002 unknown target", knownRequestError("P2002", { target: ["unknown_column"] })],
+    ["P2002 missing target", knownRequestError("P2002", {})],
+  ])("checks user/key for confirmed unique even when non-retryable: %s", async (_name, error) => {
+    const { database } = createBookingDatabase([]);
+    database.$transaction.mockRejectedValueOnce(error);
+    database.$queryRaw.mockResolvedValueOnce([]);
+    const repository = new BookingRepository(database as unknown as BookingDatabase);
+    await expect(repository.createFromQuote(repositoryInput)).rejects.toBe(error);
+    expect(database.$queryRaw).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    [
+      "proxy driver",
+      knownRequestError("P2010", {
+        driverAdapterError: new Proxy(
+          {},
+          {
+            getOwnPropertyDescriptor: () => {
+              throw new Error("trap-secret");
+            },
+          },
+        ),
+      }),
+    ],
+    [
+      "accessor cause",
+      knownRequestError("P2010", {
+        driverAdapterError: Object.defineProperty({}, "cause", {
+          enumerable: true,
+          get: () => ({ originalCode: "23505", kind: "UniqueConstraintViolation" }),
+        }),
+      }),
+    ],
+    [
+      "malformed fields",
+      nestedRawUnique(
+        new Proxy([], {
+          ownKeys: () => {
+            throw new Error("fields-secret");
+          },
+        }),
+      ),
+    ],
+  ])("rejects malformed nested P2010 without lookup: %s", async (_name, error) => {
+    const { database } = createBookingDatabase([]);
+    database.$transaction.mockRejectedValueOnce(error);
+    const repository = new BookingRepository(database as unknown as BookingDatabase);
+    await expect(repository.createFromQuote(repositoryInput)).rejects.toBe(error);
+    expect(database.$queryRaw).not.toHaveBeenCalled();
+  });
+
   it("rolls back staged inventory and writes before classifying a raw unique violation", async () => {
-    const unique = knownRequestError("P2010", {
-      code: "23505",
-      constraint: "booking_booking_number_key",
-    });
+    const unique = nestedRawUnique(["booking_number"]);
     const { database } = createBookingDatabase([
       [{ locked: null }],
       [],
