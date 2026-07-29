@@ -138,7 +138,7 @@ export class PropertyDetailResponseDto {
   @ApiProperty({ type: CatalogFacilityDto, isArray: true, maxItems: 50 })
   facilities!: CatalogFacilityDto[];
 
-  @ApiProperty({ type: RoomTypeSummaryDto, isArray: true, minItems: 1 })
+  @ApiProperty({ type: RoomTypeSummaryDto, isArray: true, minItems: 0, maxItems: 50 })
   room_types!: RoomTypeSummaryDto[];
 }
 

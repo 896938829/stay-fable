@@ -197,6 +197,30 @@ describe("catalog response contracts", () => {
     expect(roomResult.nightly_prices[0]).not.toBe(roomInput.nightly_prices[0]);
   });
 
+  it("accepts an empty bounded property room collection without weakening list availability", () => {
+    expect(
+      assertPropertyDetail({
+        ...propertyDetail,
+        room_types: [],
+      }),
+    ).toEqual({
+      ...propertyDetail,
+      room_types: [],
+    });
+    expectInvalid(() =>
+      assertPropertyDetail({
+        ...propertyDetail,
+        room_types: Array.from({ length: 51 }, () => roomTypeSummary),
+      }),
+    );
+    expectInvalid(() =>
+      assertPropertyListResponse({
+        items: [{ ...propertyListItem, available_room_type_count: 0 }],
+        next_cursor: null,
+      }),
+    );
+  });
+
   it.each(["HOSTEL", "", null])("rejects unknown property type %j", (type) => {
     expectInvalid(() =>
       assertPropertyListResponse({

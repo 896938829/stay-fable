@@ -138,6 +138,19 @@ describe("catalog service", () => {
     );
   });
 
+  it("accepts an empty property room collection from the real catalog service", async () => {
+    const emptyProperty = {
+      ...propertyDetail,
+      room_types: [],
+    };
+    const { requestClient, service } = createService(emptyProperty);
+
+    await expect(
+      service.getProperty(IDS.property, availability),
+    ).resolves.toEqual(emptyProperty);
+    expect(requestClient.get).toHaveBeenCalledOnce();
+  });
+
   it.each([
     [{ ...availability, city_id: "not-a-uuid" }],
     [{ ...availability, city_id: IDS.city, checkin: "2026-7-30" }],

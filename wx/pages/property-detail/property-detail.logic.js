@@ -29,18 +29,6 @@ const PROPERTY_KEYS = [
   "facilities",
   "room_types",
 ];
-const EMPTY_ROOM_SENTINEL = {
-  id: "00000000-0000-4000-8000-000000000001",
-  name: "不可见房型",
-  bed_type: "不可见床型",
-  area_sqm: 1,
-  max_guests: 1,
-  cover_url: "/images/rooms/placeholder.jpg",
-  policy_summary: "不可见规则",
-  from_nightly_price_cents: 0,
-  currency: "CNY",
-};
-
 function detailError() {
   const error = new Error("Invalid property detail");
   error.code = "INVALID_PROPERTY_DETAIL";
@@ -111,7 +99,6 @@ function canonicalProperty(value) {
     ) {
       throw detailError();
     }
-    const roomsWereEmpty = value.room_types.length === 0;
     const candidate = {
       id: value.id,
       type: value.type,
@@ -123,14 +110,11 @@ function canonicalProperty(value) {
       cover_url: value.cover_url,
       media: value.media,
       facilities: value.facilities,
-      room_types: roomsWereEmpty ? [EMPTY_ROOM_SENTINEL] : value.room_types,
+      room_types: value.room_types,
     };
     const canonical = assertPropertyDetail(candidate);
     if (!UUID_V4_PATTERN.test(canonical.id)) {
       throw detailError();
-    }
-    if (roomsWereEmpty) {
-      canonical.room_types = [];
     }
     return canonical;
   } catch {

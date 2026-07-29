@@ -442,7 +442,7 @@ function assertPropertyDetail(value) {
     !Array.isArray(value.facilities) ||
     value.facilities.length > 50 ||
     !Array.isArray(value.room_types) ||
-    value.room_types.length < 1
+    value.room_types.length > 50
   ) {
     throw invalidResponse();
   }

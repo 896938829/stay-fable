@@ -241,6 +241,8 @@ describe("CatalogController OpenAPI", () => {
     ]);
     expect(schemas?.PropertyDetailResponseDto?.properties?.room_types).toMatchObject({
       type: "array",
+      minItems: 0,
+      maxItems: 50,
       items: { $ref: "#/components/schemas/RoomTypeSummaryDto" },
     });
     expect(schemas?.NightlyPriceDto?.required).toEqual([

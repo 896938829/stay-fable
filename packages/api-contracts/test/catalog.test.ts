@@ -121,6 +121,30 @@ describe("catalog contracts", () => {
     expect(roomTypeDetailSchema.parse(roomTypeDetail)).toEqual(roomTypeDetail);
   });
 
+  it("accepts an empty bounded property room collection without weakening list availability", () => {
+    expect(
+      propertyDetailSchema.parse({
+        ...propertyDetail,
+        room_types: [],
+      }),
+    ).toEqual({
+      ...propertyDetail,
+      room_types: [],
+    });
+    expect(
+      propertyDetailSchema.safeParse({
+        ...propertyDetail,
+        room_types: Array.from({ length: 51 }, () => roomTypeSummary),
+      }).success,
+    ).toBe(false);
+    expect(
+      propertyListResponseSchema.safeParse({
+        items: [{ ...propertyListItem, available_room_type_count: 0 }],
+        next_cursor: null,
+      }).success,
+    ).toBe(false);
+  });
+
   it("publishes the catalog contract from a stable package export", async () => {
     const packageJson = JSON.parse(
       await readFile(new URL("../package.json", import.meta.url), "utf8"),

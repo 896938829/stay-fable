@@ -259,6 +259,26 @@ describe("CatalogService", () => {
     expect(JSON.stringify(result)).not.toMatch(/inventory|held|sold/);
   });
 
+  it("maps a repository property with no currently available room summaries", async () => {
+    const repository = createRepository();
+    repository.findProperty.mockResolvedValue({ ...propertyRow, roomTypes: [] });
+    const service = new CatalogService(repository as unknown as CatalogRepository, clock);
+
+    await expect(service.getProperty(PROPERTY_ID, availability)).resolves.toEqual({
+      id: PROPERTY_ID,
+      type: "HOTEL",
+      name: "西湖云栖酒店",
+      city: { id: CITY_ID, code: "330100", name: "杭州" },
+      address: "杭州市西湖区湖滨片区",
+      description: "临近西湖的舒适酒店。",
+      policies: "入住时请出示有效证件。",
+      cover_url: "/images/catalog/hotel.jpg",
+      media: [{ type: "IMAGE", url: "/images/catalog/hotel-room.jpg", alt: "客房" }],
+      facilities: [{ code: "WIFI", name: "无线网络" }],
+      room_types: [],
+    });
+  });
+
   it("returns a stable property-not-available error for a missing property", async () => {
     const repository = createRepository();
     repository.findProperty.mockResolvedValue(null);

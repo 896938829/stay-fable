@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import propertyDetailLogic from "../pages/property-detail/property-detail.logic.js";
 import propertyDetailPage from "../pages/property-detail/property-detail.js";
+import catalogModule from "../services/catalog.js";
 
 const {
   safePropertyDetailError,
@@ -11,6 +12,7 @@ const {
   toPropertyDetailView,
 } = propertyDetailLogic;
 const { createPropertyDetailPage } = propertyDetailPage;
+const { createCatalogService } = catalogModule;
 
 const IDS = {
   city: "10000000-0000-4000-8000-000000000001",
@@ -276,6 +278,42 @@ describe("property detail page state machine", () => {
     expect(JSON.stringify(catalogService.getProperty.mock.calls)).not.toContain(
       IDS.city,
     );
+  });
+
+  it("reaches the empty-room page state through the real catalog service contract", async () => {
+    const requestClient = {
+      get: vi.fn(async () => ({ ...propertyDetail, room_types: [] })),
+    };
+    const catalogService = createCatalogService(requestClient);
+    const app = {
+      globalData: {
+        searchStore: { get: vi.fn(() => search) },
+      },
+    };
+    const page = pageContext(
+      createPropertyDetailPage({
+        catalogService,
+        getApp: () => app,
+        wxApi: {
+          navigateBack: vi.fn(),
+          navigateTo: vi.fn(),
+          reLaunch: vi.fn(),
+        },
+      }),
+    );
+
+    await page.onLoad.call(page, { id: IDS.property });
+
+    expect(requestClient.get).toHaveBeenCalledWith(
+      `/properties/${IDS.property}?checkin=2026-07-30&checkout=2026-08-01&guests=2`,
+    );
+    expect(page.data).toMatchObject({
+      status: "success",
+      errorMessage: "",
+      property: {
+        roomTypes: [],
+      },
+    });
   });
 
   it.each([

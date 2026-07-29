@@ -193,7 +193,7 @@ export const propertyDetailSchema = z
     cover_url: catalogResourceSchema,
     media: z.array(mediaItemSchema).max(20),
     facilities: z.array(facilitySchema).max(50),
-    room_types: z.array(roomTypeSummarySchema).min(1),
+    room_types: z.array(roomTypeSummarySchema).max(50),
   })
   .strict();
 
