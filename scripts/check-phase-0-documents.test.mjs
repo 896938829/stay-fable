@@ -699,7 +699,7 @@ test("launch evidence records WSL2 Docker validation without unblocking unarchiv
   }
 });
 
-test("launch evidence marks the current native WeChat tree as pending official validation", async () => {
+test("launch evidence records current native WeChat validation without claiming acceptance", async () => {
   const markdown = await readFile(
     path.join(root, "docs/compliance/launch-evidence-index.md"),
     "utf8",
@@ -713,6 +713,7 @@ test("launch evidence marks the current native WeChat tree as pending official v
     "../../wx/project.config.json",
     "../../wx/app.json",
     "../../scripts/check-wx-project.mjs",
+    "../verification/2026-07-29-slice-1-identity-search.md",
   ]) {
     assert.ok(row.includes(evidencePath), `WeChat evidence must reference ${evidencePath}`);
   }
@@ -721,12 +722,11 @@ test("launch evidence marks the current native WeChat tree as pending official v
     /apps\/consumer-miniapp/,
     "current WeChat evidence must not point to the frozen Taro reference",
   );
-  assert.match(row, /official validation pending/i);
-  assert.match(row, /当前.*`\/wx`.*tree.*尚未.*官方.*(?:编译|预览)/i);
+  assert.match(row, /2026-07-29.*Slice 1.*官方编译.*自动化.*预览.*完成/i);
   assert.match(
     row,
-    /\|\s*Blocked\s*\|?\s*$/,
-    "current unvalidated WeChat evidence must remain blocked",
+    /\|\s*In review\s*\|?\s*$/,
+    "current WeChat evidence must await controlled archival and independent review",
   );
   assert.doesNotMatch(row, /deb274c58f64b6259e89d19a582200182126d770/);
   assert.doesNotMatch(row, /021ed57a0b3b1e876123befad4f375446621fb42/);
@@ -794,7 +794,7 @@ test("only WeChat is a current mini-program launch gate", async () => {
   }
 });
 
-test("Phase 0 verification separates pending current WeChat checks from historical evidence", async () => {
+test("Phase 0 verification separates current Slice 1 WeChat evidence from historical evidence", async () => {
   const markdown = await readFile(
     path.join(root, "docs/operations/phase-0-verification.md"),
     "utf8",
@@ -818,10 +818,11 @@ test("Phase 0 verification separates pending current WeChat checks from historic
   }
   assert.match(currentSection, /冻结/);
   assert.match(currentSection, /不进入.*默认.*(?:检查|构建)/s);
-  assert.match(currentSection, /official validation pending/i);
-  assert.match(currentSection, /Task 8.*(?:之后|执行).*官方.*(?:编译|预览)/s);
-  assert.match(currentSection, /当前.*`\/wx`.*tree.*尚未.*官方.*(?:编译|预览)/s);
-  assert.match(currentSection, /证据状态为 \*\*Blocked\*\*/);
+  assert.match(currentSection, /official validation passed for Slice 1/i);
+  assert.match(currentSection, /2026-07-29[\s\S]*WXML\/WXSS.*编译/s);
+  assert.match(currentSection, /核心搜索上下文自动化.*官方预览/s);
+  assert.match(currentSection, /公众平台隐私保护指引[\s\S]*\*\*Blocked\*\*/s);
+  assert.match(currentSection, /不替代.*生产发布审核/s);
   assert.doesNotMatch(
     currentSection,
     /deb274c58f64b6259e89d19a582200182126d770|021ed57a0b3b1e876123befad4f375446621fb42/,

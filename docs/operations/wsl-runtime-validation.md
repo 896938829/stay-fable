@@ -1,511 +1,81 @@
 # WSL2 后端实机验证
 
-本流程在 Windows PowerShell 中生成 API/Worker 的生产部署产物，再在
-`Ubuntu-22.04` WSL2 中运行隔离的 PostgreSQL/PostGIS、Redis、API 和 Worker。
-验证容器固定命名为 `stay-fable-wsl-validation-api` 和
-`stay-fable-wsl-validation-worker`。
+本流程从 Windows PowerShell 一键验证 PostgreSQL/PostGIS、Redis、NestJS API 和
+Worker。它面向已安装 WSL2 与 Docker Engine 的 `Ubuntu-22.04`，不要求 WSL 内安装
+Node.js。
 
-> **边界：** 验证前先盘点 Docker 现状。不得停止或删除任何无关容器，不得使用
-> `docker system prune`，也不得执行带 `--volumes` 的 Compose 清理命令。
-
-## 1. 确认 Ubuntu-22.04 使用 WSL2
-
-在 Windows PowerShell 中运行：
+先确认发行版运行在 WSL 2：
 
 ```powershell
 wsl.exe -l -v
 ```
 
-预期列表中存在 `Ubuntu-22.04`，且 `VERSION` 为 `2`（即 WSL 2）。
+列表中必须包含 `Ubuntu-22.04`，且 `VERSION` 为 `2`（WSL 2）。
 
-## 2. 保存带所有权标记的生命周期脚本
+## 执行
 
-在后续“Windows PowerShell 阶段”的同一个 PowerShell 会话中生成
-`$validationToken` 和 `$lifecycleScript` 后，命令会打开交互式 WSL Bash。用编辑器
-把“WSL 阶段”下的完整 Bash 代码块保存到终端输出的精确路径
-`/tmp/stay-fable-wsl-validation-$validationToken.sh`，然后在该 WSL shell 中运行：
-
-```bash
-test "$LIFECYCLE_SCRIPT" = "/tmp/stay-fable-wsl-validation-${VALIDATION_TOKEN}.sh"
-test ! -e "$LIFECYCLE_SCRIPT" && test ! -e "$LIFECYCLE_SCRIPT.owner"
-umask 077
-printf '%s\n' "$VALIDATION_TOKEN" > "$LIFECYCLE_SCRIPT.owner"
-${EDITOR:-vi} "$LIFECYCLE_SCRIPT"
-chmod 700 "$LIFECYCLE_SCRIPT"
-exit
-```
-
-若任一 `test` 失败，停止验证并人工确认冲突来源，不得覆盖或删除已有文件。生命周期
-必须从这个带随机 token、已保存且有匹配 owner 标记的 Bash 脚本运行。禁止通过管道
-或 stdin（标准输入）把整个生命周期送给 Bash。原因是
-`docker compose exec -T` 可能消费剩余标准输入，使后续命令静默丢失。尤其不要把
-本指南代码块接到 Bash 或 `sh` 的标准输入。
-
-## Windows PowerShell 阶段
-
-从当前 linked worktree 的仓库根目录运行下面的完整 PowerShell 代码块。Windows
-Git 能正确解析 linked worktree `.git` 文件中的 Windows `gitdir:`；不要把这个
-守卫改回 WSL Git。所有构建和部署命令都通过仓库锁定的 Corepack 入口运行，因为
-此 Ubuntu 环境不假定安装原生 Node 或 Corepack。
-
-脚本先解析实际仓库根目录和当前物理路径，只有两者相同时才允许创建该 worktree
-自己的 `.wsl-runtime/`。目录若已存在会立即失败，绝不接管或删除。新目录和 WSL
-生命周期脚本都写入同一个随机 token 的所有权标记。脚本随后生成生产部署产物，
-将两个明确路径转换为 WSL 路径，并启动已保存的生命周期脚本。无论验证成功还是
-失败，`finally` 都只在标记仍匹配时清理 Windows 产物和精确的 WSL 脚本路径。
+从当前 linked worktree 根目录运行：
 
 ```powershell
-$ErrorActionPreference = 'Stop'
-$repoRoot = (Resolve-Path -LiteralPath (git rev-parse --show-toplevel)).Path
-$currentPath = (Resolve-Path -LiteralPath (Get-Location).ProviderPath).Path
-if (-not [StringComparer]::OrdinalIgnoreCase.Equals($currentPath, $repoRoot)) {
-  throw '拒绝重建：当前目录不是当前 linked worktree 顶层目录'
-}
-
-$runtimeDir = Join-Path $repoRoot '.wsl-runtime'
-$validationToken = [Guid]::NewGuid().ToString('N')
-$runtimeOwnerMarker = Join-Path $runtimeDir '.stay-fable-validation-owner'
-$lifecycleScript = "/tmp/stay-fable-wsl-validation-$validationToken.sh"
-$runtimeOwned = $false
-
-try {
-  # 在返回此 PowerShell 会话前，按“保存带所有权标记的生命周期脚本”步骤编辑脚本。
-  wsl.exe -d Ubuntu-22.04 -- env "VALIDATION_TOKEN=$validationToken" "LIFECYCLE_SCRIPT=$lifecycleScript" bash
-  if ($LASTEXITCODE -ne 0) { throw '生命周期脚本准备失败' }
-  wsl.exe -d Ubuntu-22.04 -- env "VALIDATION_TOKEN=$validationToken" bash -c 'set -eu; script="/tmp/stay-fable-wsl-validation-${VALIDATION_TOKEN}.sh"; marker="${script}.owner"; [ "$1" = "$script" ]; [ -f "$script" ]; [ -f "$marker" ]; [ "$(cat -- "$marker")" = "$VALIDATION_TOKEN" ]' -- $lifecycleScript
-  if ($LASTEXITCODE -ne 0) { throw '生命周期脚本或所有权标记无效' }
-
-  if (Test-Path -LiteralPath $runtimeDir) {
-    throw '检测到预先存在的 .wsl-runtime；拒绝接管或删除'
-  }
-  New-Item -ItemType Directory -Path $runtimeDir | Out-Null
-  $runtimeOwned = $true
-  Set-Content -LiteralPath $runtimeOwnerMarker -Value $validationToken -NoNewline
-
-  corepack pnpm --filter @stay-fable/api-server prisma:generate
-  if ($LASTEXITCODE -ne 0) { throw 'Prisma 客户端生成失败' }
-  corepack pnpm build
-  if ($LASTEXITCODE -ne 0) { throw '生产构建失败' }
-  corepack pnpm deploy --filter @stay-fable/api-server --prod (Join-Path $runtimeDir 'api')
-  if ($LASTEXITCODE -ne 0) { throw 'API 部署产物生成失败' }
-  corepack pnpm deploy --filter @stay-fable/job-worker --prod (Join-Path $runtimeDir 'worker')
-  if ($LASTEXITCODE -ne 0) { throw 'Worker 部署产物生成失败' }
-
-  $repoWsl = (wsl.exe -d Ubuntu-22.04 -- wslpath -a $repoRoot).Trim()
-  if ($LASTEXITCODE -ne 0 -or -not $repoWsl.StartsWith('/mnt/')) {
-    throw '仓库路径无法安全转换为 WSL drvfs 路径'
-  }
-  $runtimeWsl = (wsl.exe -d Ubuntu-22.04 -- wslpath -a $runtimeDir).Trim()
-  if ($LASTEXITCODE -ne 0 -or -not $runtimeWsl.StartsWith("$repoWsl/")) {
-    throw '部署产物路径无法安全转换为当前仓库下的 WSL 路径'
-  }
-
-  wsl.exe -d Ubuntu-22.04 -- env "VALIDATION_TOKEN=$validationToken" "REPO_ROOT=$repoWsl" "ARTIFACT_ROOT=$runtimeWsl" bash $lifecycleScript
-  if ($LASTEXITCODE -ne 0) { throw 'WSL 运行时验证失败' }
-}
-finally {
-  $cleanupFailed = $false
-  if ($runtimeOwned) {
-    try {
-      $cleanupCurrentPath = (Resolve-Path -LiteralPath (Get-Location).ProviderPath).Path
-      $cleanupRuntimeDir = Join-Path $repoRoot '.wsl-runtime'
-      if (
-        -not [StringComparer]::OrdinalIgnoreCase.Equals($cleanupCurrentPath, $repoRoot) -or
-        -not [StringComparer]::OrdinalIgnoreCase.Equals($cleanupRuntimeDir, $runtimeDir)
-      ) {
-        throw '当前目录或验证产物路径不符合预期，拒绝清理 .wsl-runtime'
-      }
-      if (-not (Test-Path -LiteralPath $runtimeOwnerMarker -PathType Leaf)) {
-        throw '.wsl-runtime 所有权标记缺失，拒绝清理'
-      }
-      $cleanupMarkerToken = Get-Content -LiteralPath $runtimeOwnerMarker -Raw
-      if (-not [StringComparer]::Ordinal.Equals($cleanupMarkerToken, $validationToken)) {
-        throw '.wsl-runtime 所有权标记不匹配，拒绝清理'
-      }
-      Remove-Item -LiteralPath $runtimeDir -Recurse -Force
-    }
-    catch {
-      Write-Warning $_
-      $cleanupFailed = $true
-    }
-  }
-
-  # 只删除本次 token 对应且 owner 标记仍匹配的两个精确 WSL 临时文件。
-  wsl.exe -d Ubuntu-22.04 -- env "VALIDATION_TOKEN=$validationToken" bash -c 'set -eu; script="/tmp/stay-fable-wsl-validation-${VALIDATION_TOKEN}.sh"; marker="${script}.owner"; [ "$1" = "$script" ]; if [ -e "$script" ] || [ -e "$marker" ]; then [ -f "$script" ] && [ -f "$marker" ] && [ "$(cat -- "$marker")" = "$VALIDATION_TOKEN" ]; rm -- "$script" "$marker"; fi' -- $lifecycleScript
-  if ($LASTEXITCODE -ne 0) {
-    Write-Warning '生命周期脚本所有权不匹配或清理失败，未删除未知文件'
-    $cleanupFailed = $true
-  }
-  if ($cleanupFailed) {
-    throw '验证清理未完整完成；未知或所有权不匹配的文件均已保留'
-  }
-}
-
-git status --short
+powershell -NoProfile -File scripts/wsl-runtime-validation.ps1
 ```
 
-这里的“生产部署产物”指 `corepack pnpm deploy --prod` 生成的运行包，不代表连接
-本机无 TLS 的依赖时把 `NODE_ENV` 伪装成生产环境。
+如发行版名称不同，可显式指定：
 
-## WSL 阶段
-
-以下内容是 `$lifecycleScript`（`/tmp/stay-fable-wsl-validation-$validationToken.sh`）的完整内容。PowerShell 已传入经过
-验证和 `wslpath` 转换的仓库、产物路径，因此这里不依赖 WSL Git，也不调用 WSL
-中的 Node 包管理工具。
-
-脚本在任何 Docker 变更前执行两次强制盘点。随后注册失败安全的 EXIT trap；清理
-只处理两个固定容器、隔离 Compose 项目和精确的 ext4 临时根目录
-`/tmp/stay-fable-wsl-validation`。Compose `down` 不带 `--volumes`，所以数据卷
-会保留。若固定容器名、同项目标签的容器或网络、或者 ext4 临时根目录已经存在，
-预检会直接失败，不会接管或清理它们。临时根目录由本次运行创建，并写入唯一所有权
-标记；清理时标记必须仍然匹配。Compose 也只有在本次运行开始创建资源且清理前标签、
-名称重新验证通过时才执行 `down`。
-
-API 就绪探测执行 20 次，每次请求最长 2 秒、连接超时 1 秒，失败后间隔 1 秒，
-因此最长 60 秒。Worker 随后执行完整的 10 分钟稳定性观察。
-
-```bash
-#!/usr/bin/env bash
-
-if [ -z "${REPO_ROOT:-}" ] || [ -z "${ARTIFACT_ROOT:-}" ]; then
-  echo '缺少已验证的 REPO_ROOT 或 ARTIFACT_ROOT' >&2
-  exit 1
-fi
-if ! repo_root="$(cd -- "$REPO_ROOT" && pwd -P)"; then
-  echo '无法解析仓库物理路径' >&2
-  exit 1
-fi
-if ! artifact_root="$(cd -- "$ARTIFACT_ROOT" && pwd -P)"; then
-  echo '无法解析部署产物物理路径' >&2
-  exit 1
-fi
-if [ "$artifact_root" != "$repo_root/.wsl-runtime" ]; then
-  echo '部署产物路径不属于当前仓库，停止验证' >&2
-  exit 1
-fi
-cd -- "$repo_root"
-
-if ! docker ps --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}'; then
-  echo '无法盘点运行中的容器，停止验证且不执行清理' >&2
-  exit 1
-fi
-if ! docker ps -a --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}'; then
-  echo '无法盘点全部容器，停止验证且不执行清理' >&2
-  exit 1
-fi
-for container_name in stay-fable-wsl-validation-api stay-fable-wsl-validation-worker; do
-  if ! listed_names="$(docker ps -a --filter "name=^/${container_name}$" --format '{{.Names}}')"; then
-    echo "无法检查验证容器名称冲突：${container_name}" >&2
-    exit 1
-  fi
-  if [ -n "$listed_names" ]; then
-    echo "验证容器已存在；先人工确认来源，脚本拒绝删除：${container_name}" >&2
-    exit 1
-  fi
-done
-
-validation_root="/tmp/stay-fable-wsl-validation"
-if ! project_containers="$(docker ps -a --filter "label=com.docker.compose.project=stay-fable-wsl-validation" --format '{{.Names}}')"; then
-  echo '无法检查隔离 Compose 项目的容器归属' >&2
-  exit 1
-fi
-if [ -n "$project_containers" ]; then
-  echo '隔离 Compose 项目已有容器；拒绝接管或清理' >&2
-  exit 1
-fi
-if ! project_networks="$(docker network ls --filter "label=com.docker.compose.project=stay-fable-wsl-validation" --format '{{.Name}}')"; then
-  echo '无法检查隔离 Compose 项目的网络归属' >&2
-  exit 1
-fi
-if [ -n "$project_networks" ]; then
-  echo '隔离 Compose 项目已有网络；拒绝接管或清理' >&2
-  exit 1
-fi
-if [ -e "$validation_root" ]; then
-  echo 'ext4 验证临时根目录已存在；拒绝接管或删除' >&2
-  exit 1
-fi
-
-validation_token="stay-fable-wsl-validation-$$-$(date +%s)-${RANDOM}"
-ownership_marker="$validation_root/.stay-fable-validation-owner"
-validation_root_owned=false
-compose_mutation_started=false
-
-cleanup_validation() {
-  local validation_status="$1"
-  local cleanup_failed=0
-  local container_name container_token listed_names
-  local cleanup_project_containers cleanup_project_networks
-  local project_resource labels_safe marker_token
-  trap - EXIT
-
-  for container_name in stay-fable-wsl-validation-api stay-fable-wsl-validation-worker; do
-    if ! listed_names="$(docker ps -a --filter "name=^/${container_name}$" --format '{{.Names}}')"; then
-      echo "无法查询验证容器：${container_name}" >&2
-      cleanup_failed=1
-      continue
-    fi
-    if [ -n "$listed_names" ]; then
-      if [ "$listed_names" != "$container_name" ]; then
-        echo "容器查询返回非预期名称，拒绝删除：${listed_names}" >&2
-        cleanup_failed=1
-      elif ! container_token="$(docker inspect --format '{{ index .Config.Labels "stay-fable.validation-token" }}' "$container_name")"; then
-        echo "无法读取验证容器所有权标签，拒绝删除：${container_name}" >&2
-        cleanup_failed=1
-      elif [ "$container_token" != "$validation_token" ]; then
-        echo "验证容器所有权标签不匹配，拒绝删除：${container_name}" >&2
-        cleanup_failed=1
-      elif ! docker rm -f "$container_name"; then
-        cleanup_failed=1
-      fi
-    fi
-
-    if ! listed_names="$(docker ps -a --filter "name=^/${container_name}$" --format '{{.Names}}')"; then
-      echo "无法验证容器已删除：${container_name}" >&2
-      cleanup_failed=1
-    elif [ -n "$listed_names" ]; then
-      echo "验证容器清理后仍存在：${container_name}" >&2
-      cleanup_failed=1
-    fi
-  done
-
-  if [ "$compose_mutation_started" = true ]; then
-    labels_safe=true
-    if ! cleanup_project_containers="$(docker ps -a --filter "label=com.docker.compose.project=stay-fable-wsl-validation" --format '{{.Names}}')"; then
-      echo '无法重新验证 Compose 容器标签，拒绝执行 down' >&2
-      cleanup_failed=1
-      labels_safe=false
-    else
-      while IFS= read -r project_resource; do
-        [ -z "$project_resource" ] && continue
-        case "$project_resource" in
-          stay-fable-wsl-validation-postgres-1 | stay-fable-wsl-validation-redis-1) ;;
-          *)
-            echo "Compose 项目包含非预期容器，拒绝执行 down：${project_resource}" >&2
-            cleanup_failed=1
-            labels_safe=false
-            ;;
-        esac
-      done <<<"$cleanup_project_containers"
-    fi
-    if ! cleanup_project_networks="$(docker network ls --filter "label=com.docker.compose.project=stay-fable-wsl-validation" --format '{{.Name}}')"; then
-      echo '无法重新验证 Compose 网络标签，拒绝执行 down' >&2
-      cleanup_failed=1
-      labels_safe=false
-    else
-      while IFS= read -r project_resource; do
-        [ -z "$project_resource" ] && continue
-        if [ "$project_resource" != "stay-fable-wsl-validation_default" ]; then
-          echo "Compose 项目包含非预期网络，拒绝执行 down：${project_resource}" >&2
-          cleanup_failed=1
-          labels_safe=false
-        fi
-      done <<<"$cleanup_project_networks"
-    fi
-    if [ "$labels_safe" = true ]; then
-      if ! POSTGRES_PORT=55432 REDIS_PORT=56379 docker compose --project-name stay-fable-wsl-validation -f infrastructure/compose.yaml down; then
-        cleanup_failed=1
-      fi
-    fi
-  fi
-
-  if [ "$validation_root_owned" = true ]; then
-    if [ "$validation_root" != "/tmp/stay-fable-wsl-validation" ]; then
-      echo '临时根目录不符合预期，拒绝清理' >&2
-      cleanup_failed=1
-    elif [ ! -f "$ownership_marker" ]; then
-      echo '临时根目录所有权标记缺失，拒绝清理' >&2
-      cleanup_failed=1
-    elif ! marker_token="$(cat -- "$ownership_marker")"; then
-      echo '无法读取临时根目录所有权标记，拒绝清理' >&2
-      cleanup_failed=1
-    elif [ "$marker_token" = "$validation_token" ]; then
-      if ! rm -rf -- "$validation_root"; then
-        cleanup_failed=1
-      fi
-    else
-      echo '临时根目录所有权标记不匹配，拒绝清理' >&2
-      cleanup_failed=1
-    fi
-  fi
-
-  if [ "$cleanup_failed" -ne 0 ]; then
-    return 1
-  fi
-  return "$validation_status"
-}
-trap 'cleanup_validation $?' EXIT
-set -Eeuo pipefail
-
-if [ "$validation_root" != "/tmp/stay-fable-wsl-validation" ]; then
-  echo '临时根目录守卫失败' >&2
-  exit 1
-fi
-if [ ! -d "$artifact_root/api" ] || [ ! -d "$artifact_root/worker" ]; then
-  echo 'API 或 Worker 部署产物不存在' >&2
-  exit 1
-fi
-mkdir -- "$validation_root"
-printf '%s\n' "$validation_token" > "$ownership_marker"
-validation_root_owned=true
-mkdir -- "$validation_root/api" "$validation_root/worker"
-cp -a -- "$artifact_root/api/." "$validation_root/api/"
-cp -a -- "$artifact_root/worker/." "$validation_root/worker/"
-
-for runtime_name in api worker; do
-  if [ ! -f "$validation_root/$runtime_name/dist/main.js" ]; then
-    echo "${runtime_name} 产物缺少 dist/main.js" >&2
-    exit 1
-  fi
-  if [ ! -f "$validation_root/$runtime_name/package.json" ]; then
-    echo "${runtime_name} 产物缺少 package.json" >&2
-    exit 1
-  fi
-  if [ ! -d "$validation_root/$runtime_name/node_modules" ]; then
-    echo "${runtime_name} 产物缺少 node_modules 目录" >&2
-    exit 1
-  fi
-done
-
-compose_mutation_started=true
-POSTGRES_PORT=55432 REDIS_PORT=56379 docker compose --project-name stay-fable-wsl-validation -f infrastructure/compose.yaml up -d --wait --wait-timeout 120
-POSTGRES_PORT=55432 REDIS_PORT=56379 docker compose --project-name stay-fable-wsl-validation -f infrastructure/compose.yaml ps
-
-POSTGRES_PORT=55432 REDIS_PORT=56379 docker compose --project-name stay-fable-wsl-validation -f infrastructure/compose.yaml exec -T postgres \
-  psql -U stay_fable -d stay_fable -c 'SELECT PostGIS_Lib_Version();'
-POSTGRES_PORT=55432 REDIS_PORT=56379 docker compose --project-name stay-fable-wsl-validation -f infrastructure/compose.yaml exec -T redis \
-  redis-cli ping
-
-docker run -d --name stay-fable-wsl-validation-api \
-  --network stay-fable-wsl-validation_default \
-  --label "stay-fable.validation-token=$validation_token" \
-  --user node --read-only --tmpfs /tmp \
-  --workdir /app -v "$validation_root/api:/app:ro" \
-  -p 127.0.0.1:53000:3000 \
-  -e NODE_ENV=development \
-  -e DATABASE_URL='postgresql://stay_fable:local_only_password@postgres:5432/stay_fable?schema=public&sslmode=disable' \
-  -e REDIS_URL='redis://redis:6379' \
-  node:24.14.1-bookworm-slim node dist/main.js
-
-docker run -d --name stay-fable-wsl-validation-worker \
-  --network stay-fable-wsl-validation_default \
-  --label "stay-fable.validation-token=$validation_token" \
-  --user node --read-only --tmpfs /tmp \
-  --workdir /app -v "$validation_root/worker:/app:ro" \
-  -e NODE_ENV=development \
-  -e REDIS_URL='redis://redis:6379' \
-  node:24.14.1-bookworm-slim node dist/main.js
-
-api_ready=false
-for attempt in $(seq 1 20); do
-  if curl --fail --silent --show-error --connect-timeout 1 --max-time 2 http://127.0.0.1:53000/health/ready >/dev/null; then
-    api_ready=true
-    break
-  fi
-  sleep 1
-done
-if [ "$api_ready" != true ]; then
-  echo 'API 未在 60 秒内就绪' >&2
-  docker logs stay-fable-wsl-validation-api >&2 || true
-  docker logs stay-fable-wsl-validation-worker >&2 || true
-  exit 1
-fi
-
-curl --fail --silent --show-error --connect-timeout 1 --max-time 2 -o /dev/null -w '/health/live HTTP %{http_code}\n' \
-  http://127.0.0.1:53000/health/live
-curl --fail --silent --show-error --connect-timeout 1 --max-time 2 -o /dev/null -w '/health/ready HTTP %{http_code}\n' \
-  http://127.0.0.1:53000/health/ready
-
-docker inspect --format \
-  'user={{.Config.User}} ReadonlyRootfs={{.HostConfig.ReadonlyRootfs}}' \
-  stay-fable-wsl-validation-api stay-fable-wsl-validation-worker
-
-worker_failure_log_pattern='("level" *: *(50|60)([,} ])|"level" *: *"(error|fatal)"|(^| )FATAL( |:)|uncaught *(exception)?|unhandled *(rejection)?|ECONN[A-Z_]*|reconnect(ion)? +loop)'
-for minute in $(seq 1 10); do
-  echo "Worker observation minute ${minute}/10"
-  worker_running="$(docker inspect --format '{{.State.Running}}' stay-fable-wsl-validation-worker)"
-  restart_count="$(docker inspect --format '{{.RestartCount}}' stay-fable-wsl-validation-worker)"
-  echo "Running=${worker_running} RestartCount=${restart_count}"
-  if [ "$worker_running" != true ] || [ "$restart_count" -ne 0 ]; then
-    echo 'Worker 在观察期间停止或发生重启' >&2
-    docker inspect --format 'status={{.State.Status}} running={{.State.Running}} RestartCount={{.RestartCount}}' \
-      stay-fable-wsl-validation-worker >&2 || true
-    docker logs stay-fable-wsl-validation-worker >&2 || true
-    exit 1
-  fi
-  worker_logs="$(docker logs --since 65s stay-fable-wsl-validation-worker 2>&1)"
-  printf '%s\n' "$worker_logs"
-  if printf '%s\n' "$worker_logs" | grep -Eiq "$worker_failure_log_pattern"; then
-    echo 'Worker 日志出现致命异常、连接失败或明确的重连循环' >&2
-    exit 1
-  fi
-  sleep 60
-done
-
-final_worker_running="$(docker inspect --format '{{.State.Running}}' stay-fable-wsl-validation-worker)"
-final_restart_count="$(docker inspect --format '{{.RestartCount}}' stay-fable-wsl-validation-worker)"
-echo "Running=${final_worker_running} RestartCount=${final_restart_count}"
-if [ "$final_worker_running" != true ] || [ "$final_restart_count" -ne 0 ]; then
-  echo 'Worker 最终状态不是运行中或重启次数非零' >&2
-  docker inspect --format 'status={{.State.Status}} running={{.State.Running}} RestartCount={{.RestartCount}}' \
-    stay-fable-wsl-validation-worker >&2 || true
-  docker logs stay-fable-wsl-validation-worker >&2 || true
-  exit 1
-fi
-final_worker_logs="$(docker logs --since 10m stay-fable-wsl-validation-worker 2>&1)"
-printf '%s\n' "$final_worker_logs"
-if printf '%s\n' "$final_worker_logs" | grep -Eiq "$worker_failure_log_pattern"; then
-  echo 'Worker 最终日志出现致命异常、连接失败或明确的重连循环' >&2
-  exit 1
-fi
-
-if cleanup_validation 0; then
-  echo '验证资源清理完成'
-else
-  echo '验证资源清理失败' >&2
-  exit 1
-fi
-test ! -e "$validation_root"
+```powershell
+powershell -NoProfile -File scripts/wsl-runtime-validation.ps1 -Distro Ubuntu-22.04
 ```
 
-## 3. 必须记录的证据
+脚本会执行以下步骤：
 
-PostGIS 查询与 Redis 探测必须成功，例如：
+1. 在 Windows 生成 Prisma Client，并构建、部署 API 与 Worker 生产运行包。
+2. 原子获取带本次随机所有权令牌的 Docker 锁，然后在隔离的
+   `stay-fable-wsl-validation` Compose 项目中启动 PostgreSQL/PostGIS 和 Redis，
+   宿主端口分别为 `55432`、`56379`。
+3. 通过 Windows Prisma CLI 连接 WSL 转发的 PostgreSQL，执行迁移和种子数据。
+   这样可以避免依赖 WSL Node，也不会把 Windows Prisma 引擎放进 Linux 容器运行。
+4. 以固定摘要的 Node 镜像、`user=node`、只读根文件系统启动 API 和 Worker。
+   API 仅监听 `127.0.0.1:3000`。
+5. 验证 PostGIS、Redis、健康探针、用户与文件系统权限，并运行身份隔离、城市种子、
+   PostGIS 定位解析、刷新令牌轮换及重放拒绝冒烟测试。
+6. 连续观察 Worker 10 分钟，要求始终运行、重启次数为零，且日志无致命错误、
+   连接错误或重连循环。
+7. 无论成功或失败，都只清理由本次随机所有权令牌创建的容器、网络和临时目录。
+   Compose 清理不带 `--volumes`，不会删除数据库卷。
+
+## 成功标志
+
+完整成功运行应同时出现：
 
 ```text
- postgis_lib_version
----------------------
- 3.5.2
-(1 row)
-
+PostGIS
 PONG
-```
-
-API 探测必须记录：
-
-```text
 /health/live HTTP 200
 /health/ready HTTP 200
-user=node ReadonlyRootfs=true
-user=node ReadonlyRootfs=true
+identity isolation: pass
+seeded cities: pass
+PostGIS location resolution: pass
+refresh rotation and replay rejection: pass
+SLICE1_RUNTIME_STABLE_10_MINUTES
+SLICE1_RUNTIME_CLEANUP_COMPLETE
 ```
 
-就绪循环共 20 次，每次请求最长 2 秒、连接超时 1 秒、失败后间隔 1 秒，因此最长
-60 秒。已证明的实机运行中，ext4 副本挂载后 API 在 1 秒内就绪；Worker 连续稳定
-10 分 55 秒，每次及最终检查均为 `Running=true`、`RestartCount=0`，没有致命
-Pino/Node/Redis 事件或明确的 reconnect loop。执行新一轮验收时仍须完整运行并
-记录自己的 10 分钟观察，不能只引用这组历史证据。
+API 与 Worker 的检查结果还必须包含 `user=node`、`readonly=true`，每分钟 Worker
+状态必须为 `Running=true RestartCount=0`。
 
-本地隔离网络使用 `redis://redis:6379` 和关闭 TLS 的数据库 URL。真实生产环境
-必须设置 `NODE_ENV=production`，Redis 必须使用可信证书保护的 `rediss://` URL，
-数据库也必须启用 TLS。
+## 所有权与安全边界
 
-## 4. 清理确认
+- 开始前必须位于当前 worktree 根目录，且 `.wsl-runtime`、固定验证容器名和隔离
+  Compose 项目均不存在；存在时脚本拒绝接管。
+- 固定名称的锁容器通过 Docker 的名称唯一性原子串行化验证；并发第二次运行即使同时
+  通过只读预检，也无法取得锁，因而不会创建或清理另一运行的 PostgreSQL、Redis 或网络。
+- 清理锁之前必须重新核对随机所有权令牌；固定 Compose 项目复用命名数据卷，从而支持
+  第二次运行验证“无待执行迁移”，且 `down` 不删除数据卷。
+- Windows 端口 `3000` 已被占用时脚本直接失败，不停止现有服务。
+- 清理前重新核对随机所有权令牌；无法证明归属时保留资源并报错。
+- 不执行 `docker system prune`，不停止或删除无关容器。已有的本地服务不属于本流程。
+- 本地验证使用开发凭据、明文容器网络和模拟身份。生产环境仍必须使用 TLS、真实微信
+  身份适配器、密钥管理和最小权限网络策略。
 
-成功路径和失败路径共用清理函数。它对两个固定名称分别进行删除前精确查询、定向
-删除和删除后查询，再关闭 `stay-fable-wsl-validation` Compose 项目，并删除精确
-ext4 临时根目录。不得停止或删除清单中的无关容器。
-
-PowerShell 的 `finally` 删除 `.wsl-runtime/` 后运行 `git status --short`。验证
-产物不应出现在工作树中；清理会保留 Compose 命名数据卷，也不会删除 PostgreSQL
-或 Redis 数据。
+当前 Slice 1 的实测记录见
+[`2026-07-29-slice-1-identity-search.md`](../verification/2026-07-29-slice-1-identity-search.md)。

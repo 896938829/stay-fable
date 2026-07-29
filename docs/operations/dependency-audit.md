@@ -1,6 +1,6 @@
 # 依赖审计证据
 
-审计日期：2026-07-27。执行命令：
+审计日期：2026-07-29。执行命令：
 
 Current audit summary: 2 CRITICAL, 11 HIGH
 Current release conclusion: Blocked

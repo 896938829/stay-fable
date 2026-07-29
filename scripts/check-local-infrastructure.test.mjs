@@ -37,6 +37,27 @@ test("documents the required WSL2 runtime verification", async () => {
   );
 
   assert.match(guide, /wsl\.exe -l -v[\s\S]*Ubuntu-22\.04[\s\S]*WSL\s*2/i);
+  if (guide.includes("scripts/wsl-runtime-validation.ps1")) {
+    const windowsScript = await readFile(
+      new URL("scripts/wsl-runtime-validation.ps1", rootUrl),
+      "utf8",
+    );
+    const wslScript = await readFile(new URL("scripts/wsl-runtime-validation.sh", rootUrl), "utf8");
+
+    assert.match(guide, /powershell -NoProfile -File scripts\/wsl-runtime-validation\.ps1/);
+    assert.match(guide, /10 分钟[\s\S]*Running=true RestartCount=0/);
+    assert.match(guide, /不停止或删除无关容器/);
+    assert.match(windowsScript, /git rev-parse --show-toplevel/);
+    assert.match(windowsScript, /Get-NetTCPConnection -LocalPort 3000 -State Listen/);
+    assert.match(windowsScript, /finally \{[\s\S]*Runtime ownership check failed/);
+    assert.match(wslScript, /docker ps --format[\s\S]*docker ps -a --format/);
+    assert.match(wslScript, /--user node --read-only --tmpfs \/tmp/);
+    assert.match(wslScript, /SLICE1_RUNTIME_STABLE_10_MINUTES/);
+    assert.match(wslScript, /SLICE1_RUNTIME_CLEANUP_COMPLETE/);
+    assert.doesNotMatch(wslScript, /docker compose[^\r\n]*down[^\r\n]*--volumes/);
+    return;
+  }
+
   assert.doesNotMatch(guide, /^docker ps(?: -a)? --format [^\r\n]+\|\| true$/m);
   const inventoryBlock = guide.match(
     /if ! docker ps --format [^\r\n]+; then[\s\S]*exit 1[\s\S]*fi[\s\S]*if ! docker ps -a --format [^\r\n]+; then[\s\S]*exit 1[\s\S]*fi/,
