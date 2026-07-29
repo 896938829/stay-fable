@@ -15,6 +15,10 @@
     "./location": {
       "types": "./src/location.ts",
       "default": "./dist/src/location.js"
+    },
+    "./catalog": {
+      "types": "./src/catalog.ts",
+      "default": "./dist/src/catalog.js"
     }
   },
   "scripts": {
