@@ -38,7 +38,10 @@ const isCatalogResource = (value: string) => {
   if (value.startsWith("/images/")) {
     return (
       localImagePathPattern.test(value) &&
-      value.split("/").slice(2).every((segment) => segment !== "." && segment !== "..")
+      value
+        .split("/")
+        .slice(2)
+        .every((segment) => segment !== "." && segment !== "..")
     );
   }
 
@@ -55,10 +58,7 @@ const isCatalogResource = (value: string) => {
   }
 };
 
-export const catalogResourceSchema = z
-  .string()
-  .max(500)
-  .refine(isCatalogResource);
+export const catalogResourceSchema = z.string().max(500).refine(isCatalogResource);
 
 const moneyCentsSchema = z.number().int().nonnegative().safe();
 

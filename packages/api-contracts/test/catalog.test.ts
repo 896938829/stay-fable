@@ -84,7 +84,9 @@ const roomTypeDetail = {
 
 describe("catalog contracts", () => {
   it("accepts fixed-UUID valid property list, property detail, and room type detail payloads", () => {
-    expect(propertyListResponseSchema.parse({ items: [propertyListItem], next_cursor: null })).toEqual({
+    expect(
+      propertyListResponseSchema.parse({ items: [propertyListItem], next_cursor: null }),
+    ).toEqual({
       items: [propertyListItem],
       next_cursor: null,
     });
@@ -198,9 +200,9 @@ describe("catalog contracts", () => {
   });
 
   it("accepts only well-formed HTTPS URLs and safe local image paths", () => {
-    expect(catalogResourceSchema.parse("https://cdn.example.com/images/photo.jpg?width=480#hero")).toBe(
-      "https://cdn.example.com/images/photo.jpg?width=480#hero",
-    );
+    expect(
+      catalogResourceSchema.parse("https://cdn.example.com/images/photo.jpg?width=480#hero"),
+    ).toBe("https://cdn.example.com/images/photo.jpg?width=480#hero");
     expect(catalogResourceSchema.parse("/images/rooms/lake_view-1.0.jpg")).toBe(
       "/images/rooms/lake_view-1.0.jpg",
     );
@@ -232,7 +234,9 @@ describe("catalog contracts", () => {
         ignored: true,
       }).success,
     ).toBe(false);
-    expect(propertyDetailSchema.safeParse({ ...propertyDetail, ignored: true }).success).toBe(false);
+    expect(propertyDetailSchema.safeParse({ ...propertyDetail, ignored: true }).success).toBe(
+      false,
+    );
     expect(
       propertyDetailSchema.safeParse({
         ...propertyDetail,
@@ -258,7 +262,9 @@ describe("catalog contracts", () => {
         nightly_prices: Array.from({ length: 30 }, () => roomTypeDetail.nightly_prices[0]),
       }).nightly_prices,
     ).toHaveLength(30);
-    expect(roomTypeDetailSchema.safeParse({ ...roomTypeDetail, nightly_prices: [] }).success).toBe(false);
+    expect(roomTypeDetailSchema.safeParse({ ...roomTypeDetail, nightly_prices: [] }).success).toBe(
+      false,
+    );
     expect(
       roomTypeDetailSchema.safeParse({
         ...roomTypeDetail,
@@ -268,8 +274,15 @@ describe("catalog contracts", () => {
   });
 
   it("rejects inventory and optimistic-lock fields from public room type detail", () => {
-    for (const forbidden of ["total_inventory", "held_inventory", "sold_inventory", "version"] as const) {
-      expect(roomTypeDetailSchema.safeParse({ ...roomTypeDetail, [forbidden]: 1 }).success).toBe(false);
+    for (const forbidden of [
+      "total_inventory",
+      "held_inventory",
+      "sold_inventory",
+      "version",
+    ] as const) {
+      expect(roomTypeDetailSchema.safeParse({ ...roomTypeDetail, [forbidden]: 1 }).success).toBe(
+        false,
+      );
     }
   });
 });
