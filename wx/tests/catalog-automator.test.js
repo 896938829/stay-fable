@@ -402,21 +402,22 @@ describe("catalog automator runtime UI evidence", () => {
       .mockResolvedValue({ confirmed: true });
     const miniprogram = createModalMiniProgram(confirmModal);
     const originalReference = globalThis.wx.showModal;
-    await catalogAutomator.installBookingModalProbe(miniprogram);
+    const install =
+      await catalogAutomator.installBookingModalProbe(miniprogram);
     globalThis.wx.showModal(expectedBookingNotice);
 
     await expect(
       catalogAutomator.confirmBookingModal(
         miniprogram,
         catalogAutomator.createCancellationContext(),
-        { pollIntervalMs: 0, timeoutMs: 100 },
+        { install, pollIntervalMs: 0, timeoutMs: 100 },
       ),
     ).resolves.toEqual({ confirmed: true });
     expect(miniprogram.native).toHaveBeenCalledTimes(3);
     expect(confirmModal).toHaveBeenCalledTimes(3);
     expect(originalShowModal).toHaveBeenCalledWith(expectedBookingNotice);
 
-    await catalogAutomator.restoreBookingModalProbe(miniprogram);
+    await catalogAutomator.restoreBookingModalProbe(miniprogram, install);
     expect(globalThis.wx.showModal).toBe(originalReference);
   });
 
@@ -436,19 +437,20 @@ describe("catalog automator runtime UI evidence", () => {
     vi.stubGlobal("wx", { showModal: originalShowModal });
     const confirmModal = vi.fn(async () => ({}));
     const miniprogram = createModalMiniProgram(confirmModal);
-    await catalogAutomator.installBookingModalProbe(miniprogram);
+    const install =
+      await catalogAutomator.installBookingModalProbe(miniprogram);
     globalThis.wx.showModal(notice);
 
     await expect(
       catalogAutomator.confirmBookingModal(
         miniprogram,
         catalogAutomator.createCancellationContext(),
-        { pollIntervalMs: 0, timeoutMs: 5 },
+        { install, pollIntervalMs: 0, timeoutMs: 5 },
       ),
     ).rejects.toThrow("booking modal probe timed out");
     expect(confirmModal).not.toHaveBeenCalled();
 
-    await catalogAutomator.restoreBookingModalProbe(miniprogram);
+    await catalogAutomator.restoreBookingModalProbe(miniprogram, install);
   });
 
   it("rejects native confirmation when no real modal probe was observed", async () => {
@@ -456,18 +458,19 @@ describe("catalog automator runtime UI evidence", () => {
     vi.stubGlobal("wx", { showModal: originalShowModal });
     const confirmModal = vi.fn(async () => ({}));
     const miniprogram = createModalMiniProgram(confirmModal);
-    await catalogAutomator.installBookingModalProbe(miniprogram);
+    const install =
+      await catalogAutomator.installBookingModalProbe(miniprogram);
 
     await expect(
       catalogAutomator.confirmBookingModal(
         miniprogram,
         catalogAutomator.createCancellationContext(),
-        { pollIntervalMs: 0, timeoutMs: 5 },
+        { install, pollIntervalMs: 0, timeoutMs: 5 },
       ),
     ).rejects.toThrow("booking modal probe timed out");
     expect(confirmModal).not.toHaveBeenCalled();
 
-    await catalogAutomator.restoreBookingModalProbe(miniprogram);
+    await catalogAutomator.restoreBookingModalProbe(miniprogram, install);
   });
 
   it("restores showModal when probe installation completes remotely but its response is late", async () => {
@@ -495,6 +498,93 @@ describe("catalog automator runtime UI evidence", () => {
     expect(operation).not.toHaveBeenCalled();
     expect(globalThis.wx.showModal).toBe(originalShowModal);
     installResponse.resolve(true);
+  });
+
+  it("uses a unique token for every booking modal probe", async () => {
+    const originalShowModal = vi.fn(() => Promise.resolve({}));
+    vi.stubGlobal("wx", { showModal: originalShowModal });
+    const miniprogram = createModalMiniProgram();
+
+    const first = await catalogAutomator.installBookingModalProbe(miniprogram);
+    await catalogAutomator.restoreBookingModalProbe(miniprogram, first);
+    const second = await catalogAutomator.installBookingModalProbe(miniprogram);
+    await catalogAutomator.restoreBookingModalProbe(miniprogram, second);
+
+    expect(first).toMatchObject({ token: expect.any(String) });
+    expect(second).toMatchObject({ token: expect.any(String) });
+    expect(first.token).not.toBe(second.token);
+    expect(globalThis.wx.showModal).toBe(originalShowModal);
+  });
+
+  it("does not wrap showModal when restore records cancellation before a late install", async () => {
+    const originalShowModal = vi.fn(() => Promise.resolve({}));
+    vi.stubGlobal("wx", { showModal: originalShowModal });
+    const installResponse = deferred();
+    let finishInstall;
+    let evaluateCalls = 0;
+    const miniprogram = {
+      evaluate: vi.fn((callback, ...arguments_) => {
+        evaluateCalls += 1;
+        if (evaluateCalls === 1) {
+          finishInstall = () => {
+            const result = callback(...arguments_);
+            installResponse.resolve(result);
+          };
+          return installResponse.promise;
+        }
+        return callback(...arguments_);
+      }),
+    };
+
+    await expect(
+      catalogAutomator.withBookingModalProbe(
+        miniprogram,
+        catalogAutomator.createCancellationContext(),
+        vi.fn(async () => {}),
+        { lateSettleMs: 1, timeoutMs: 1 },
+      ),
+    ).rejects.toThrow("install booking modal probe timed out");
+
+    expect(globalThis.wx.showModal).toBe(originalShowModal);
+    finishInstall();
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    expect(globalThis.wx.showModal).toBe(originalShowModal);
+  });
+
+  it("restores a probe whose install settles after the bounded cleanup wait", async () => {
+    const originalShowModal = vi.fn(() => Promise.resolve({}));
+    vi.stubGlobal("wx", { showModal: originalShowModal });
+    const installResponse = deferred();
+    let finishInstall;
+    let evaluateCalls = 0;
+    const miniprogram = {
+      evaluate: vi.fn((callback, ...arguments_) => {
+        evaluateCalls += 1;
+        if (evaluateCalls === 1) {
+          finishInstall = () => {
+            const result = callback(...arguments_);
+            installResponse.resolve(result);
+          };
+          return installResponse.promise;
+        }
+        return callback(...arguments_);
+      }),
+    };
+
+    await expect(
+      catalogAutomator.withBookingModalProbe(
+        miniprogram,
+        catalogAutomator.createCancellationContext(),
+        vi.fn(async () => {}),
+        { lateSettleMs: 1, timeoutMs: 1 },
+      ),
+    ).rejects.toThrow("install booking modal probe timed out");
+    finishInstall();
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    expect(globalThis.wx.showModal).toBe(originalShowModal);
+    expect(miniprogram.evaluate.mock.calls.length).toBeGreaterThanOrEqual(3);
   });
 });
 
@@ -1001,7 +1091,7 @@ describe("catalog automator isolated runs and search restoration", () => {
       },
     );
 
-    expect(miniprogram.store.clear).toHaveBeenCalledOnce();
+    expect(miniprogram.store.clear.mock.calls.length).toBeGreaterThanOrEqual(2);
     expect(miniprogram.readSearch()).toBeUndefined();
   });
 
@@ -1099,4 +1189,142 @@ describe("catalog automator isolated runs and search restoration", () => {
       expect(events.at(-1)).toBe("close");
     });
   }
+
+  it("restores again when apply settles between the first restore and the old condition check", async () => {
+    const { evidencePath, projectPath, root } = await createRunPaths();
+    const original = {
+      city: null,
+      checkin: "2026-08-08",
+      checkout: "2026-08-09",
+      guests: 2,
+    };
+    let search = structuredClone(original);
+    const events = [];
+    const applyResponse = deferred();
+    let finishApply;
+    const store = {
+      get: vi.fn(() => structuredClone(search)),
+      set: vi.fn((value) => {
+        search = structuredClone(value);
+        return structuredClone(search);
+      }),
+    };
+    vi.stubGlobal("getApp", () => ({ globalData: { searchStore: store } }));
+    const miniProgram = {
+      close: vi.fn(async () => events.push("close")),
+      currentPage: vi.fn(async () => null),
+      evaluate: vi.fn((callback, ...arguments_) => {
+        const source = callback.toString();
+        if (source.includes("store.set(value)")) {
+          finishApply = () => {
+            events.push("apply-set");
+            const result = callback(...arguments_);
+            events.push("apply-response");
+            applyResponse.resolve(result);
+          };
+          return applyResponse.promise;
+        }
+        if (source.includes("snapshot.hasValue")) {
+          events.push("restore");
+          const restored = callback(...arguments_);
+          if (events.filter((event) => event === "restore").length === 1) {
+            finishApply();
+          }
+          return Promise.resolve(restored);
+        }
+        events.push("snapshot");
+        return Promise.resolve(callback(...arguments_));
+      }),
+      reLaunch: vi.fn(async () => {}),
+      readSearch: () => structuredClone(search),
+    };
+
+    await expect(
+      catalogAutomator.run(
+        projectPath,
+        evidencePath,
+        path.join(root, "wechat-cli.bat"),
+        {
+          automatorApi: { launch: vi.fn(async () => miniProgram) },
+          environment: {},
+          timeouts: { actionMs: 1, lateSettleMs: 100 },
+          workflow: vi.fn(async () => {
+            throw new Error("workflow must not start");
+          }),
+        },
+      ),
+    ).rejects.toMatchObject({ step: "fixture" });
+
+    expect(events.filter((event) => event === "restore").length).toBeGreaterThanOrEqual(
+      2,
+    );
+    expect(miniProgram.readSearch()).toEqual(original);
+    expect(events.at(-1)).toBe("close");
+  });
+
+  it("restores after fixture apply settles beyond the bounded cleanup wait", async () => {
+    const { evidencePath, projectPath, root } = await createRunPaths();
+    const original = {
+      city: null,
+      checkin: "2026-08-10",
+      checkout: "2026-08-11",
+      guests: 1,
+    };
+    let search = structuredClone(original);
+    const events = [];
+    const store = {
+      get: vi.fn(() => structuredClone(search)),
+      set: vi.fn((value) => {
+        search = structuredClone(value);
+        return structuredClone(search);
+      }),
+    };
+    vi.stubGlobal("getApp", () => ({ globalData: { searchStore: store } }));
+    const miniProgram = {
+      close: vi.fn(async () => events.push("close")),
+      currentPage: vi.fn(async () => null),
+      evaluate: vi.fn((callback, ...arguments_) => {
+        const source = callback.toString();
+        if (source.includes("store.set(value)")) {
+          return new Promise((resolve) => {
+            setTimeout(() => {
+              events.push("apply-set");
+              const result = callback(...arguments_);
+              events.push("apply-response");
+              resolve(result);
+            }, 20);
+          });
+        }
+        events.push(source.includes("snapshot.hasValue") ? "restore" : "snapshot");
+        return Promise.resolve(callback(...arguments_));
+      }),
+      reLaunch: vi.fn(async () => {}),
+      readSearch: () => structuredClone(search),
+    };
+
+    await expect(
+      catalogAutomator.run(
+        projectPath,
+        evidencePath,
+        path.join(root, "wechat-cli.bat"),
+        {
+          automatorApi: { launch: vi.fn(async () => miniProgram) },
+          environment: {},
+          timeouts: { actionMs: 1, lateSettleMs: 1 },
+          workflow: vi.fn(async () => {
+            throw new Error("workflow must not start");
+          }),
+        },
+      ),
+    ).rejects.toMatchObject({ step: "fixture" });
+    await new Promise((resolve) => setTimeout(resolve, 40));
+
+    expect(events.filter((event) => event === "restore").length).toBeGreaterThanOrEqual(
+      3,
+    );
+    expect(events.lastIndexOf("restore")).toBeGreaterThan(
+      events.indexOf("apply-response"),
+    );
+    expect(miniProgram.readSearch()).toEqual(original);
+  });
 });

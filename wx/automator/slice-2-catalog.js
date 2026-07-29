@@ -33,7 +33,8 @@ const BOOKING_NOTICE = Object.freeze({
   content: "报价与预订将在下一开发切片开放",
   showCancel: false,
 });
-const BOOKING_MODAL_PROBE_KEY = "__stayFableCatalogBookingModalProbe";
+const BOOKING_MODAL_PROBE_STATE_KEY =
+  "__stayFableCatalogBookingModalProbeState";
 const ACTION_TIMEOUT_MS = 10_000;
 const WORKFLOW_TIMEOUT_MS = 120_000;
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
@@ -334,7 +335,6 @@ async function captureCatalogSearch(
 }
 
 function startCatalogFixtureApply(miniprogram) {
-  let isSettled = false;
   const settled = Promise.resolve()
     .then(() =>
       miniprogram.evaluate((value) => {
@@ -355,17 +355,9 @@ function startCatalogFixtureApply(miniprogram) {
     .then((fixture) => {
       assert.deepEqual(fixture, CATALOG_SEARCH_FIXTURE);
       return fixture;
-    })
-    .finally(() => {
-      isSettled = true;
     });
   settled.catch(() => undefined);
-  return {
-    get isSettled() {
-      return isSettled;
-    },
-    settled,
-  };
+  return { settled };
 }
 
 async function waitForCatalogFixtureApply(
@@ -519,23 +511,26 @@ function waitForElementCount(
   );
 }
 
-async function installBookingModalProbe(
-  miniprogram,
-  context,
-  timeoutMs = ACTION_TIMEOUT_MS,
-) {
-  const cancellation = context || createCancellationContext();
-  const installed = await runInteraction(
-    cancellation,
-    "install booking modal probe",
-    () =>
-      miniprogram.evaluate((probeKey) => {
+function startBookingModalProbeInstall(miniprogram) {
+  const token = randomUUID();
+  const settled = Promise.resolve()
+    .then(() =>
+      miniprogram.evaluate((stateKey, probeToken) => {
         const runtime = globalThis;
         const wxApi = runtime.wx;
         if (!wxApi || typeof wxApi.showModal !== "function") {
           return false;
         }
-        const prior = runtime[probeKey];
+        const state =
+          runtime[stateKey] ||
+          (runtime[stateKey] = {
+            cancelled: Object.create(null),
+            probes: Object.create(null),
+          });
+        if (state.cancelled[probeToken] === true) {
+          return false;
+        }
+        const prior = state.probes[probeToken];
         if (
           prior &&
           typeof prior.original === "function" &&
@@ -564,61 +559,91 @@ async function installBookingModalProbe(
           return Reflect.apply(original, this, arguments);
         };
         probe.wrapped = wrapped;
-        runtime[probeKey] = probe;
+        state.probes[probeToken] = probe;
         wxApi.showModal = wrapped;
         return true;
-      }, BOOKING_MODAL_PROBE_KEY),
-    timeoutMs,
-  );
-  if (installed !== true) {
-    throw new Error("booking modal probe unavailable");
-  }
+      }, BOOKING_MODAL_PROBE_STATE_KEY, token),
+    )
+    .then((installed) => {
+      if (installed !== true) {
+        throw new Error("booking modal probe unavailable");
+      }
+      return true;
+    });
+  settled.catch(() => undefined);
+  return { settled, token };
 }
 
-function readBookingModalProbe(
+async function installBookingModalProbe(
   miniprogram,
   context,
   timeoutMs = ACTION_TIMEOUT_MS,
 ) {
   const cancellation = context || createCancellationContext();
+  const install = startBookingModalProbeInstall(miniprogram);
+  await runInteraction(
+    cancellation,
+    "install booking modal probe",
+    () => install.settled,
+    timeoutMs,
+  );
+  return install;
+}
+
+function readBookingModalProbe(
+  miniprogram,
+  install,
+  context,
+  timeoutMs = ACTION_TIMEOUT_MS,
+) {
+  const cancellation = context || createCancellationContext();
+  const token = install && install.token;
   return runInteraction(
     cancellation,
     "read booking modal probe",
     () =>
-      miniprogram.evaluate((probeKey) => {
-        const probe = globalThis[probeKey];
+      miniprogram.evaluate((stateKey, probeToken) => {
+        const state = globalThis[stateKey];
+        const probe = state && state.probes[probeToken];
         return probe && probe.latest ? probe.latest : null;
-      }, BOOKING_MODAL_PROBE_KEY),
+      }, BOOKING_MODAL_PROBE_STATE_KEY, token),
     timeoutMs,
   );
 }
 
 async function restoreBookingModalProbe(
   miniprogram,
+  install,
   context,
   timeoutMs = ACTION_TIMEOUT_MS,
 ) {
   const cancellation = context || createCancellationContext();
+  const token = install && install.token;
   await runInteraction(
     cancellation,
     "restore booking modal probe",
     () =>
-      miniprogram.evaluate((probeKey) => {
+      miniprogram.evaluate((stateKey, probeToken) => {
         const runtime = globalThis;
-        const probe = runtime[probeKey];
-        if (!probe) {
-          return true;
-        }
+        const state =
+          runtime[stateKey] ||
+          (runtime[stateKey] = {
+            cancelled: Object.create(null),
+            probes: Object.create(null),
+          });
+        state.cancelled[probeToken] = true;
+        const probe = state.probes[probeToken];
         if (
+          probe &&
           runtime.wx &&
           runtime.wx.showModal === probe.wrapped &&
           typeof probe.original === "function"
         ) {
           runtime.wx.showModal = probe.original;
         }
-        delete runtime[probeKey];
+        delete state.probes[probeToken];
         return true;
-      }, BOOKING_MODAL_PROBE_KEY),
+      }, BOOKING_MODAL_PROBE_STATE_KEY, token),
     timeoutMs,
   );
 }
@@ -629,21 +654,44 @@ async function withBookingModalProbe(
   operation,
   options = {},
 ) {
+  const install = startBookingModalProbeInstall(miniprogram);
   let primaryFailure = null;
   try {
-    await installBookingModalProbe(
-      miniprogram,
-      context,
+    await runInteraction(
+      context || createCancellationContext(),
+      "install booking modal probe",
+      () => install.settled,
       options.timeoutMs ?? ACTION_TIMEOUT_MS,
     );
-    return await operation();
+    return await operation(install);
   } catch (error) {
     primaryFailure = error;
     throw error;
   } finally {
+    const restoreAfterSettle = install.settled.finally(() =>
+      restoreBookingModalProbe(
+        miniprogram,
+        install,
+        createCancellationContext(),
+        options.timeoutMs ?? ACTION_TIMEOUT_MS,
+      ),
+    );
+    restoreAfterSettle.catch(() => undefined);
+    try {
+      await withTimeout(
+        "late booking modal probe install",
+        () => install.settled,
+        options.lateSettleMs ??
+          options.timeoutMs ??
+          ACTION_TIMEOUT_MS,
+      );
+    } catch {
+      // The token tombstone below prevents a later install from wrapping.
+    }
     try {
       await restoreBookingModalProbe(
         miniprogram,
+        install,
         createCancellationContext(),
         options.timeoutMs ?? ACTION_TIMEOUT_MS,
       );
@@ -662,6 +710,7 @@ function confirmBookingModal(miniprogram, context, options = {}) {
     () =>
       readBookingModalProbe(
         miniprogram,
+        options.install,
         cancellation,
         options.timeoutMs ?? ACTION_TIMEOUT_MS,
       ),
@@ -1141,11 +1190,11 @@ async function catalogWorkflow(
     context,
   );
   stepTracker.enter("booking-notice");
-  await withBookingModalProbe(miniprogram, context, async () => {
+  await withBookingModalProbe(miniprogram, context, async (install) => {
     await runInteraction(context, "show booking notice", () =>
       roomSelection.tap(),
     );
-    await confirmBookingModal(miniprogram, context);
+    await confirmBookingModal(miniprogram, context, { install });
   });
 
   stepTracker.enter("return-to-list");
@@ -1379,18 +1428,30 @@ async function run(
   }
   let searchRestored = originalSearch === undefined;
   if (originalSearch !== undefined) {
-    try {
-      await restoreCatalogSearch(
-        miniprogram,
-        originalSearch,
-        createCancellationContext(),
-        timeouts.actionMs,
+    let restoreQueue = Promise.resolve();
+    const restoreOriginalSearch = () => {
+      const restoration = restoreQueue.then(() =>
+        restoreCatalogSearch(
+          miniprogram,
+          originalSearch,
+          createCancellationContext(),
+          timeouts.actionMs,
+        ),
       );
+      restoreQueue = restoration.catch(() => undefined);
+      return restoration;
+    };
+    try {
+      await restoreOriginalSearch();
       searchRestored = true;
     } catch {
       searchRestored = false;
     }
-    if (fixtureApply && !fixtureApply.isSettled) {
+    if (fixtureApply) {
+      const restoreAfterSettle = fixtureApply.settled.finally(() =>
+        restoreOriginalSearch(),
+      );
+      restoreAfterSettle.catch(() => undefined);
       try {
         await withTimeout(
           "late fixture apply",
@@ -1401,12 +1462,7 @@ async function run(
         // Closing the connection below bounds an apply that never settles.
       }
       try {
-        await restoreCatalogSearch(
-          miniprogram,
-          originalSearch,
-          createCancellationContext(),
-          timeouts.actionMs,
-        );
+        await restoreOriginalSearch();
         searchRestored = true;
       } catch {
         searchRestored = false;
