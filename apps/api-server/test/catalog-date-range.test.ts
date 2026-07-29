@@ -8,7 +8,12 @@ const clockAt = (instant: string): Clock => ({ now: () => new Date(instant) });
 
 const expectRejected = (
   callback: () => unknown,
-  code: "CATALOG_DATE_RANGE_INVALID" | "CATALOG_CHECKIN_IN_PAST" | "CATALOG_STAY_TOO_LONG",
+  code:
+    | "CATALOG_DATE_RANGE_INVALID"
+    | "CATALOG_CHECKIN_IN_PAST"
+    | "CATALOG_STAY_TOO_LONG"
+    | "CATALOG_CLOCK_UNAVAILABLE",
+  status = 400,
 ) => {
   let thrown: unknown;
   try {
@@ -18,7 +23,7 @@ const expectRejected = (
   }
 
   expect(thrown).toBeInstanceOf(BusinessException);
-  expect(thrown).toMatchObject({ status: 400, code });
+  expect(thrown).toMatchObject({ status, code });
 };
 
 describe("parseCatalogDateRange", () => {
@@ -78,6 +83,51 @@ describe("parseCatalogDateRange", () => {
         "CATALOG_DATE_RANGE_INVALID",
       );
     }
+  });
+
+  it("applies Gregorian century leap-year rules", () => {
+    expectRejected(
+      () => parseCatalogDateRange("1900-02-29", "1900-03-01", clockAt("1900-02-27T16:00:00Z")),
+      "CATALOG_DATE_RANGE_INVALID",
+    );
+    expect(
+      parseCatalogDateRange("2000-02-29", "2000-03-01", clockAt("2000-02-28T16:00:00Z")),
+    ).toMatchObject({
+      nights: 1,
+    });
+  });
+
+  it("rejects an invalid checkout when checkin is valid", () => {
+    for (const checkout of ["2026-02-29", "2026-07-32", "2026-7-30", "0000-01-01"] as const) {
+      expectRejected(
+        () => parseCatalogDateRange("2026-07-29", checkout, clockAt("2026-07-28T16:00:00Z")),
+        "CATALOG_DATE_RANGE_INVALID",
+      );
+    }
+  });
+
+  it("classifies an invalid business clock date as a temporary service failure", () => {
+    expectRejected(
+      () =>
+        parseCatalogDateRange("2026-07-29", "2026-07-30", {
+          now: () => new Date("not a date"),
+        }),
+      "CATALOG_CLOCK_UNAVAILABLE",
+      503,
+    );
+  });
+
+  it("classifies a throwing clock as a temporary service failure", () => {
+    expectRejected(
+      () =>
+        parseCatalogDateRange("2026-07-29", "2026-07-30", {
+          now: () => {
+            throw new Error("clock unavailable");
+          },
+        }),
+      "CATALOG_CLOCK_UNAVAILABLE",
+      503,
+    );
   });
 
   it("rejects an empty or reversed half-open range", () => {

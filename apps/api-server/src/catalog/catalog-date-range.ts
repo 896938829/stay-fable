@@ -22,6 +22,8 @@ const checkinInPast = (): BusinessException =>
   new BusinessException(400, "CATALOG_CHECKIN_IN_PAST", "入住日期不能早于当天");
 const stayTooLong = (): BusinessException =>
   new BusinessException(400, "CATALOG_STAY_TOO_LONG", "入住时长不能超过30晚");
+const clockUnavailable = (): BusinessException =>
+  new BusinessException(503, "CATALOG_CLOCK_UNAVAILABLE", "服务暂时不可用，请稍后重试");
 
 const isLeapYear = (year: number): boolean =>
   year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
@@ -60,25 +62,34 @@ const toDayOrdinal = ({ year, month, day }: CalendarDate): number => {
 };
 
 const currentShanghaiDate = (clock: Clock): CalendarDate => {
-  const parts = new Intl.DateTimeFormat("en-CA", {
-    timeZone: SHANGHAI_TIME_ZONE,
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  }).formatToParts(clock.now());
-  const values = Object.fromEntries(
-    parts
-      .filter((part) => part.type === "year" || part.type === "month" || part.type === "day")
-      .map((part) => [part.type, part.value]),
-  );
+  try {
+    const now = clock.now();
+    if (!(now instanceof Date) || !Number.isFinite(now.getTime())) {
+      throw new Error("Invalid clock date");
+    }
 
-  const value = `${values.year ?? ""}-${values.month ?? ""}-${values.day ?? ""}`;
-  const date = parseCalendarDate(value);
-  if (!date) {
-    throw invalidDateRange();
+    const parts = new Intl.DateTimeFormat("en-CA", {
+      timeZone: SHANGHAI_TIME_ZONE,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    }).formatToParts(now);
+    const values = Object.fromEntries(
+      parts
+        .filter((part) => part.type === "year" || part.type === "month" || part.type === "day")
+        .map((part) => [part.type, part.value]),
+    );
+
+    const value = `${values.year ?? ""}-${values.month ?? ""}-${values.day ?? ""}`;
+    const date = parseCalendarDate(value);
+    if (!date) {
+      throw new Error("Invalid business date parts");
+    }
+
+    return date;
+  } catch {
+    throw clockUnavailable();
   }
-
-  return date;
 };
 
 export const parseCatalogDateRange = (
