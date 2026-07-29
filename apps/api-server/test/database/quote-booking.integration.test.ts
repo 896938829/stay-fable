@@ -46,10 +46,18 @@ const normalizeColumnDefault = (columnDefault: string | null): string | null => 
   if (columnDefault === null) {
     return null;
   }
-  if (/gen_random_uuid\(\)/i.test(columnDefault)) {
+  if (
+    /^\s*(?:gen_random_uuid\(\)|\(\s*gen_random_uuid\(\)\s*\))(?:::\s*uuid)?\s*$/i.test(
+      columnDefault,
+    )
+  ) {
     return "gen_random_uuid()";
   }
-  if (/CURRENT_TIMESTAMP/i.test(columnDefault)) {
+  if (
+    /^\s*(?:CURRENT_TIMESTAMP|\(\s*CURRENT_TIMESTAMP\s*\))(?:::\s*(?:timestamptz|timestamp\s+with\s+time\s+zone))?\s*$/i.test(
+      columnDefault,
+    )
+  ) {
     return "CURRENT_TIMESTAMP";
   }
   const literal = /^'([^']+)'::(?:[\w.]+|"[^"]+")$/.exec(columnDefault);
@@ -72,6 +80,29 @@ const nullableColumn = (dataType: string, udtName: string): ColumnContract => ({
   data_type: dataType,
   is_nullable: "YES",
   udt_name: udtName,
+});
+
+test.each([
+  ["gen_random_uuid()", "gen_random_uuid()"],
+  ["(gen_random_uuid())", "gen_random_uuid()"],
+  ["gen_random_uuid()::uuid", "gen_random_uuid()"],
+  ["CURRENT_TIMESTAMP", "CURRENT_TIMESTAMP"],
+  ["(CURRENT_TIMESTAMP)::timestamp with time zone", "CURRENT_TIMESTAMP"],
+  ["'CNY'::bpchar", "CNY"],
+  [null, null],
+])("normalizes exact PostgreSQL column default %s", (columnDefault, expected) => {
+  expect(normalizeColumnDefault(columnDefault)).toBe(expected);
+});
+
+test.each([
+  "CURRENT_TIMESTAMP + INTERVAL '1 day'",
+  "coalesce(gen_random_uuid(), '00000000-0000-0000-0000-000000000000'::uuid)",
+  "prefixgen_random_uuid()",
+  "gen_random_uuid()suffix",
+  "prefix CURRENT_TIMESTAMP",
+  "CURRENT_TIMESTAMP suffix",
+])("preserves wrapped or extended column default %s", (columnDefault) => {
+  expect(normalizeColumnDefault(columnDefault)).toBe(columnDefault);
 });
 
 const preBookingInventoryFixtureSql = `
