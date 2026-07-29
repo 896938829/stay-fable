@@ -110,11 +110,11 @@ export const parseCatalogDateRange = (
     throw invalidDateRange();
   }
 
-  if (checkinOrdinal < toDayOrdinal(currentShanghaiDate(clock))) {
-    throw checkinInPast();
-  }
   if (nights > 30) {
     throw stayTooLong();
+  }
+  if (checkinOrdinal < toDayOrdinal(currentShanghaiDate(clock))) {
+    throw checkinInPast();
   }
 
   return { checkin, checkout, nights };

@@ -67,6 +67,22 @@ describe("parseCatalogDateRange", () => {
     );
   });
 
+  it.each([
+    ["malformed dates", "2026-7-29", "2026-07-30", "CATALOG_DATE_RANGE_INVALID"],
+    ["an empty range", "2026-07-29", "2026-07-29", "CATALOG_DATE_RANGE_INVALID"],
+    ["an overlong range", "2026-07-29", "2026-08-29", "CATALOG_STAY_TOO_LONG"],
+  ] as const)("prioritizes $0 over a failing business clock", (_label, checkin, checkout, code) => {
+    expectRejected(
+      () =>
+        parseCatalogDateRange(checkin, checkout, {
+          now: () => {
+            throw new Error("clock unavailable");
+          },
+        }),
+      code,
+    );
+  });
+
   it("accepts a real leap day and rejects invalid calendar dates", () => {
     const clock = clockAt("2024-02-28T16:00:00Z");
     expect(parseCatalogDateRange("2024-02-29", "2024-03-01", clock)).toMatchObject({ nights: 1 });
