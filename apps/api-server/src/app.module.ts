@@ -12,6 +12,7 @@ import { RedisModule } from "./infrastructure/redis/redis.module.js";
 import { LOGGER_REDACTION } from "./logger-redaction.js";
 import { LOGGER_ROUTES } from "./logger-routes.js";
 import { LocationModule } from "./location/location.module.js";
+import { PricingModule } from "./pricing/pricing.module.js";
 
 @Module({
   imports: [
@@ -30,6 +31,7 @@ import { LocationModule } from "./location/location.module.js";
     IdentityModule,
     LocationModule,
     CatalogModule,
+    PricingModule,
   ],
   controllers: [HealthController],
   providers: [HealthService],

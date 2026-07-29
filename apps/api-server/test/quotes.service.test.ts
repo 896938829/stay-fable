@@ -13,6 +13,7 @@ import {
   type QuoteRange,
 } from "../src/pricing/quote.repository.js";
 import { PricingModule } from "../src/pricing/pricing.module.js";
+import { QuotesController } from "../src/pricing/quotes.controller.js";
 import { QuotesService } from "../src/pricing/quotes.service.js";
 
 const USER_ID = "10000000-0000-4000-8000-000000000001";
@@ -1153,6 +1154,6 @@ describe("PricingModule", () => {
             .constructor,
       ),
     ).toHaveLength(0);
-    expect(controllers ?? []).toEqual([]);
+    expect(controllers ?? []).toEqual([QuotesController]);
   });
 });
