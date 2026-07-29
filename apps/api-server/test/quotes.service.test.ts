@@ -1,0 +1,795 @@
+/* eslint-disable @typescript-eslint/unbound-method */
+import { describe, expect, it, vi } from "vitest";
+
+import { BusinessException } from "../src/common/http/business.exception.js";
+import type { Clock } from "../src/common/clock/clock.js";
+import type { WriteRateLimitService } from "../src/common/rate-limit/write-rate-limit.service.js";
+import {
+  QuoteRepository,
+  type PersistQuoteInput,
+  type PersistedQuote,
+  type QuoteDatabase,
+  type QuoteInputLookup,
+  type QuoteRange,
+} from "../src/pricing/quote.repository.js";
+import { PricingModule } from "../src/pricing/pricing.module.js";
+import { QuotesService } from "../src/pricing/quotes.service.js";
+
+const USER_ID = "10000000-0000-4000-8000-000000000001";
+const PROPERTY_ID = "20000000-0000-4000-8000-000000000001";
+const ROOM_TYPE_ID = "30000000-0000-4000-8000-000000000001";
+const QUOTE_ID = "40000000-0000-4000-8000-000000000001";
+const CAPTURED_AT = new Date("2026-07-30T02:00:00.000Z");
+const EXPIRES_AT = new Date("2026-07-30T02:05:00.000Z");
+
+const availableLookup = (): Extract<QuoteInputLookup, { status: "AVAILABLE" }> => ({
+  status: "AVAILABLE",
+  property: { id: PROPERTY_ID, name: "西湖云栖酒店" },
+  roomType: {
+    id: ROOM_TYPE_ID,
+    name: "舒适大床房",
+    coverUrl: "/images/catalog/room.jpg",
+    maxGuests: 2,
+    bookingPolicy: "入住前一天18:00前可免费取消。",
+  },
+  nightlyPrices: [
+    {
+      businessDate: "2026-07-31",
+      salePriceCents: 42_800,
+      rackPriceCents: 48_800,
+      available: true,
+    },
+    {
+      businessDate: "2026-08-01",
+      salePriceCents: 43_800,
+      rackPriceCents: 49_800,
+      available: true,
+    },
+  ],
+});
+
+const createRepository = () => ({
+  findQuoteInput: vi.fn<
+    (roomTypeId: string, range: QuoteRange) => Promise<QuoteInputLookup>
+  >(() => Promise.resolve(availableLookup())),
+  createQuote: vi.fn<(input: PersistQuoteInput) => Promise<PersistedQuote>>(() =>
+    Promise.resolve({
+      id: QUOTE_ID,
+      createdAt: CAPTURED_AT,
+      expiresAt: EXPIRES_AT,
+    }),
+  ),
+});
+
+const createRateLimit = () => ({
+  checkQuotes: vi.fn(() => Promise.resolve()),
+});
+
+const request = {
+  room_type_id: ROOM_TYPE_ID,
+  checkin: "2026-07-31",
+  checkout: "2026-08-02",
+  guests: 2,
+};
+
+const captureBusinessError = async (operation: Promise<unknown>): Promise<BusinessException> => {
+  try {
+    await operation;
+  } catch (error) {
+    expect(error).toBeInstanceOf(BusinessException);
+    return error as BusinessException;
+  }
+  throw new Error("Expected BusinessException");
+};
+
+const expectBusinessError = async (
+  operation: Promise<unknown>,
+  status: number,
+  code: string,
+): Promise<void> => {
+  const error = await captureBusinessError(operation);
+  expect(error.getStatus()).toBe(status);
+  expect(error.code).toBe(code);
+};
+
+describe("QuotesService", () => {
+  it("persists an exact five-minute quote snapshot and returns the strict shared response", async () => {
+    const repository = createRepository();
+    const rateLimit = createRateLimit();
+    const clock: Clock = { now: vi.fn(() => CAPTURED_AT) };
+    const service = new QuotesService(
+      repository as unknown as QuoteRepository,
+      rateLimit as unknown as WriteRateLimitService,
+      clock,
+    );
+
+    await expect(
+      service.create(USER_ID, {
+        ...request,
+      }),
+    ).resolves.toEqual({
+      quote_id: QUOTE_ID,
+      property: { id: PROPERTY_ID, name: "西湖云栖酒店" },
+      room_type: {
+        id: ROOM_TYPE_ID,
+        name: "舒适大床房",
+        cover_url: "/images/catalog/room.jpg",
+      },
+      checkin: "2026-07-31",
+      checkout: "2026-08-02",
+      nights: 2,
+      guests: 2,
+      nightly_prices: [
+        {
+          business_date: "2026-07-31",
+          sale_price_cents: 42_800,
+          rack_price_cents: 48_800,
+          currency: "CNY",
+        },
+        {
+          business_date: "2026-08-01",
+          sale_price_cents: 43_800,
+          rack_price_cents: 49_800,
+          currency: "CNY",
+        },
+      ],
+      total_price_cents: 86_600,
+      currency: "CNY",
+      booking_policy: "入住前一天18:00前可免费取消。",
+      expires_at: "2026-07-30T02:05:00.000Z",
+    });
+
+    expect(clock.now).toHaveBeenCalledTimes(1);
+    expect(rateLimit.checkQuotes).toHaveBeenCalledWith(USER_ID);
+    expect(repository.findQuoteInput).toHaveBeenCalledWith(ROOM_TYPE_ID, {
+      checkin: "2026-07-31",
+      checkout: "2026-08-02",
+      nights: 2,
+      guests: 2,
+    });
+    expect(repository.createQuote).toHaveBeenCalledWith(
+      expect.objectContaining({
+        userId: USER_ID,
+        propertyId: PROPERTY_ID,
+        roomTypeId: ROOM_TYPE_ID,
+        checkin: "2026-07-31",
+        checkout: "2026-08-02",
+        guests: 2,
+        totalPriceCents: 86_600,
+        currency: "CNY",
+        propertySnapshot: { id: PROPERTY_ID, name: "西湖云栖酒店" },
+        roomTypeSnapshot: {
+          id: ROOM_TYPE_ID,
+          name: "舒适大床房",
+          cover_url: "/images/catalog/room.jpg",
+        },
+        nightlyPrices: [
+          {
+            business_date: "2026-07-31",
+            sale_price_cents: 42_800,
+            rack_price_cents: 48_800,
+            currency: "CNY",
+          },
+          {
+            business_date: "2026-08-01",
+            sale_price_cents: 43_800,
+            rack_price_cents: 49_800,
+            currency: "CNY",
+          },
+        ],
+        bookingPolicySnapshot: "入住前一天18:00前可免费取消。",
+        expiresAt: EXPIRES_AT,
+      }),
+    );
+    expect(repository.createQuote.mock.calls[0]?.[0].fingerprint).toMatch(/^[a-f0-9]{64}$/);
+    const response = await service.create(USER_ID, request);
+    expect(response).not.toHaveProperty("total_inventory");
+    expect(response).not.toHaveProperty("held_inventory");
+    expect(response).not.toHaveProperty("sold_inventory");
+    expect(response).not.toHaveProperty("version");
+  });
+
+  it.each([
+    ["NOT_AVAILABLE", { status: "NOT_AVAILABLE" } as const, 404, "ROOM_NOT_AVAILABLE"],
+    [
+      "CAPACITY_EXCEEDED",
+      { status: "CAPACITY_EXCEEDED" } as const,
+      422,
+      "ROOM_CAPACITY_EXCEEDED",
+    ],
+  ])("maps %s lookup without persisting", async (_name, lookup, status, code) => {
+    const repository = createRepository();
+    repository.findQuoteInput.mockResolvedValue(lookup);
+    const service = new QuotesService(
+      repository as unknown as QuoteRepository,
+      createRateLimit() as unknown as WriteRateLimitService,
+      { now: () => CAPTURED_AT },
+    );
+
+    await expectBusinessError(service.create(USER_ID, request), status, code);
+    expect(repository.createQuote).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["a missing night", { ...availableLookup(), nightlyPrices: [availableLookup().nightlyPrices[0]!] }],
+    [
+      "a sold-out night",
+      {
+        ...availableLookup(),
+        nightlyPrices: [
+          availableLookup().nightlyPrices[0]!,
+          { ...availableLookup().nightlyPrices[1]!, available: false },
+        ],
+      },
+    ],
+  ])("maps %s to ROOM_NOT_AVAILABLE", async (_name, lookup) => {
+    const repository = createRepository();
+    repository.findQuoteInput.mockResolvedValue(lookup);
+    const service = new QuotesService(
+      repository as unknown as QuoteRepository,
+      createRateLimit() as unknown as WriteRateLimitService,
+      { now: () => CAPTURED_AT },
+    );
+
+    await expectBusinessError(service.create(USER_ID, request), 404, "ROOM_NOT_AVAILABLE");
+    expect(repository.createQuote).not.toHaveBeenCalled();
+  });
+
+  it("supports an exact thirty-night quote and sums every night safely", async () => {
+    const repository = createRepository();
+    const nightlyPrices = Array.from({ length: 30 }, (_, index) => ({
+      businessDate: new Date(Date.UTC(2026, 6, 31 + index)).toISOString().slice(0, 10),
+      salePriceCents: 100 + index,
+      rackPriceCents: 200 + index,
+      available: true,
+    }));
+    repository.findQuoteInput.mockResolvedValue({
+      ...availableLookup(),
+      nightlyPrices,
+    });
+    const service = new QuotesService(
+      repository as unknown as QuoteRepository,
+      createRateLimit() as unknown as WriteRateLimitService,
+      { now: () => CAPTURED_AT },
+    );
+
+    const response = await service.create(USER_ID, {
+      ...request,
+      checkout: "2026-08-30",
+    });
+
+    expect(response.nights).toBe(30);
+    expect(response.nightly_prices).toHaveLength(30);
+    expect(response.total_price_cents).toBe(3_435);
+  });
+
+  it("maps a safe-integer total overflow to BOOKING_SERVICE_UNAVAILABLE", async () => {
+    const repository = createRepository();
+    const amount = Number.MAX_SAFE_INTEGER - 1;
+    repository.findQuoteInput.mockResolvedValue({
+      ...availableLookup(),
+      nightlyPrices: availableLookup().nightlyPrices.map((night) => ({
+        ...night,
+        salePriceCents: amount,
+        rackPriceCents: amount,
+      })),
+    });
+    const service = new QuotesService(
+      repository as unknown as QuoteRepository,
+      createRateLimit() as unknown as WriteRateLimitService,
+      { now: () => CAPTURED_AT },
+    );
+
+    await expectBusinessError(
+      service.create(USER_ID, request),
+      503,
+      "BOOKING_SERVICE_UNAVAILABLE",
+    );
+    expect(repository.createQuote).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["invalid", { now: vi.fn(() => new Date(Number.NaN)) }],
+    [
+      "throwing",
+      {
+        now: vi.fn(() => {
+          throw new Error("clock secret");
+        }),
+      },
+    ],
+  ])("maps a %s clock to BOOKING_SERVICE_UNAVAILABLE", async (_name, clock) => {
+    const repository = createRepository();
+    const service = new QuotesService(
+      repository as unknown as QuoteRepository,
+      createRateLimit() as unknown as WriteRateLimitService,
+      clock,
+    );
+
+    const error = await captureBusinessError(service.create(USER_ID, request));
+    expect(error.getStatus()).toBe(503);
+    expect(error.code).toBe("BOOKING_SERVICE_UNAVAILABLE");
+    expect(error.message).not.toContain("secret");
+    expect(repository.findQuoteInput).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["lookup", "findQuoteInput"],
+    ["create", "createQuote"],
+  ] as const)("does not leak a repository %s failure", async (_name, method) => {
+    const repository = createRepository();
+    repository[method].mockRejectedValue(new Error("database-secret"));
+    const service = new QuotesService(
+      repository as unknown as QuoteRepository,
+      createRateLimit() as unknown as WriteRateLimitService,
+      { now: () => CAPTURED_AT },
+    );
+
+    const error = await captureBusinessError(service.create(USER_ID, request));
+    expect(error.getStatus()).toBe(503);
+    expect(error.code).toBe("BOOKING_SERVICE_UNAVAILABLE");
+    expect(error.message).not.toContain("database-secret");
+  });
+
+  it.each([
+    new BusinessException(429, "RATE_LIMITED", "操作过于频繁，请稍后重试"),
+    new BusinessException(
+      503,
+      "BOOKING_SERVICE_UNAVAILABLE",
+      "预订服务暂时不可用，请稍后重试",
+    ),
+  ])("preserves rate-limit BusinessException before database access", async (rateLimitError) => {
+    const repository = createRepository();
+    const rateLimit = createRateLimit();
+    rateLimit.checkQuotes.mockRejectedValue(rateLimitError);
+    const service = new QuotesService(
+      repository as unknown as QuoteRepository,
+      rateLimit as unknown as WriteRateLimitService,
+      { now: () => CAPTURED_AT },
+    );
+
+    await expect(service.create(USER_ID, request)).rejects.toBe(rateLimitError);
+    expect(repository.findQuoteInput).not.toHaveBeenCalled();
+    expect(repository.createQuote).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { ...request, unknown: true },
+    { ...request, room_type_id: "not-a-uuid" },
+    { ...request, checkin: "2026-02-30" },
+    { ...request, checkout: "2026-07-31" },
+    { ...request, guests: 0 },
+  ])("rejects an invalid shared request before rate limiting or database access", async (input) => {
+    const repository = createRepository();
+    const rateLimit = createRateLimit();
+    const service = new QuotesService(
+      repository as unknown as QuoteRepository,
+      rateLimit as unknown as WriteRateLimitService,
+      { now: () => CAPTURED_AT },
+    );
+
+    const error = await captureBusinessError(service.create(USER_ID, input));
+    expect(error.getStatus()).toBe(400);
+    expect(error.code).toBe("QUOTE_REQUEST_INVALID");
+    expect(error.message).toBe("报价请求无效，请检查入住信息");
+    expect(rateLimit.checkQuotes).not.toHaveBeenCalled();
+    expect(repository.findQuoteInput).not.toHaveBeenCalled();
+  });
+
+  it("maps a catalog date failure to QUOTE_REQUEST_INVALID with one captured clock read", async () => {
+    const repository = createRepository();
+    const rateLimit = createRateLimit();
+    const clock: Clock = { now: vi.fn(() => CAPTURED_AT) };
+    const service = new QuotesService(
+      repository as unknown as QuoteRepository,
+      rateLimit as unknown as WriteRateLimitService,
+      clock,
+    );
+
+    await expectBusinessError(
+      service.create(USER_ID, { ...request, checkin: "2026-07-29", checkout: "2026-07-31" }),
+      400,
+      "QUOTE_REQUEST_INVALID",
+    );
+    expect(clock.now).toHaveBeenCalledTimes(1);
+    expect(repository.findQuoteInput).not.toHaveBeenCalled();
+  });
+
+  it("treats an invalid authenticated user id as an internal invariant failure", async () => {
+    const repository = createRepository();
+    const rateLimit = createRateLimit();
+    const service = new QuotesService(
+      repository as unknown as QuoteRepository,
+      rateLimit as unknown as WriteRateLimitService,
+      { now: () => CAPTURED_AT },
+    );
+
+    await expectBusinessError(
+      service.create("not-a-user-id", request),
+      503,
+      "BOOKING_SERVICE_UNAVAILABLE",
+    );
+    expect(rateLimit.checkQuotes).not.toHaveBeenCalled();
+    expect(repository.findQuoteInput).not.toHaveBeenCalled();
+  });
+
+  it("fingerprints only canonical display, stay, policy, guest, and nightly fields", async () => {
+    const firstRepository = createRepository();
+    const secondRepository = createRepository();
+    const first = new QuotesService(
+      firstRepository as unknown as QuoteRepository,
+      createRateLimit() as unknown as WriteRateLimitService,
+      { now: () => CAPTURED_AT },
+    );
+    const second = new QuotesService(
+      secondRepository as unknown as QuoteRepository,
+      createRateLimit() as unknown as WriteRateLimitService,
+      { now: () => CAPTURED_AT },
+    );
+
+    await first.create(USER_ID, request);
+    await second.create(USER_ID, request);
+
+    expect(firstRepository.createQuote.mock.calls[0]?.[0].fingerprint).toBe(
+      secondRepository.createQuote.mock.calls[0]?.[0].fingerprint,
+    );
+    expect(firstRepository.createQuote.mock.calls[0]?.[0].fingerprint).toMatch(/^[a-f0-9]{64}$/);
+  });
+
+  it.each([
+    {
+      id: "not-a-uuid",
+      createdAt: CAPTURED_AT,
+      expiresAt: EXPIRES_AT,
+    },
+    {
+      id: QUOTE_ID,
+      createdAt: CAPTURED_AT,
+      expiresAt: new Date(EXPIRES_AT.getTime() + 1),
+    },
+    {
+      id: QUOTE_ID,
+      createdAt: new Date(Number.NaN),
+      expiresAt: EXPIRES_AT,
+    },
+  ])("rejects an invalid persisted quote record", async (record) => {
+    const repository = createRepository();
+    repository.createQuote.mockResolvedValue(record);
+    const service = new QuotesService(
+      repository as unknown as QuoteRepository,
+      createRateLimit() as unknown as WriteRateLimitService,
+      { now: () => CAPTURED_AT },
+    );
+
+    await expectBusinessError(
+      service.create(USER_ID, request),
+      503,
+      "BOOKING_SERVICE_UNAVAILABLE",
+    );
+  });
+});
+
+const databaseBaseRow = {
+  propertyId: PROPERTY_ID,
+  propertyName: "西湖云栖酒店",
+  roomTypeId: ROOM_TYPE_ID,
+  roomTypeName: "舒适大床房",
+  coverUrl: "/images/catalog/room.jpg",
+  maxGuests: 2,
+  bookingPolicy: "入住前一天18:00前可免费取消。",
+};
+
+const databaseNightlyRows = [
+  {
+    businessDate: "2026-07-31",
+    salePriceCents: 42_800,
+    rackPriceCents: 48_800,
+    totalInventory: 3,
+    heldInventory: 1,
+    soldInventory: 1,
+  },
+  {
+    businessDate: "2026-08-01",
+    salePriceCents: 43_800,
+    rackPriceCents: 49_800,
+    totalInventory: 3,
+    heldInventory: 0,
+    soldInventory: 0,
+  },
+];
+
+const createQuoteDatabase = (
+  responses: unknown[] = [[databaseBaseRow], databaseNightlyRows],
+) => {
+  let index = 0;
+  return {
+    $queryRaw: vi.fn((query: unknown) => {
+      void query;
+      return Promise.resolve(responses[index++]);
+    }),
+  };
+};
+
+const persistInput = (): PersistQuoteInput => ({
+  userId: USER_ID,
+  propertyId: PROPERTY_ID,
+  roomTypeId: ROOM_TYPE_ID,
+  checkin: "2026-07-31",
+  checkout: "2026-08-02",
+  guests: 2,
+  propertySnapshot: { id: PROPERTY_ID, name: "西湖云栖酒店" },
+  roomTypeSnapshot: {
+    id: ROOM_TYPE_ID,
+    name: "舒适大床房",
+    cover_url: "/images/catalog/room.jpg",
+  },
+  nightlyPrices: [
+    {
+      business_date: "2026-07-31",
+      sale_price_cents: 42_800,
+      rack_price_cents: 48_800,
+      currency: "CNY",
+    },
+    {
+      business_date: "2026-08-01",
+      sale_price_cents: 43_800,
+      rack_price_cents: 49_800,
+      currency: "CNY",
+    },
+  ],
+  bookingPolicySnapshot: "入住前一天18:00前可免费取消。",
+  totalPriceCents: 86_600,
+  currency: "CNY",
+  fingerprint: "a".repeat(64),
+  expiresAt: EXPIRES_AT,
+});
+
+describe("QuoteRepository", () => {
+  it("uses parameterized status-gated SQL and maps availability without exposing inventory", async () => {
+    const database = createQuoteDatabase();
+    const repository = new QuoteRepository(database as unknown as QuoteDatabase);
+
+    const result = await repository.findQuoteInput(ROOM_TYPE_ID, {
+      checkin: "2026-07-31",
+      checkout: "2026-08-02",
+      nights: 2,
+      guests: 2,
+    });
+    expect(result).toEqual(availableLookup());
+
+    expect(database.$queryRaw).toHaveBeenCalledTimes(2);
+    const baseQuery = database.$queryRaw.mock.calls[0]?.[0] as {
+      sql: string;
+      values: unknown[];
+    };
+    const nightlyQuery = database.$queryRaw.mock.calls[1]?.[0] as {
+      sql: string;
+      values: unknown[];
+    };
+    expect(baseQuery.sql).toContain(`property."status" = 'OPEN'`);
+    expect(baseQuery.sql).toContain(`room."status" = 'ON_SALE'`);
+    expect(baseQuery.sql).not.toContain(ROOM_TYPE_ID);
+    expect(baseQuery.values).toContain(ROOM_TYPE_ID);
+    expect(nightlyQuery.sql).toContain("generate_series");
+    expect(nightlyQuery.sql).toContain('LEFT JOIN "daily_price"');
+    expect(nightlyQuery.sql).toContain('LEFT JOIN "daily_inventory"');
+    expect(nightlyQuery.sql).toContain("ORDER BY requested.business_date ASC");
+    expect(nightlyQuery.sql).not.toContain("2026-07-31");
+    expect(nightlyQuery.values).toEqual(
+      expect.arrayContaining([ROOM_TYPE_ID, "2026-07-31", "2026-08-02"]),
+    );
+    if (result.status === "AVAILABLE") {
+      expect(result.nightlyPrices[0]).not.toHaveProperty("totalInventory");
+      expect(result.nightlyPrices[0]).not.toHaveProperty("heldInventory");
+      expect(result.nightlyPrices[0]).not.toHaveProperty("soldInventory");
+    }
+  });
+
+  it("returns NOT_AVAILABLE for absent, closed, or off-sale rooms without a nightly query", async () => {
+    const database = createQuoteDatabase([[]]);
+    const repository = new QuoteRepository(database as unknown as QuoteDatabase);
+
+    await expect(
+      repository.findQuoteInput(ROOM_TYPE_ID, {
+        checkin: "2026-07-31",
+        checkout: "2026-08-02",
+        nights: 2,
+        guests: 2,
+      }),
+    ).resolves.toEqual({ status: "NOT_AVAILABLE" });
+    expect(database.$queryRaw).toHaveBeenCalledTimes(1);
+  });
+
+  it("returns CAPACITY_EXCEEDED before querying prices", async () => {
+    const database = createQuoteDatabase([[{ ...databaseBaseRow, maxGuests: 1 }]]);
+    const repository = new QuoteRepository(database as unknown as QuoteDatabase);
+
+    await expect(
+      repository.findQuoteInput(ROOM_TYPE_ID, {
+        checkin: "2026-07-31",
+        checkout: "2026-08-02",
+        nights: 2,
+        guests: 2,
+      }),
+    ).resolves.toEqual({ status: "CAPACITY_EXCEEDED" });
+    expect(database.$queryRaw).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ["missing price", [{ ...databaseNightlyRows[0], salePriceCents: null }]],
+    ["missing inventory", [{ ...databaseNightlyRows[0], totalInventory: null }]],
+    ["missing date", [databaseNightlyRows[0]]],
+  ])("returns NOT_AVAILABLE for %s rows", async (_name, nightlyRows) => {
+    const database = createQuoteDatabase([[databaseBaseRow], nightlyRows]);
+    const repository = new QuoteRepository(database as unknown as QuoteDatabase);
+
+    await expect(
+      repository.findQuoteInput(ROOM_TYPE_ID, {
+        checkin: "2026-07-31",
+        checkout: "2026-08-02",
+        nights: 2,
+        guests: 2,
+      }),
+    ).resolves.toEqual({ status: "NOT_AVAILABLE" });
+  });
+
+  it("derives a sold-out night strictly from total minus held minus sold", async () => {
+    const database = createQuoteDatabase([
+      [databaseBaseRow],
+      [
+        databaseNightlyRows[0],
+        {
+          ...databaseNightlyRows[1],
+          totalInventory: 3,
+          heldInventory: 1,
+          soldInventory: 2,
+        },
+      ],
+    ]);
+    const repository = new QuoteRepository(database as unknown as QuoteDatabase);
+
+    const result = await repository.findQuoteInput(ROOM_TYPE_ID, {
+      checkin: "2026-07-31",
+      checkout: "2026-08-02",
+      nights: 2,
+      guests: 2,
+    });
+
+    expect(result.status).toBe("AVAILABLE");
+    if (result.status === "AVAILABLE") {
+      expect(result.nightlyPrices.map(({ available }) => available)).toEqual([true, false]);
+    }
+  });
+
+  it.each([
+    ["unsafe price", [{ ...databaseNightlyRows[0], salePriceCents: Number.MAX_SAFE_INTEGER + 1 }]],
+    ["negative price", [{ ...databaseNightlyRows[0], salePriceCents: -1 }]],
+    ["rack below sale", [{ ...databaseNightlyRows[0], rackPriceCents: 1 }]],
+    [
+      "oversold inventory",
+      [{ ...databaseNightlyRows[0], totalInventory: 1, heldInventory: 1, soldInventory: 1 }],
+    ],
+    ["duplicate date", [databaseNightlyRows[0], databaseNightlyRows[0]]],
+    ["out-of-order date", [...databaseNightlyRows].reverse()],
+  ])("rejects abnormal database data: %s", async (_name, nightlyRows) => {
+    const database = createQuoteDatabase([[databaseBaseRow], nightlyRows]);
+    const repository = new QuoteRepository(database as unknown as QuoteDatabase);
+
+    await expect(
+      repository.findQuoteInput(ROOM_TYPE_ID, {
+        checkin: "2026-07-31",
+        checkout: "2026-08-02",
+        nights: 2,
+        guests: 2,
+      }),
+    ).rejects.toThrow("Unexpected quote repository data");
+  });
+
+  it.each([
+    ["not-a-uuid", { checkin: "2026-07-31", checkout: "2026-08-02", nights: 2, guests: 2 }],
+    [ROOM_TYPE_ID, { checkin: "2026-02-30", checkout: "2026-08-02", nights: 2, guests: 2 }],
+    [ROOM_TYPE_ID, { checkin: "2026-07-31", checkout: "2026-08-02", nights: 1, guests: 2 }],
+    [ROOM_TYPE_ID, { checkin: "2026-07-31", checkout: "2026-08-02", nights: 2, guests: 11 }],
+  ])("rejects invalid lookup input before database access", async (roomTypeId, range) => {
+    const database = createQuoteDatabase();
+    const repository = new QuoteRepository(database as unknown as QuoteDatabase);
+
+    await expect(repository.findQuoteInput(roomTypeId, range)).rejects.toThrow(
+      "Invalid quote repository input",
+    );
+    expect(database.$queryRaw).not.toHaveBeenCalled();
+  });
+
+  it("persists exact immutable JSON display snapshots with parameterized SQL", async () => {
+    const database = createQuoteDatabase([
+      [{ id: QUOTE_ID, createdAt: CAPTURED_AT, expiresAt: EXPIRES_AT }],
+    ]);
+    const repository = new QuoteRepository(database as unknown as QuoteDatabase);
+    const input = persistInput();
+    const original = structuredClone(input);
+
+    await expect(repository.createQuote(input)).resolves.toEqual({
+      id: QUOTE_ID,
+      createdAt: CAPTURED_AT,
+      expiresAt: EXPIRES_AT,
+    });
+
+    expect(input).toEqual(original);
+    const query = database.$queryRaw.mock.calls[0]?.[0] as { sql: string; values: unknown[] };
+    expect(query.sql).toContain("INSERT INTO quote");
+    expect(query.sql).not.toContain(USER_ID);
+    expect(query.sql).not.toContain("西湖云栖酒店");
+    expect(query.values).toEqual(
+      expect.arrayContaining([
+        USER_ID,
+        PROPERTY_ID,
+        ROOM_TYPE_ID,
+        JSON.stringify(input.propertySnapshot),
+        JSON.stringify(input.roomTypeSnapshot),
+        JSON.stringify(input.nightlyPrices),
+      ]),
+    );
+    expect(JSON.parse(JSON.stringify(input.propertySnapshot))).toEqual({
+      id: PROPERTY_ID,
+      name: "西湖云栖酒店",
+    });
+    expect(JSON.parse(JSON.stringify(input.roomTypeSnapshot))).toEqual({
+      id: ROOM_TYPE_ID,
+      name: "舒适大床房",
+      cover_url: "/images/catalog/room.jpg",
+    });
+    expect(JSON.parse(JSON.stringify(input.nightlyPrices[0]))).toEqual({
+      business_date: "2026-07-31",
+      sale_price_cents: 42_800,
+      rack_price_cents: 48_800,
+      currency: "CNY",
+    });
+  });
+
+  it.each([
+    { ...persistInput(), userId: "not-a-uuid" },
+    { ...persistInput(), currency: "USD" as "CNY" },
+    { ...persistInput(), fingerprint: "secret" },
+    { ...persistInput(), totalPriceCents: 1 },
+    { ...persistInput(), expiresAt: new Date(Number.NaN) },
+  ])("rejects invalid persistence input before database access", async (input) => {
+    const database = createQuoteDatabase();
+    const repository = new QuoteRepository(database as unknown as QuoteDatabase);
+
+    await expect(repository.createQuote(input)).rejects.toThrow("Invalid quote repository input");
+    expect(database.$queryRaw).not.toHaveBeenCalled();
+  });
+
+  it("rejects malformed persisted rows instead of trusting unknown database output", async () => {
+    const database = createQuoteDatabase([
+      [{ id: "not-a-uuid", createdAt: CAPTURED_AT, expiresAt: EXPIRES_AT }],
+    ]);
+    const repository = new QuoteRepository(database as unknown as QuoteDatabase);
+
+    await expect(repository.createQuote(persistInput())).rejects.toThrow(
+      "Unexpected quote repository data",
+    );
+  });
+});
+
+describe("PricingModule", () => {
+  it("wires one pricing rate limiter and exports the service dependencies without controllers", () => {
+    const imports = Reflect.getMetadata("imports", PricingModule) as unknown[];
+    const providers = Reflect.getMetadata("providers", PricingModule) as unknown[];
+    const controllers = Reflect.getMetadata("controllers", PricingModule) as unknown[] | undefined;
+
+    expect(imports).toHaveLength(3);
+    expect(providers).toEqual(
+      expect.arrayContaining([QuoteRepository, QuotesService, expect.any(Function)]),
+    );
+    expect(
+      providers.filter(
+        (provider) =>
+          provider ===
+          (vi.mocked({ checkQuotes: () => Promise.resolve() }) as unknown as WriteRateLimitService)
+            .constructor,
+      ),
+    ).toHaveLength(0);
+    expect(controllers ?? []).toEqual([]);
+  });
+});
