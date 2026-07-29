@@ -73,7 +73,7 @@ PropertyMediaType: IMAGE
 
 | 表 | 关键字段 | 关键约束 |
 | --- | --- | --- |
-| `property` | `id`、`city_id`、`type`、`name_zh`、`address_zh`、`location`、`description_zh`、`cover_url`、`status`、`display_order`、审计时间 | 城市外键；名称和文本长度有界；坐标为 `geography(Point,4326)`；`display_order >= 0` |
+| `property` | `id`、`city_id`、`type`、`name_zh`、`address_zh`、`location`、`description_zh`、`policies_zh`、`cover_url`、`status`、`display_order`、审计时间 | 城市外键；名称和文本长度有界；坐标为 `geography(Point,4326)`；`display_order >= 0` |
 | `property_media` | `id`、`property_id`、`type`、`url`、`alt_zh`、`display_order` | 旅店外键级联删除；`property_id + display_order` 唯一 |
 | `facility` | `id`、`code`、`name_zh`、`display_order` | `code` 唯一且稳定；`display_order >= 0` |
 | `property_facility` | `property_id`、`facility_id` | 联合主键，两个外键级联删除 |
@@ -177,7 +177,7 @@ GET /api/v1/properties/:propertyId
 
 详情返回旅店基本信息、媒体、全部设施和符合当前搜索条件的可售房型摘要。房型摘要包含
 房型 ID、名称、床型、面积、最大人数、封面、规则摘要和
-`from_nightly_price_cents`。关闭、未知或当前区间无可售房型的旅店统一返回
+`from_nightly_price_cents`，价格币种固定为 `CNY`。关闭、未知或当前区间无可售房型的旅店统一返回
 `PROPERTY_NOT_AVAILABLE`，不泄露内部状态。
 
 ### 6.3 房型详情
@@ -190,7 +190,8 @@ GET /api/v1/room-types/:roomTypeId
 ```
 
 房型详情返回所属旅店摘要、房型内容、预订规则以及每晚日期和展示价格。它不返回
-`total_inventory`、`held_inventory`、`sold_inventory` 或内部版本。人数超限返回
+每晚价格的币种固定为 `CNY`，并且不返回 `total_inventory`、`held_inventory`、
+`sold_inventory` 或内部版本。人数超限返回
 `ROOM_CAPACITY_EXCEEDED`；停售、未知、价格缺失或任一晚无库存返回
 `ROOM_NOT_AVAILABLE`。
 
@@ -314,7 +315,7 @@ WSL2 验证在现有原子锁流程中执行迁移和 seed，并增加以下冒�
 类型筛选只返回目标类型
 人数不足房型被过滤
 游标两页无重复
-旅店详情返回 2 个基准房型
+旅店详情在 `guests=1` 时返回 2 个基准房型
 一级列表响应不包含房型集合
 房型详情不包含内部库存数量
 ```
