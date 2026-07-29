@@ -10,6 +10,7 @@ const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const CURSOR_PATTERN = /^[A-Za-z0-9_-]{1,256}$/;
 const FILTER_TYPES = ["", "HOTEL", "HOMESTAY", "FARM_STAY"];
+const INVALID_SEARCH_MESSAGE = "搜索条件已失效，请返回首页重新选择";
 
 function hasOwn(value, key) {
   return (
@@ -43,6 +44,7 @@ function createPropertyListPage(dependencies = {}) {
   let hidden = false;
   let navigating = false;
   let searchContext = null;
+  let homeNavigationAttempt = null;
   const inFlightCursors = new Set();
   const completedCursors = new Set();
 
@@ -162,6 +164,81 @@ function createPropertyListPage(dependencies = {}) {
     });
   }
 
+  function renderInvalidSearchError(page) {
+    page.setData({
+      status: "error",
+      items: [],
+      nextCursor: null,
+      searchSummary: null,
+      errorMessage: INVALID_SEARCH_MESSAGE,
+      footerStatus: "idle",
+    });
+  }
+
+  function returnHome(page) {
+    if (homeNavigationAttempt !== null) {
+      return homeNavigationAttempt.promise;
+    }
+
+    page.setData({
+      status: "loading",
+      items: [],
+      nextCursor: null,
+      searchSummary: null,
+      errorMessage: "",
+      footerStatus: "idle",
+    });
+
+    const attempt = {
+      promise: null,
+      settled: false,
+    };
+    homeNavigationAttempt = attempt;
+    attempt.promise = new Promise((resolve) => {
+      const settle = (succeeded) => {
+        if (attempt.settled) {
+          return;
+        }
+        attempt.settled = true;
+        if (homeNavigationAttempt === attempt) {
+          homeNavigationAttempt = null;
+        }
+        if (!succeeded && active && searchContext === null) {
+          renderInvalidSearchError(page);
+        }
+        resolve();
+      };
+
+      let result;
+      try {
+        result = wxApi.reLaunch({
+          url: "/pages/home/home",
+          success: () => settle(true),
+          fail: () => settle(false),
+        });
+      } catch {
+        settle(false);
+        return;
+      }
+
+      try {
+        if (
+          result !== null &&
+          typeof result === "object" &&
+          typeof result.then === "function"
+        ) {
+          Promise.resolve(result).then(
+            () => settle(true),
+            () => settle(false),
+          );
+        }
+      } catch {
+        settle(false);
+      }
+    });
+    return attempt.promise;
+  }
+
   return {
     data: {
       status: "loading",
@@ -201,14 +278,8 @@ function createPropertyListPage(dependencies = {}) {
         };
         resetForFirstPage(this, view);
       } catch {
-        active = false;
         searchContext = null;
-        try {
-          wxApi.reLaunch({ url: "/pages/home/home" });
-        } catch {
-          // A navigation failure must not expose or persist the invalid context.
-        }
-        return;
+        return returnHome(this);
       }
 
       return loadPage(this, null);
@@ -216,7 +287,12 @@ function createPropertyListPage(dependencies = {}) {
 
     onShow() {
       navigating = false;
-      if (!hidden || searchContext === null) {
+      if (searchContext === null) {
+        active = true;
+        hidden = false;
+        return;
+      }
+      if (!hidden) {
         active = true;
         return;
       }
@@ -249,9 +325,19 @@ function createPropertyListPage(dependencies = {}) {
     },
 
     retry() {
+      if (!active) {
+        return;
+      }
+      if (searchContext === null) {
+        if (
+          homeNavigationAttempt !== null ||
+          this.data.status === "error"
+        ) {
+          return returnHome(this);
+        }
+        return;
+      }
       if (
-        !active ||
-        searchContext === null ||
         !["empty", "error"].includes(this.data.status)
       ) {
         return;

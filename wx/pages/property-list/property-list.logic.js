@@ -31,25 +31,30 @@ function calendarOrdinal(value) {
   );
 }
 
+function isPlainObject(value) {
+  if (value === null || Array.isArray(value) || typeof value !== "object") {
+    return false;
+  }
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
+}
+
 function toPropertyListView(search, type = "") {
   try {
-    if (
-      search === null ||
-      Array.isArray(search) ||
-      typeof search !== "object" ||
-      !FILTER_VALUES.includes(type)
-    ) {
+    if (!isPlainObject(search) || !FILTER_VALUES.includes(type)) {
       throw invalidSearchContext();
     }
     const city = assertCity(search.city);
-    const nights =
-      calendarOrdinal(search.checkout) - calendarOrdinal(search.checkin);
+    const checkin = search.checkin;
+    const checkout = search.checkout;
+    const guests = search.guests;
+    const nights = calendarOrdinal(checkout) - calendarOrdinal(checkin);
     if (
       nights < 1 ||
       nights > 30 ||
-      !Number.isInteger(search.guests) ||
-      search.guests < 1 ||
-      search.guests > 10
+      !Number.isInteger(guests) ||
+      guests < 1 ||
+      guests > 10
     ) {
       throw invalidSearchContext();
     }
@@ -59,9 +64,9 @@ function toPropertyListView(search, type = "") {
       filters: FILTERS.map((filter) => ({ ...filter })),
       searchSummary: {
         cityLabel: city.name,
-        dateLabel: `${search.checkin} 至 ${search.checkout}`,
+        dateLabel: `${checkin} 至 ${checkout}`,
         nightsLabel: `${nights}晚`,
-        guestsLabel: `${search.guests}人`,
+        guestsLabel: `${guests}人`,
       },
     };
   } catch {

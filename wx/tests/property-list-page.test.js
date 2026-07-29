@@ -71,7 +71,7 @@ function createPage({ listProperties, searchValue = search, wxApi } = {}) {
   };
   const safeWxApi = wxApi || {
     navigateTo: vi.fn(),
-    reLaunch: vi.fn(),
+    reLaunch: vi.fn(() => Promise.resolve()),
   };
   return {
     catalogService,
@@ -118,6 +118,44 @@ describe("property list pure logic", () => {
     expect(() => toPropertyListView(candidate, type)).toThrow(
       expect.objectContaining({ code: "SEARCH_CONTEXT_INVALID" }),
     );
+  });
+
+  it("maps hostile search objects to SEARCH_CONTEXT_INVALID without retaining input", () => {
+    const hostilePrototype = Object.assign(
+      Object.create({ inherited: true }),
+      search,
+    );
+    const throwingGetter = Object.defineProperty({ ...search }, "checkin", {
+      get() {
+        throw new Error("private getter");
+      },
+    });
+
+    for (const candidate of [
+      hostilePrototype,
+      throwingGetter,
+      { ...search, city: { ...search.city, code: "c".repeat(33) } },
+      { ...search, city: { ...search.city, name: "城".repeat(65) } },
+    ]) {
+      expect(() => toPropertyListView(candidate)).toThrow(
+        expect.objectContaining({
+          code: "SEARCH_CONTEXT_INVALID",
+          message: "Invalid search context",
+        }),
+      );
+    }
+
+    const mutable = structuredClone(search);
+    const view = toPropertyListView(mutable);
+    mutable.city.name = "已篡改";
+    mutable.checkin = "2026-08-01";
+    expect(view.searchSummary).toEqual({
+      cityLabel: "杭州",
+      dateLabel: "2026-07-30 至 2026-08-02",
+      nightsLabel: "3晚",
+      guestsLabel: "3人",
+    });
+    expect(JSON.stringify(view)).not.toContain("已篡改");
   });
 
   it("merges UUIDs in place, updates existing content, and deduplicates pages", () => {
@@ -213,10 +251,85 @@ describe("property list page state machine", () => {
 
     expect(() => page.onLoad.call(page)).not.toThrow();
 
-    expect(wxApi.reLaunch).toHaveBeenCalledWith({
-      url: "/pages/home/home",
-    });
+    expect(wxApi.reLaunch).toHaveBeenCalledWith(
+      expect.objectContaining({
+        url: "/pages/home/home",
+      }),
+    );
     expect(catalogService.listProperties).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [
+      "synchronous throw",
+      vi.fn(() => {
+        throw new Error("private sync navigation failure");
+      }),
+    ],
+    [
+      "fail callback",
+      vi.fn((options) => {
+        options.fail({ errMsg: "private callback navigation failure" });
+      }),
+    ],
+    [
+      "promise rejection",
+      vi.fn(() =>
+        Promise.reject(new Error("private promise navigation failure")),
+      ),
+    ],
+  ])(
+    "renders a recoverable local error when home reLaunch has a %s",
+    async (_label, reLaunch) => {
+      const { page } = createPage({
+        searchValue: null,
+        wxApi: { navigateTo: vi.fn(), reLaunch },
+      });
+
+      await page.onLoad.call(page);
+
+      expect(page.data).toMatchObject({
+        status: "error",
+        items: [],
+        searchSummary: null,
+        errorMessage: "搜索条件已失效，请返回首页重新选择",
+      });
+      expect(JSON.stringify(page.data)).not.toContain("private");
+      const failedState = structuredClone(page.data);
+      page.onShow.call(page);
+      expect(page.data).toEqual(failedState);
+    },
+  );
+
+  it("single-flights repeated no-context retries and accepts a later home success", async () => {
+    const retryNavigation = deferred();
+    const reLaunch = vi
+      .fn()
+      .mockImplementationOnce((options) => {
+        options.fail({ errMsg: "initial failure" });
+      })
+      .mockReturnValueOnce(retryNavigation.promise);
+    const { page } = createPage({
+      searchValue: null,
+      wxApi: { navigateTo: vi.fn(), reLaunch },
+    });
+    await page.onLoad.call(page);
+    expect(page.data.status).toBe("error");
+
+    const firstRetry = page.retry.call(page);
+    const secondRetry = page.retry.call(page);
+
+    expect(firstRetry).toBe(secondRetry);
+    expect(reLaunch).toHaveBeenCalledTimes(2);
+    expect(page.data).toMatchObject({
+      status: "loading",
+      errorMessage: "",
+    });
+
+    retryNavigation.resolve();
+    await Promise.all([firstRetry, secondRetry]);
+    expect(reLaunch).toHaveBeenCalledTimes(2);
+    expect(page.data.status).toBe("loading");
   });
 
   it("moves from loading to list and sends only the canonical search query", async () => {
