@@ -33,6 +33,54 @@ const isCalendarDate = (value: string) => {
 
 export const catalogDateSchema = z.string().regex(catalogDatePattern).refine(isCalendarDate);
 const localImagePathPattern = /^\/images\/[A-Za-z0-9._-]+(?:\/[A-Za-z0-9._-]+)*$/;
+const safeHttpsSuffixPattern = /^[A-Za-z0-9._~!$&'()*+,;=:@/?#%-]*$/;
+const standardHostnameLabelPattern = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$/;
+
+const hasValidPercentEscapes = (value: string) => {
+  for (let index = value.indexOf("%"); index !== -1; index = value.indexOf("%", index + 3)) {
+    if (!/^[0-9A-Fa-f]{2}$/.test(value.slice(index + 1, index + 3))) {
+      return false;
+    }
+  }
+  return true;
+};
+
+const isSafeHttpsResource = (value: string) => {
+  const remainder = value.slice("https://".length);
+  const delimiterIndex = remainder.search(/[/?#]/);
+  const authority = delimiterIndex === -1 ? remainder : remainder.slice(0, delimiterIndex);
+  const suffix = delimiterIndex === -1 ? "" : remainder.slice(delimiterIndex);
+  if (
+    authority === "" ||
+    authority.includes("@") ||
+    authority.includes("[") ||
+    authority.includes("]")
+  ) {
+    return false;
+  }
+
+  const colonIndex = authority.lastIndexOf(":");
+  if (colonIndex !== -1 && authority.indexOf(":") !== colonIndex) {
+    return false;
+  }
+  const hostname = colonIndex === -1 ? authority : authority.slice(0, colonIndex);
+  const port = colonIndex === -1 ? undefined : authority.slice(colonIndex + 1);
+  const labels = hostname.split(".");
+
+  return (
+    hostname.length >= 1 &&
+    hostname.length <= 253 &&
+    !/^(?:0[xX][0-9A-Fa-f]+|\d+)(?:\.(?:0[xX][0-9A-Fa-f]+|\d+))*$/.test(hostname) &&
+    labels.every(
+      (label) =>
+        standardHostnameLabelPattern.test(label) && !label.toLowerCase().startsWith("xn--"),
+    ) &&
+    (port === undefined ||
+      (/^[1-9]\d{0,4}$/.test(port) && Number(port) >= 1 && Number(port) <= 65535)) &&
+    safeHttpsSuffixPattern.test(suffix) &&
+    hasValidPercentEscapes(suffix)
+  );
+};
 
 const isCatalogResource = (value: string) => {
   if (value.startsWith("/images/")) {
@@ -48,14 +96,7 @@ const isCatalogResource = (value: string) => {
   if (!value.startsWith("https://")) {
     return false;
   }
-
-  try {
-    const url = new URL(value);
-
-    return url.protocol === "https:" && url.hostname.length > 0 && !url.username && !url.password;
-  } catch {
-    return false;
-  }
+  return isSafeHttpsResource(value);
 };
 
 export const catalogResourceSchema = z.string().max(500).refine(isCatalogResource);

@@ -200,9 +200,16 @@ describe("catalog contracts", () => {
   });
 
   it("accepts only well-formed HTTPS URLs and safe local image paths", () => {
-    expect(
-      catalogResourceSchema.parse("https://cdn.example.com/images/photo.jpg?width=480#hero"),
-    ).toBe("https://cdn.example.com/images/photo.jpg?width=480#hero");
+    const acceptedHttpsResources = [
+      "https://cdn.example.com",
+      "https://cdn.example.com/images/photo.jpg?width=480&fit=cover#hero",
+      "https://CDN-1.example.com:1/a%20b.jpg",
+      "https://cdn.example.com:443/image.jpg",
+      "https://cdn.example.com:65535/image.jpg?next=%2Fimages%2Fone.jpg",
+    ];
+    for (const resource of acceptedHttpsResources) {
+      expect(catalogResourceSchema.parse(resource)).toBe(resource);
+    }
     expect(catalogResourceSchema.parse("/images/rooms/lake_view-1.0.jpg")).toBe(
       "/images/rooms/lake_view-1.0.jpg",
     );
@@ -210,6 +217,31 @@ describe("catalog contracts", () => {
     for (const resource of [
       "https://",
       "https://user:password@cdn.example.com/photo.jpg",
+      "https://例子.测试/image.jpg",
+      "https://xn--fsqu00a.xn--0zwm56d/image.jpg",
+      "https://[2001:db8::1]/image.jpg",
+      "https://example.com./image.jpg",
+      "https://example..com/image.jpg",
+      "https://foo_bar.example/image.jpg",
+      "https://-example.com/image.jpg",
+      "https://example-.com/image.jpg",
+      "https://127.0.0.1/image.jpg",
+      "https://127.1/image.jpg",
+      "https://0x7f.1/image.jpg",
+      "https://0177.0.0.1/image.jpg",
+      "https://2130706433/image.jpg",
+      "https://example.com:/image.jpg",
+      "https://example.com:0/image.jpg",
+      "https://example.com:0443/image.jpg",
+      "https://example.com:65536/image.jpg",
+      "https://example.com:bad/image.jpg",
+      "https://%/image.jpg",
+      "https://%zz.example/image.jpg",
+      "https://cdn.example.com/image%2.jpg",
+      "https://cdn.example.com/image%GG.jpg",
+      "https://cdn.example.com/image photo.jpg",
+      "https://cdn.example.com/image\\photo.jpg",
+      "https://cdn.example.com/image\nphoto.jpg",
       "/images/",
       "/images//photo.jpg",
       "/images/./photo.jpg",
