@@ -37,6 +37,46 @@ const quoteGeneratedTestSchema = (schemaName: string): string => {
   return `"${schemaName}"`;
 };
 
+type EnvironmentVariableSnapshot =
+  { present: false } | { present: true; value: string | undefined };
+
+const snapshotEnvironmentVariable = (
+  environment: Record<string, string | undefined>,
+  key: string,
+): EnvironmentVariableSnapshot =>
+  Object.prototype.hasOwnProperty.call(environment, key)
+    ? { present: true, value: environment[key] }
+    : { present: false };
+
+const restoreEnvironmentVariable = (
+  environment: Record<string, string | undefined>,
+  key: string,
+  snapshot: EnvironmentVariableSnapshot,
+): void => {
+  if (snapshot.present) {
+    environment[key] = snapshot.value;
+  } else {
+    delete environment[key];
+  }
+};
+
+const runBestEffortCleanup = async (
+  message: string,
+  steps: Array<() => Promise<void> | void>,
+): Promise<void> => {
+  const errors: unknown[] = [];
+  for (const step of steps) {
+    try {
+      await step();
+    } catch (error) {
+      errors.push(error);
+    }
+  }
+  if (errors.length > 0) {
+    throw new AggregateError(errors, message);
+  }
+};
+
 type SqlMigrationScan = {
   hasExplicitDownMarker: boolean;
   statements: string[];
@@ -413,6 +453,61 @@ test.each([
   expect(inventoryCapacityExpression.test(definition)).toBe(true);
 });
 
+test("restores an environment variable with its original presence and value", () => {
+  const presentEnvironment: Record<string, string | undefined> = {
+    DATABASE_URL: "postgresql://original",
+  };
+  const presentSnapshot = snapshotEnvironmentVariable(presentEnvironment, "DATABASE_URL");
+  presentEnvironment.DATABASE_URL = "postgresql://temporary";
+  restoreEnvironmentVariable(presentEnvironment, "DATABASE_URL", presentSnapshot);
+  expect(presentEnvironment).toEqual({ DATABASE_URL: "postgresql://original" });
+
+  const absentEnvironment: Record<string, string | undefined> = {};
+  const absentSnapshot = snapshotEnvironmentVariable(absentEnvironment, "DATABASE_URL");
+  absentEnvironment.DATABASE_URL = "postgresql://temporary";
+  restoreEnvironmentVariable(absentEnvironment, "DATABASE_URL", absentSnapshot);
+  expect(Object.hasOwn(absentEnvironment, "DATABASE_URL")).toBe(false);
+});
+
+test("best-effort cleanup runs every step and aggregates failures", async () => {
+  const calls: string[] = [];
+  const firstFailure = new Error("disconnect failed");
+  const thirdFailure = new Error("release failed");
+
+  const cleanup = runBestEffortCleanup("test cleanup", [
+    () => {
+      calls.push("disconnect");
+      return Promise.reject(firstFailure);
+    },
+    () => {
+      calls.push("drop schema");
+    },
+    () => {
+      calls.push("release client");
+      throw thirdFailure;
+    },
+    () => {
+      calls.push("end pool");
+      return Promise.resolve();
+    },
+    () => {
+      calls.push("restore environment");
+    },
+  ]);
+
+  await expect(cleanup).rejects.toMatchObject({
+    errors: [firstFailure, thirdFailure],
+    message: "test cleanup",
+  });
+  expect(calls).toEqual([
+    "disconnect",
+    "drop schema",
+    "release client",
+    "end pool",
+    "restore environment",
+  ]);
+});
+
 const createBarrier = (participants: number, timeoutMilliseconds: number) => {
   let arrivals = 0;
   let released = false;
@@ -459,9 +554,10 @@ describeDatabase(suiteName, () => {
   let pool: Pool | undefined;
   let quotedSchema: string | undefined;
   let schemaName: string | undefined;
+  let schemaCreated = false;
   let migrationApplied: Promise<void> | undefined;
   let repositoryDatabase: DatabaseService | undefined;
-  let originalDatabaseUrl: string | undefined;
+  let originalDatabaseUrl: EnvironmentVariableSnapshot | undefined;
 
   const database = (): PoolClient => {
     if (client === undefined) {
@@ -877,18 +973,19 @@ describeDatabase(suiteName, () => {
   };
 
   beforeAll(async () => {
+    originalDatabaseUrl = snapshotEnvironmentVariable(process.env, "DATABASE_URL");
     const connectionString = requireSafeDatabaseIntegrationUrl(process.env.DATABASE_URL);
     pool = new Pool({ connectionString });
     client = await pool.connect();
     schemaName = `quote_booking_test_${randomBytes(8).toString("hex")}`;
     quotedSchema = quoteGeneratedTestSchema(schemaName);
     await client.query(`CREATE SCHEMA ${quotedSchema}`);
+    schemaCreated = true;
     await client.query(`SET search_path TO ${quotedSchema}, public`);
     await createBaselineFixtures();
     if (schemaName === undefined) {
       throw new Error("Quote booking test schema was not generated");
     }
-    originalDatabaseUrl = process.env.DATABASE_URL;
     const repositoryUrl = new URL(connectionString);
     repositoryUrl.searchParams.set("schema", schemaName);
     repositoryUrl.searchParams.set("options", `-c search_path=${schemaName},public`);
@@ -897,31 +994,38 @@ describeDatabase(suiteName, () => {
   });
 
   afterAll(async () => {
-    const cleanupErrors: unknown[] = [];
-    try {
-      await repositoryDatabase?.onModuleDestroy();
-      repositoryDatabase = undefined;
-      if (quotedSchema !== undefined && pool !== undefined) {
-        await pool.query(`DROP SCHEMA ${quotedSchema} CASCADE`);
-      }
-    } catch (error) {
-      cleanupErrors.push(error);
-    } finally {
-      client?.release();
-      try {
-        await pool?.end();
-      } catch (error) {
-        cleanupErrors.push(error);
-      }
-      if (originalDatabaseUrl === undefined) {
-        delete process.env.DATABASE_URL;
-      } else {
-        process.env.DATABASE_URL = originalDatabaseUrl;
-      }
-    }
-    if (cleanupErrors.length > 0) {
-      throw new AggregateError(cleanupErrors, "quote booking contract cleanup failed");
-    }
+    const cleanupRepositoryDatabase = repositoryDatabase;
+    const cleanupClient = client;
+    const cleanupPool = pool;
+    const cleanupSchemaName = schemaName;
+    const cleanupSchemaCreated = schemaCreated;
+    const cleanupDatabaseUrl = originalDatabaseUrl;
+    repositoryDatabase = undefined;
+    client = undefined;
+    pool = undefined;
+    schemaCreated = false;
+    originalDatabaseUrl = undefined;
+
+    await runBestEffortCleanup("quote booking contract cleanup failed", [
+      async () => cleanupRepositoryDatabase?.onModuleDestroy(),
+      async () => {
+        if (!cleanupSchemaCreated) {
+          return;
+        }
+        if (cleanupSchemaName === undefined || cleanupPool === undefined) {
+          throw new Error("Created quote booking schema is missing cleanup metadata");
+        }
+        const cleanupQuotedSchema = quoteGeneratedTestSchema(cleanupSchemaName);
+        await cleanupPool.query(`DROP SCHEMA ${cleanupQuotedSchema} CASCADE`);
+      },
+      () => cleanupClient?.release(),
+      async () => cleanupPool?.end(),
+      () => {
+        if (cleanupDatabaseUrl !== undefined) {
+          restoreEnvironmentVariable(process.env, "DATABASE_URL", cleanupDatabaseUrl);
+        }
+      },
+    ]);
   });
 
   test("the target migration is present and executes in an isolated schema", async () => {
