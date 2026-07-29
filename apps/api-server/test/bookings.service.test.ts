@@ -770,13 +770,6 @@ describe("BookingRepository", () => {
       }),
     ],
     [
-      "forged message",
-      knownRequestError("P2010", {
-        code: "23505",
-        message: 'user input mentions "booking_booking_number_key"',
-      }),
-    ],
-    [
       "wrong nested kind",
       nestedRawUnique(["booking_number"], { kind: "ForeignKeyConstraintViolation" }),
     ],
@@ -792,6 +785,28 @@ describe("BookingRepository", () => {
   it.each([
     ["inventory hold fields", nestedRawUnique(["booking_id", "business_date"])],
     ["unknown fields", nestedRawUnique(["unknown_unique_column"])],
+    [
+      "flat inventory-hold constraint",
+      knownRequestError("P2010", {
+        code: "23505",
+        constraint: "inventory_hold_booking_id_business_date_key",
+      }),
+    ],
+    [
+      "flat unknown constraint",
+      knownRequestError("P2010", {
+        code: "23505",
+        constraint: "some_other_unique_key",
+      }),
+    ],
+    [
+      "flat untrusted message",
+      knownRequestError("P2010", {
+        code: "23505",
+        message: 'user input mentions "booking_booking_number_key"',
+      }),
+    ],
+    ["flat missing constraint", knownRequestError("P2010", { code: "23505" })],
     ["P2002 unknown target", knownRequestError("P2002", { target: ["unknown_column"] })],
     ["P2002 missing target", knownRequestError("P2002", {})],
   ])("checks user/key for confirmed unique even when non-retryable: %s", async (_name, error) => {

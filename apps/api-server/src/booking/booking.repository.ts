@@ -489,9 +489,9 @@ const p2002BookingNumber = (meta: unknown): boolean => {
 const STANDARD_UNIQUE_MESSAGE =
   /^(?:ERROR: )?duplicate key value violates unique constraint "(booking_booking_number_key|booking_user_id_idempotency_key_key|booking_quote_id_key)"(?:\r?\nDETAIL: [^\r\n]*)?$/;
 
-const flatP2010BookingNumber = (meta: object): boolean | null => {
+const flatP2010BookingNumber = (meta: object): boolean => {
   if (ownDataValue(meta, "code") !== "23505") {
-    return null;
+    return false;
   }
   const named = asKnownConstraint(ownDataValue(meta, "constraint"));
   if (named !== null) {
@@ -499,10 +499,10 @@ const flatP2010BookingNumber = (meta: object): boolean | null => {
   }
   const message = ownDataValue(meta, "message");
   if (typeof message !== "string") {
-    return null;
+    return false;
   }
   const match = STANDARD_UNIQUE_MESSAGE.exec(message);
-  return match === null ? null : match[1] === "booking_booking_number_key";
+  return match?.[1] === "booking_booking_number_key";
 };
 
 const nestedP2010 = (meta: object): UniqueClassification | null => {
@@ -578,7 +578,7 @@ const p2010Classification = (meta: unknown): UniqueClassification | null => {
     return null;
   }
   const flat = flatP2010BookingNumber(meta);
-  return flat === null ? null : { confirmed: true, bookingNumber: flat };
+  return { confirmed: true, bookingNumber: flat };
 };
 
 const classifyUniqueConstraint = (error: unknown): UniqueClassification | null => {
