@@ -27,6 +27,8 @@ const managedTables = [
 
 const expectedCatalogIdentityConflict =
   "Catalog seed identity conflict: existing id/business-key mapping does not match fixed reference data";
+const expectedCatalogInventoryCapacityConflict =
+  "Catalog seed inventory capacity conflict: managed total is below occupied inventory";
 
 const quoteGeneratedTestSchema = (schemaName: string): string => {
   if (!/^catalog_seed_test_[0-9a-f]{16}$/.test(schemaName)) {
@@ -216,6 +218,238 @@ describeDatabase(suiteName, () => {
     );
   });
 
+  test("room and daily supply fixtures match the exact capacity and weekly price formula", async () => {
+    const propertyFixtures = [
+      { nameZh: "西湖云栖酒店", prices: [42_800, 56_800] },
+      { nameZh: "龙井山居", prices: [32_800, 44_800] },
+      { nameZh: "青山田园农庄", prices: [26_800, 38_800] },
+      { nameZh: "筑城观山酒店", prices: [39_800, 52_800] },
+      { nameZh: "黔灵巷居", prices: [29_800, 41_800] },
+      { nameZh: "花溪稻田农庄", prices: [23_800, 35_800] },
+    ] as const;
+    const rooms = await pool.query<{
+      area_sqm: string;
+      base_price_cents: number;
+      max_guests: number;
+      name_zh: string;
+      property_name_zh: string;
+      room_type_id: string;
+      total_inventory: number;
+    }>(`
+      SELECT
+        p.name_zh AS property_name_zh,
+        r.id::text AS room_type_id,
+        r.name_zh,
+        r.area_sqm::text,
+        r.max_guests,
+        inventory.total_inventory,
+        price.sale_price_cents AS base_price_cents
+      FROM property p
+      JOIN room_type r ON r.property_id = p.id
+      JOIN daily_inventory inventory
+        ON inventory.room_type_id = r.id
+       AND inventory.business_date = DATE '2026-07-30'
+      JOIN daily_price price
+        ON price.room_type_id = r.id
+       AND price.business_date = DATE '2026-07-30'
+      ORDER BY p.id, r.display_order
+    `);
+
+    expect(rooms.rows).toHaveLength(12);
+    expect(
+      rooms.rows.map(
+        ({
+          area_sqm: areaSqm,
+          base_price_cents: basePriceCents,
+          max_guests: maxGuests,
+          name_zh: nameZh,
+          property_name_zh: propertyNameZh,
+          total_inventory: totalInventory,
+        }) => ({
+          areaSqm,
+          basePriceCents,
+          maxGuests,
+          nameZh,
+          propertyNameZh,
+          totalInventory,
+        }),
+      ),
+    ).toEqual(
+      propertyFixtures.flatMap((property, propertyIndex) => [
+        {
+          areaSqm: "28.00",
+          basePriceCents: property.prices[0],
+          maxGuests: 2,
+          nameZh: "舒适大床房",
+          propertyNameZh: property.nameZh,
+          totalInventory: propertyIndex === 0 ? 1 : 3,
+        },
+        {
+          areaSqm: "38.00",
+          basePriceCents: property.prices[1],
+          maxGuests: 4,
+          nameZh: "家庭双床房",
+          propertyNameZh: property.nameZh,
+          totalInventory: 2,
+        },
+      ]),
+    );
+
+    const priceDates = [
+      { businessDate: "2026-07-30", offset: 0 },
+      { businessDate: "2026-08-05", offset: 6 },
+      { businessDate: "2026-08-06", offset: 7 },
+      { businessDate: "2026-09-27", offset: 59 },
+    ] as const;
+    const prices = await pool.query<{
+      business_date: string;
+      rack_price_cents: number;
+      room_type_id: string;
+      sale_price_cents: number;
+    }>(`
+      SELECT
+        room_type_id::text,
+        business_date::text,
+        sale_price_cents,
+        rack_price_cents
+      FROM daily_price
+      WHERE business_date IN (
+        DATE '2026-07-30',
+        DATE '2026-08-05',
+        DATE '2026-08-06',
+        DATE '2026-09-27'
+      )
+      ORDER BY room_type_id, business_date
+    `);
+    const basePriceByRoom = new Map(
+      rooms.rows.map(({ base_price_cents: basePrice, room_type_id: roomId }) => [
+        roomId,
+        basePrice,
+      ]),
+    );
+
+    expect(prices.rows).toHaveLength(48);
+    for (const price of prices.rows) {
+      const expectedDate = priceDates.find(
+        ({ businessDate }) => businessDate === price.business_date,
+      );
+      const basePrice = basePriceByRoom.get(price.room_type_id);
+      expect(expectedDate).toBeDefined();
+      expect(basePrice).toBeDefined();
+      const expectedSale = (basePrice ?? 0) + ((expectedDate?.offset ?? 0) % 7) * 1_000;
+      expect(price.sale_price_cents).toBe(expectedSale);
+      expect(price.rack_price_cents - price.sale_price_cents).toBe(6_000);
+    }
+  });
+
+  test("database metadata exposes the required unique keys, foreign keys, and indexes", async () => {
+    const indexes = await pool.query<{ indexdef: string; indexname: string }>(`
+      SELECT indexname, indexdef
+      FROM pg_indexes
+      WHERE schemaname = 'public'
+        AND indexname IN (
+          'property_city_id_name_zh_key',
+          'property_city_status_type_order_id_idx',
+          'property_location_gix',
+          'property_media_property_id_display_order_key',
+          'property_facility_pkey',
+          'property_facility_facility_id_idx',
+          'room_type_property_id_name_zh_key',
+          'room_type_property_status_capacity_order_id_idx',
+          'daily_price_date_room_idx',
+          'daily_inventory_date_room_idx'
+        )
+      ORDER BY indexname
+    `);
+    expect(indexes.rows).toHaveLength(10);
+
+    const indexDefinitions = new Map(
+      indexes.rows.map(({ indexdef, indexname }) => [indexname, indexdef]),
+    );
+    expect(indexDefinitions.get("property_city_id_name_zh_key")).toMatch(
+      /UNIQUE.*\(city_id, name_zh\)/,
+    );
+    expect(indexDefinitions.get("property_media_property_id_display_order_key")).toMatch(
+      /UNIQUE.*\(property_id, display_order\)/,
+    );
+    expect(indexDefinitions.get("room_type_property_id_name_zh_key")).toMatch(
+      /UNIQUE.*\(property_id, name_zh\)/,
+    );
+    expect(indexDefinitions.get("property_location_gix")).toMatch(/USING gist \(location\)/i);
+    expect(indexDefinitions.get("property_city_status_type_order_id_idx")).toContain(
+      "(city_id, status, type, display_order, id)",
+    );
+    expect(indexDefinitions.get("room_type_property_status_capacity_order_id_idx")).toContain(
+      "(property_id, status, max_guests, display_order, id)",
+    );
+    expect(indexDefinitions.get("daily_price_date_room_idx")).toContain(
+      "(business_date, room_type_id)",
+    );
+    expect(indexDefinitions.get("daily_inventory_date_room_idx")).toContain(
+      "(business_date, room_type_id)",
+    );
+
+    const foreignKeys = await pool.query<{
+      constraint_name: string;
+      delete_action: string;
+      update_action: string;
+    }>(`
+      SELECT
+        conname AS constraint_name,
+        confdeltype::text AS delete_action,
+        confupdtype::text AS update_action
+      FROM pg_constraint
+      WHERE contype = 'f'
+        AND conname IN (
+          'property_city_id_fkey',
+          'property_media_property_id_fkey',
+          'property_facility_property_id_fkey',
+          'property_facility_facility_id_fkey',
+          'room_type_property_id_fkey',
+          'daily_price_room_type_id_fkey',
+          'daily_inventory_room_type_id_fkey'
+        )
+      ORDER BY conname
+    `);
+    expect(foreignKeys.rows).toEqual([
+      {
+        constraint_name: "daily_inventory_room_type_id_fkey",
+        delete_action: "c",
+        update_action: "c",
+      },
+      {
+        constraint_name: "daily_price_room_type_id_fkey",
+        delete_action: "c",
+        update_action: "c",
+      },
+      {
+        constraint_name: "property_city_id_fkey",
+        delete_action: "r",
+        update_action: "c",
+      },
+      {
+        constraint_name: "property_facility_facility_id_fkey",
+        delete_action: "c",
+        update_action: "c",
+      },
+      {
+        constraint_name: "property_facility_property_id_fkey",
+        delete_action: "c",
+        update_action: "c",
+      },
+      {
+        constraint_name: "property_media_property_id_fkey",
+        delete_action: "c",
+        update_action: "c",
+      },
+      {
+        constraint_name: "room_type_property_id_fkey",
+        delete_action: "c",
+        update_action: "c",
+      },
+    ]);
+  });
+
   test("every room has the continuous sixty-day price and inventory horizon", async () => {
     for (const table of ["daily_price", "daily_inventory"] as const) {
       const horizons = await pool.query<{
@@ -282,6 +516,153 @@ describeDatabase(suiteName, () => {
       );
       expect(wifi.rows).toEqual([{ name_zh: "无线网络" }]);
     } finally {
+      await pool.query("UPDATE facility SET name_zh = '无线网络' WHERE id = $1::uuid", [wifiId]);
+    }
+  });
+
+  test("seed preserves operational inventory and safely rejects occupied capacity reductions", async () => {
+    const roomId = "30000000-0000-4000-8000-000000000001";
+    const businessDate = "2026-07-30";
+    const wifiId = "40000000-0000-4000-8000-000000000001";
+    const readInventory = async (): Promise<{
+      held_inventory: number;
+      sold_inventory: number;
+      total_inventory: number;
+      updated_at: string;
+      version: number;
+    }> => {
+      const result = await pool.query<{
+        held_inventory: number;
+        sold_inventory: number;
+        total_inventory: number;
+        updated_at: string;
+        version: number;
+      }>(
+        `
+          SELECT
+            total_inventory,
+            held_inventory,
+            sold_inventory,
+            version,
+            updated_at::text
+          FROM daily_inventory
+          WHERE room_type_id = $1::uuid
+            AND business_date = $2::date
+        `,
+        [roomId, businessDate],
+      );
+      const inventory = result.rows[0];
+      if (inventory === undefined) {
+        throw new Error("Expected fixed inventory row");
+      }
+      return inventory;
+    };
+
+    try {
+      await pool.query(
+        `
+          UPDATE daily_inventory
+          SET
+            held_inventory = 1,
+            sold_inventory = 0,
+            version = 7,
+            updated_at = TIMESTAMPTZ '2026-01-01 00:00:00+00'
+          WHERE room_type_id = $1::uuid
+            AND business_date = $2::date
+        `,
+        [roomId, businessDate],
+      );
+
+      await runSeed(prisma);
+
+      expect(await readInventory()).toEqual({
+        held_inventory: 1,
+        sold_inventory: 0,
+        total_inventory: 1,
+        updated_at: "2026-01-01 00:00:00+00",
+        version: 7,
+      });
+
+      await pool.query(
+        `
+          UPDATE daily_inventory
+          SET
+            total_inventory = 2,
+            held_inventory = 1,
+            sold_inventory = 0,
+            version = 7,
+            updated_at = TIMESTAMPTZ '2026-01-02 00:00:00+00'
+          WHERE room_type_id = $1::uuid
+            AND business_date = $2::date
+        `,
+        [roomId, businessDate],
+      );
+
+      await runSeed(prisma);
+
+      const restored = await readInventory();
+      expect(restored).toMatchObject({
+        held_inventory: 1,
+        sold_inventory: 0,
+        total_inventory: 1,
+        version: 8,
+      });
+      expect(restored.updated_at).not.toBe("2026-01-02 00:00:00+00");
+
+      await pool.query("UPDATE facility SET name_zh = '容量冲突回滚标记' WHERE id = $1::uuid", [
+        wifiId,
+      ]);
+      await pool.query(
+        `
+          UPDATE daily_inventory
+          SET
+            total_inventory = 2,
+            held_inventory = 2,
+            sold_inventory = 0,
+            version = 11,
+            updated_at = TIMESTAMPTZ '2026-01-03 00:00:00+00'
+          WHERE room_type_id = $1::uuid
+            AND business_date = $2::date
+        `,
+        [roomId, businessDate],
+      );
+
+      const seedModule = (await import("../../prisma/seed.js")) as unknown as Record<
+        string,
+        unknown
+      >;
+      expect(seedModule.CATALOG_SEED_INVENTORY_CAPACITY_CONFLICT_ERROR).toBe(
+        expectedCatalogInventoryCapacityConflict,
+      );
+      await expect(runSeed(prisma)).rejects.toThrowError(expectedCatalogInventoryCapacityConflict);
+
+      expect(await readInventory()).toEqual({
+        held_inventory: 2,
+        sold_inventory: 0,
+        total_inventory: 2,
+        updated_at: "2026-01-03 00:00:00+00",
+        version: 11,
+      });
+      const facility = await pool.query<{ name_zh: string }>(
+        "SELECT name_zh FROM facility WHERE id = $1::uuid",
+        [wifiId],
+      );
+      expect(facility.rows).toEqual([{ name_zh: "容量冲突回滚标记" }]);
+    } finally {
+      await pool.query(
+        `
+          UPDATE daily_inventory
+          SET
+            total_inventory = 1,
+            held_inventory = 0,
+            sold_inventory = 0,
+            version = 0,
+            updated_at = CURRENT_TIMESTAMP
+          WHERE room_type_id = $1::uuid
+            AND business_date = $2::date
+        `,
+        [roomId, businessDate],
+      );
       await pool.query("UPDATE facility SET name_zh = '无线网络' WHERE id = $1::uuid", [wifiId]);
     }
   });

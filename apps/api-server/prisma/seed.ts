@@ -45,6 +45,9 @@ export const CITY_SEED_IDENTITY_CONFLICT_ERROR =
 export const CATALOG_SEED_IDENTITY_CONFLICT_ERROR =
   "Catalog seed identity conflict: existing id/business-key mapping does not match fixed reference data";
 
+export const CATALOG_SEED_INVENTORY_CAPACITY_CONFLICT_ERROR =
+  "Catalog seed inventory capacity conflict: managed total is below occupied inventory";
+
 const citySeedAdvisoryLockId = 3_301_005_201;
 
 const requireDatabaseUrl = (): string => {
@@ -454,7 +457,7 @@ export async function runSeed(prisma: PrismaClient): Promise<void> {
           "businessDate" text,
           "salePriceCents" integer,
           "rackPriceCents" integer,
-          "total" integer
+          "totalInventory" integer
         )
         ON CONFLICT ("room_type_id", "business_date") DO UPDATE
         SET
@@ -464,15 +467,46 @@ export async function runSeed(prisma: PrismaClient): Promise<void> {
       `,
     );
 
+    const existingInventories = await transaction.$queryRaw<
+      Array<{
+        heldInventory: number;
+        managedTotalInventory: number;
+        soldInventory: number;
+      }>
+    >(
+      Prisma.sql`
+        SELECT
+          inventory."held_inventory" AS "heldInventory",
+          inventory."sold_inventory" AS "soldInventory",
+          supply."totalInventory" AS "managedTotalInventory"
+        FROM jsonb_to_recordset(${dailySupplyJson}::jsonb) AS supply(
+          "roomTypeId" text,
+          "businessDate" text,
+          "salePriceCents" integer,
+          "rackPriceCents" integer,
+          "totalInventory" integer
+        )
+        JOIN "daily_inventory" inventory
+          ON inventory."room_type_id" = supply."roomTypeId"::uuid
+         AND inventory."business_date" = supply."businessDate"::date
+        FOR UPDATE OF inventory
+      `,
+    );
+    if (
+      existingInventories.some(
+        ({ heldInventory, managedTotalInventory, soldInventory }) =>
+          managedTotalInventory < heldInventory + soldInventory,
+      )
+    ) {
+      throw new Error(CATALOG_SEED_INVENTORY_CAPACITY_CONFLICT_ERROR);
+    }
+
     await transaction.$executeRaw(
       Prisma.sql`
         INSERT INTO "daily_inventory" (
           "room_type_id",
           "business_date",
           "total_inventory",
-          "held_inventory",
-          "sold_inventory",
-          "version",
           "created_at",
           "updated_at"
         )
@@ -480,9 +514,6 @@ export async function runSeed(prisma: PrismaClient): Promise<void> {
           supply."roomTypeId"::uuid,
           supply."businessDate"::date,
           supply."totalInventory",
-          0,
-          0,
-          0,
           CURRENT_TIMESTAMP,
           CURRENT_TIMESTAMP
         FROM jsonb_to_recordset(${dailySupplyJson}::jsonb) AS supply(
@@ -495,12 +526,36 @@ export async function runSeed(prisma: PrismaClient): Promise<void> {
         ON CONFLICT ("room_type_id", "business_date") DO UPDATE
         SET
           "total_inventory" = EXCLUDED."total_inventory",
-          "held_inventory" = 0,
-          "sold_inventory" = 0,
-          "version" = 0,
+          "version" = "daily_inventory"."version" + 1,
           "updated_at" = CURRENT_TIMESTAMP
+        WHERE "daily_inventory"."total_inventory" IS DISTINCT FROM EXCLUDED."total_inventory"
+          AND "daily_inventory"."held_inventory" + "daily_inventory"."sold_inventory"
+              <= EXCLUDED."total_inventory"
       `,
     );
+
+    const unresolvedInventoryCapacity = await transaction.$queryRaw<Array<{ conflict: boolean }>>(
+      Prisma.sql`
+        SELECT true AS "conflict"
+        FROM jsonb_to_recordset(${dailySupplyJson}::jsonb) AS supply(
+          "roomTypeId" text,
+          "businessDate" text,
+          "salePriceCents" integer,
+          "rackPriceCents" integer,
+          "totalInventory" integer
+        )
+        JOIN "daily_inventory" inventory
+          ON inventory."room_type_id" = supply."roomTypeId"::uuid
+         AND inventory."business_date" = supply."businessDate"::date
+        WHERE inventory."total_inventory" <> supply."totalInventory"
+           OR supply."totalInventory"
+              < inventory."held_inventory" + inventory."sold_inventory"
+        LIMIT 1
+      `,
+    );
+    if (unresolvedInventoryCapacity.length > 0) {
+      throw new Error(CATALOG_SEED_INVENTORY_CAPACITY_CONFLICT_ERROR);
+    }
   });
 }
 
