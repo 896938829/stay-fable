@@ -23,6 +23,148 @@ const scenarios = {
 const requestTimeoutDefault = 5_000;
 const sqlTimeoutMilliseconds = 5_000;
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const bookingNumberPattern = /^SF[0-9]{8}[A-F0-9]{12}$/;
+const calendarDatePattern = /^\d{4}-\d{2}-\d{2}$/;
+const instantPattern =
+  /^(\d{4}-\d{2}-\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/;
+const bookingSummaryFields = [
+  "booking_id",
+  "booking_number",
+  "status",
+  "property_name",
+  "room_type_name",
+  "checkin",
+  "checkout",
+  "nights",
+  "guests",
+  "total_price_cents",
+  "currency",
+  "expires_at",
+  "created_at",
+].sort();
+
+function isPlainObject(value) {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    !Array.isArray(value) &&
+    Object.getPrototypeOf(value) === Object.prototype
+  );
+}
+
+function requireCalendarDate(value) {
+  assert.equal(typeof value, "string");
+  assert.match(value, calendarDatePattern);
+  const instant = Date.parse(`${value}T00:00:00.000Z`);
+  assert.equal(new Date(instant).toISOString().slice(0, 10), value);
+  return instant;
+}
+
+function requireInstant(value) {
+  assert.equal(typeof value, "string");
+  const match = instantPattern.exec(value);
+  assert.ok(match);
+  requireCalendarDate(match[1]);
+  assert.ok(Number(match[2]) <= 23);
+  assert.ok(Number(match[3]) <= 59);
+  assert.ok(Number(match[4]) <= 59);
+  const instant = Date.parse(value);
+  assert.ok(Number.isFinite(instant));
+  return instant;
+}
+
+export function assertBookingSummary(value, expected) {
+  try {
+    assert.ok(isPlainObject(value));
+    assert.deepEqual(Object.keys(value).sort(), bookingSummaryFields);
+    assert.match(value.booking_id, uuidPattern);
+    assert.match(value.booking_number, bookingNumberPattern);
+    assert.equal(value.status, "PENDING_PAYMENT");
+    assert.equal(typeof value.property_name, "string");
+    assert.ok(value.property_name.trim().length > 0);
+    assert.equal(value.property_name, expected.propertyName);
+    assert.equal(typeof value.room_type_name, "string");
+    assert.ok(value.room_type_name.trim().length > 0);
+    assert.equal(value.room_type_name, expected.roomTypeName);
+    const checkinInstant = requireCalendarDate(value.checkin);
+    const checkoutInstant = requireCalendarDate(value.checkout);
+    assert.equal(value.checkin, expected.checkin);
+    assert.equal(value.checkout, expected.checkout);
+    const nights = (checkoutInstant - checkinInstant) / 86_400_000;
+    assert.ok(Number.isInteger(nights) && nights >= 1 && nights <= 30);
+    assert.equal(value.nights, nights);
+    assert.equal(value.nights, expected.nights);
+    assert.ok(Number.isInteger(value.guests) && value.guests >= 1 && value.guests <= 10);
+    assert.equal(value.guests, expected.guests);
+    assert.ok(
+      Number.isInteger(value.total_price_cents) &&
+        value.total_price_cents >= 0 &&
+        value.total_price_cents <= 2_147_483_647,
+    );
+    assert.equal(value.total_price_cents, expected.totalPriceCents);
+    assert.equal(value.currency, "CNY");
+    const createdAt = requireInstant(value.created_at);
+    const expiresAt = requireInstant(value.expires_at);
+    assert.ok(expiresAt > createdAt);
+
+    return Object.freeze(
+      Object.fromEntries(bookingSummaryFields.map((field) => [field, value[field]])),
+    );
+  } catch (error) {
+    throw new Error("runtime booking summary is invalid", { cause: error });
+  }
+}
+
+export function assertPersistedBookingState(value, expected) {
+  try {
+    assert.ok(isPlainObject(value));
+    assert.ok(Array.isArray(value.bookings));
+    assert.ok(Array.isArray(value.holds));
+    assert.ok(Array.isArray(value.histories));
+    assert.equal(value.bookings.length, expected.bookingCount);
+    assert.equal(value.holds.length, expected.holdCount);
+    assert.equal(value.histories.length, expected.historyCount);
+    assert.equal(value.histories.length, value.bookings.length);
+
+    const bookingIds = new Set();
+    for (const booking of value.bookings) {
+      assert.ok(isPlainObject(booking));
+      assert.deepEqual(Object.keys(booking).sort(), ["booking_id", "status"]);
+      assert.match(booking.booking_id, uuidPattern);
+      assert.equal(booking.status, "PENDING_PAYMENT");
+      assert.equal(bookingIds.has(booking.booking_id), false);
+      bookingIds.add(booking.booking_id);
+    }
+    for (const hold of value.holds) {
+      assert.ok(isPlainObject(hold));
+      assert.deepEqual(Object.keys(hold).sort(), ["booking_id", "status"]);
+      assert.ok(bookingIds.has(hold.booking_id));
+      assert.equal(hold.status, "HELD");
+    }
+    const historyCounts = new Map();
+    for (const history of value.histories) {
+      assert.ok(isPlainObject(history));
+      assert.deepEqual(Object.keys(history).sort(), [
+        "actor_type",
+        "booking_id",
+        "from_status",
+        "reason",
+        "to_status",
+      ]);
+      assert.ok(bookingIds.has(history.booking_id));
+      assert.equal(history.from_status, null);
+      assert.equal(history.to_status, "PENDING_PAYMENT");
+      assert.equal(history.reason, "BOOKING_CREATED");
+      assert.equal(history.actor_type, "USER");
+      historyCounts.set(history.booking_id, (historyCounts.get(history.booking_id) ?? 0) + 1);
+    }
+    for (const bookingId of bookingIds) {
+      assert.equal(historyCounts.get(bookingId), 1);
+    }
+  } catch (error) {
+    throw new Error("runtime persisted booking state is invalid", { cause: error });
+  }
+}
 
 async function withTimeout(operation, timeoutMilliseconds, message) {
   let timeout;
@@ -134,6 +276,35 @@ async function createQuote(fetchImplementation, baseUrl, session, dates, timeout
   );
   assert.match(body?.data?.quote_id, uuidPattern, "runtime quote omitted a valid ID");
   return body.data;
+}
+
+function expectedBookingFromQuote(quote, dates) {
+  try {
+    const requested = quoteBody(dates);
+    assert.equal(quote.checkin, requested.checkin);
+    assert.equal(quote.checkout, requested.checkout);
+    assert.equal(quote.nights, dates.length);
+    assert.equal(quote.guests, requested.guests);
+    assert.equal(quote.property?.name, fixture.propertyName);
+    assert.equal(quote.room_type?.name, fixture.roomName);
+    assert.ok(
+      Number.isInteger(quote.total_price_cents) &&
+        quote.total_price_cents >= 0 &&
+        quote.total_price_cents <= 2_147_483_647,
+    );
+    assert.equal(quote.currency, "CNY");
+    return {
+      checkin: requested.checkin,
+      checkout: requested.checkout,
+      guests: requested.guests,
+      nights: dates.length,
+      propertyName: fixture.propertyName,
+      roomTypeName: fixture.roomName,
+      totalPriceCents: quote.total_price_cents,
+    };
+  } catch (error) {
+    throw new Error("runtime quote booking semantics are invalid", { cause: error });
+  }
 }
 
 async function createBooking(
@@ -496,26 +667,50 @@ async function loadPostgresOwner(databaseUrl) {
 
     async assertState({ userIds, dates, bookingCount, holdCount, historyCount, heldByDate }) {
       await transaction(async (client) => {
-        const counts = await query(
+        const bookings = await query(
           client,
           `
-            SELECT
-              (SELECT count(*)::integer FROM booking
-               WHERE user_id = ANY($1::uuid[]) AND room_type_id = $2::uuid) AS booking_count,
-              (SELECT count(*)::integer FROM inventory_hold hold
-               JOIN booking ON booking.id = hold.booking_id
-               WHERE booking.user_id = ANY($1::uuid[]) AND hold.room_type_id = $2::uuid) AS hold_count,
-              (SELECT count(*)::integer FROM booking_status_history history
-               JOIN booking ON booking.id = history.booking_id
-               WHERE booking.user_id = ANY($1::uuid[])) AS history_count
+            SELECT id::text AS booking_id, status::text AS status
+            FROM booking
+            WHERE user_id = ANY($1::uuid[]) AND room_type_id = $2::uuid
+            ORDER BY id
           `,
           [userIds, fixture.roomId],
         );
-        assert.deepEqual(counts.rows[0], {
-          booking_count: bookingCount,
-          hold_count: holdCount,
-          history_count: historyCount,
-        });
+        const holds = await query(
+          client,
+          `
+            SELECT hold.booking_id::text AS booking_id, hold.status::text AS status
+            FROM inventory_hold hold
+            JOIN booking ON booking.id = hold.booking_id
+            WHERE booking.user_id = ANY($1::uuid[]) AND hold.room_type_id = $2::uuid
+            ORDER BY hold.booking_id, hold.business_date
+          `,
+          [userIds, fixture.roomId],
+        );
+        const histories = await query(
+          client,
+          `
+            SELECT history.booking_id::text AS booking_id,
+                   history.from_status::text AS from_status,
+                   history.to_status::text AS to_status,
+                   history.reason,
+                   history.actor_type::text AS actor_type
+            FROM booking_status_history history
+            JOIN booking ON booking.id = history.booking_id
+            WHERE booking.user_id = ANY($1::uuid[])
+            ORDER BY history.booking_id, history.created_at, history.id
+          `,
+          [userIds],
+        );
+        assertPersistedBookingState(
+          {
+            bookings: bookings.rows,
+            holds: holds.rows,
+            histories: histories.rows,
+          },
+          { bookingCount, holdCount, historyCount },
+        );
         const inventory = await query(
           client,
           `
@@ -654,6 +849,7 @@ export async function verifySliceThreeRuntime(options = {}) {
     await database.assertQuoteOwner(replayQuote.quote_id, userIds[0]);
     log("SLICE3_QUOTE_CREATED");
     const replayKey = "slice3-replay-key-000000000000000001";
+    const replayExpected = expectedBookingFromQuote(replayQuote, scenarios.replay);
     const firstBooking = await createBooking(
       fetchImplementation,
       baseUrl,
@@ -672,7 +868,15 @@ export async function verifySliceThreeRuntime(options = {}) {
       [200],
       requestTimeoutMs,
     );
-    assert.deepEqual(replayedBooking.body?.data, firstBooking.body?.data, "replay fields changed");
+    const firstSummary = assertBookingSummary(firstBooking.body?.data, replayExpected);
+    const replayedSummary = assertBookingSummary(replayedBooking.body?.data, replayExpected);
+    assert.equal(replayedSummary.booking_id, firstSummary.booking_id, "replay booking ID changed");
+    assert.equal(
+      replayedSummary.booking_number,
+      firstSummary.booking_number,
+      "replay booking number changed",
+    );
+    assert.deepEqual(replayedSummary, firstSummary, "replay fields changed");
     await database.assertState({
       userIds,
       dates: scenarios.replay,
@@ -712,6 +916,12 @@ export async function verifySliceThreeRuntime(options = {}) {
     requireErrorCode(
       competingResults.find(({ status }) => status === 409),
       "INVENTORY_UNAVAILABLE",
+    );
+    const winnerIndex = competingResults.findIndex(({ status }) => status === 201);
+    assert.ok(winnerIndex >= 0, "last room winner is missing");
+    assertBookingSummary(
+      competingResults[winnerIndex].body?.data,
+      expectedBookingFromQuote(competingQuotes[winnerIndex], scenarios.concurrency),
     );
     await database.assertState({
       userIds,
