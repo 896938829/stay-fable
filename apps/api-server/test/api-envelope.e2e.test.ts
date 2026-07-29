@@ -1,4 +1,11 @@
-import { Controller, Get, HttpException, type INestApplication, Logger } from "@nestjs/common";
+import {
+  Controller,
+  Get,
+  HttpException,
+  type INestApplication,
+  Logger,
+  Post,
+} from "@nestjs/common";
 import { Test } from "@nestjs/testing";
 import request from "supertest";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -26,6 +33,11 @@ class ContractProbeController {
   @Get("unknown-error")
   unknownError(): never {
     throw new Error("database connection failed");
+  }
+
+  @Post("bad-request")
+  badRequest(): never {
+    throw new HttpException("other route validation detail", 400);
   }
 }
 
@@ -121,6 +133,22 @@ describe("API response contract", () => {
         message: "请求处理失败",
       },
       request_id: "req_http_123",
+    });
+  });
+
+  it("keeps ordinary POST 400 errors unchanged outside the exact quote route", async () => {
+    const runningApp = await createApp();
+    const response = await request(runningApp.getHttpServer() as Parameters<typeof request>[0])
+      .post("/api/v1/contract-probe/bad-request")
+      .set("x-request-id", "req_other_400")
+      .expect(400);
+
+    expect(response.body).toEqual({
+      error: {
+        code: "BAD_REQUEST",
+        message: "请求处理失败",
+      },
+      request_id: "req_other_400",
     });
   });
 

@@ -97,6 +97,13 @@ describe("Booking slice OpenAPI", () => {
       minItems: 1,
       maxItems: 30,
     });
+    expect(schemas?.QuoteNightlyPriceDto?.properties?.sale_price_cents?.maximum).toBe(
+      2_147_483_647,
+    );
+    expect(schemas?.QuoteNightlyPriceDto?.properties?.rack_price_cents?.maximum).toBe(
+      2_147_483_647,
+    );
+    expect(schemas?.QuoteResponseDto?.properties?.total_price_cents?.maximum).toBe(2_147_483_647);
     expect(JSON.stringify(schemas?.QuoteResponseDto)).not.toMatch(
       /inventory|fingerprint|user_id|version|held|sold/,
     );

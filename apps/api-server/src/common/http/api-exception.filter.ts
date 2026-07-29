@@ -80,6 +80,22 @@ export class ApiExceptionFilter implements ExceptionFilter {
       return;
     }
 
+    if (
+      exception instanceof HttpException &&
+      exception.getStatus() === 400 &&
+      request.method === "POST" &&
+      request.path === "/api/v1/quotes"
+    ) {
+      response.status(HttpStatus.BAD_REQUEST).json({
+        error: {
+          code: "QUOTE_REQUEST_INVALID",
+          message: "报价请求无效，请检查入住信息",
+        },
+        request_id: request.requestId,
+      } satisfies ErrorBody);
+      return;
+    }
+
     if (exception instanceof HttpException) {
       response.status(exception.getStatus()).json({
         error: {

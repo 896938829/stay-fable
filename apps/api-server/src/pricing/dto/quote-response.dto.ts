@@ -1,5 +1,7 @@
 import { ApiProperty, ApiPropertyOptional } from "@nestjs/swagger";
 
+const POSTGRES_INTEGER_MAX = 2_147_483_647;
+
 export class QuotePropertyDto {
   @ApiProperty({ format: "uuid" })
   id!: string;
@@ -23,10 +25,10 @@ export class QuoteNightlyPriceDto {
   @ApiProperty({ pattern: "^\\d{4}-\\d{2}-\\d{2}$" })
   business_date!: string;
 
-  @ApiProperty({ type: "integer", minimum: 0, maximum: Number.MAX_SAFE_INTEGER })
+  @ApiProperty({ type: "integer", minimum: 0, maximum: POSTGRES_INTEGER_MAX })
   sale_price_cents!: number;
 
-  @ApiProperty({ type: "integer", minimum: 0, maximum: Number.MAX_SAFE_INTEGER })
+  @ApiProperty({ type: "integer", minimum: 0, maximum: POSTGRES_INTEGER_MAX })
   rack_price_cents!: number;
 
   @ApiProperty({ enum: ["CNY"] })
@@ -58,7 +60,7 @@ export class QuoteResponseDto {
   @ApiProperty({ type: QuoteNightlyPriceDto, isArray: true, minItems: 1, maxItems: 30 })
   nightly_prices!: QuoteNightlyPriceDto[];
 
-  @ApiProperty({ type: "integer", minimum: 0, maximum: Number.MAX_SAFE_INTEGER })
+  @ApiProperty({ type: "integer", minimum: 0, maximum: POSTGRES_INTEGER_MAX })
   total_price_cents!: number;
 
   @ApiProperty({ enum: ["CNY"] })

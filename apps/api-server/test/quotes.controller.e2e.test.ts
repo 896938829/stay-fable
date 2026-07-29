@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { configureApplication } from "../src/application-configuration.js";
 import { BusinessException } from "../src/common/http/business.exception.js";
 import { SessionAuthGuard } from "../src/identity/session-auth.guard.js";
+import { QuoteRequestPipe } from "../src/pricing/dto/quote-request.dto.js";
 import { QuotesController } from "../src/pricing/quotes.controller.js";
 import { QuotesService } from "../src/pricing/quotes.service.js";
 
@@ -157,6 +158,101 @@ describe("QuotesController", () => {
       .expect(400);
     expect(response.body).toMatchObject({ error: { code: "QUOTE_REQUEST_INVALID" } });
     expect(quotes.create).toHaveBeenCalledOnce();
+  });
+
+  it("maps truncated JSON rejected by the body parser to the stable quote error", async () => {
+    const { quotes, server } = await createApp();
+    const response = await request(server)
+      .post("/api/v1/quotes")
+      .set("Content-Type", "application/json")
+      .send('{"room_type_id":')
+      .expect(400);
+    expect(response.body).toMatchObject({
+      error: {
+        code: "QUOTE_REQUEST_INVALID",
+        message: "报价请求无效，请检查入住信息",
+      },
+    });
+    expect(response.body).toHaveProperty("request_id");
+    expect(quotes.create).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["__proto__", '{"__proto__":{"polluted":true}}'],
+    ["constructor", '{"constructor":{"prototype":{"polluted":true}}}'],
+    ["prototype", '{"prototype":{"polluted":true}}'],
+    ["ordinary extra", '{"extra":true}'],
+  ])("rejects a JSON parsed %s own key without prototype pollution", (_name, extraJson) => {
+    const hostile = JSON.parse(
+      `${JSON.stringify(body).slice(0, -1)},${extraJson.slice(1)}`,
+    ) as object;
+    const pipe = new QuoteRequestPipe();
+    expect(() => pipe.transform(hostile)).toThrowError(
+      expect.objectContaining({
+        code: "QUOTE_REQUEST_INVALID",
+        message: "报价请求无效，请检查入住信息",
+      }),
+    );
+    expect(({} as Record<string, unknown>).polluted).toBeUndefined();
+  });
+
+  it("rejects an enumerable accessor without reading it", () => {
+    let getterReads = 0;
+    const hostile = Object.defineProperty({ ...body }, "guests", {
+      configurable: true,
+      enumerable: true,
+      get: () => {
+        getterReads += 1;
+        return 2;
+      },
+    });
+    expect(() => new QuoteRequestPipe().transform(hostile)).toThrowError(
+      expect.objectContaining({ code: "QUOTE_REQUEST_INVALID" }),
+    );
+    expect(getterReads).toBe(0);
+  });
+
+  it("accepts an exact null-prototype data record", () => {
+    const input = Object.assign(Object.create(null) as object, body);
+    expect(new QuoteRequestPipe().transform(input)).toEqual(body);
+  });
+
+  it.each([
+    [
+      "accessor",
+      Object.defineProperty({ ...body }, "guests", {
+        configurable: true,
+        enumerable: true,
+        get: () => {
+          throw new Error("accessor-secret");
+        },
+      }),
+    ],
+    [
+      "proxy trap",
+      new Proxy(
+        {},
+        {
+          ownKeys: () => {
+            throw new Error("proxy-secret");
+          },
+        },
+      ),
+    ],
+  ])("sanitizes a hostile %s body without invoking the service", (_name, hostile) => {
+    const pipe = new QuoteRequestPipe();
+    let captured: unknown;
+    try {
+      pipe.transform(hostile);
+    } catch (error) {
+      captured = error;
+    }
+    expect(captured).toBeInstanceOf(BusinessException);
+    expect(captured).toMatchObject({
+      code: "QUOTE_REQUEST_INVALID",
+      message: "报价请求无效，请检查入住信息",
+    });
+    expect(JSON.stringify(captured)).not.toMatch(/accessor-secret|proxy-secret/);
   });
 
   it.each([

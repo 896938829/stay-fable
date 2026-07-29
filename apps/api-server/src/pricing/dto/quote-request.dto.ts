@@ -32,13 +32,41 @@ export class CreateQuoteRequestDto {
 const invalidQuoteRequest = (): BusinessException =>
   new BusinessException(400, "QUOTE_REQUEST_INVALID", "报价请求无效，请检查入住信息");
 
+const quoteRequestKeys = ["room_type_id", "checkin", "checkout", "guests"] as const;
+
 export class QuoteRequestPipe implements PipeTransform<unknown, CreateQuoteRequestDto> {
   transform(value: unknown): CreateQuoteRequestDto {
     try {
       if (value === null || typeof value !== "object" || Array.isArray(value)) {
         throw invalidQuoteRequest();
       }
-      const dto = plainToInstance(CreateQuoteRequestDto, value);
+      const prototype = Reflect.getPrototypeOf(value);
+      const ownKeys = Reflect.ownKeys(value);
+      if (
+        (prototype !== Object.prototype && prototype !== null) ||
+        ownKeys.length !== quoteRequestKeys.length ||
+        ownKeys.some(
+          (key) =>
+            typeof key !== "string" || !quoteRequestKeys.some((expectedKey) => expectedKey === key),
+        )
+      ) {
+        throw invalidQuoteRequest();
+      }
+
+      const trusted = Object.create(null) as Record<(typeof quoteRequestKeys)[number], unknown>;
+      for (const key of quoteRequestKeys) {
+        const descriptor = Reflect.getOwnPropertyDescriptor(value, key);
+        if (
+          descriptor === undefined ||
+          !descriptor.enumerable ||
+          !Object.hasOwn(descriptor, "value")
+        ) {
+          throw invalidQuoteRequest();
+        }
+        trusted[key] = descriptor.value;
+      }
+
+      const dto = plainToInstance(CreateQuoteRequestDto, trusted);
       const errors = validateSync(dto, {
         forbidNonWhitelisted: true,
         forbidUnknownValues: true,
