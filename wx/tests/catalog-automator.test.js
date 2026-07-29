@@ -211,9 +211,9 @@ describe("catalog automator deterministic search fixture", () => {
       globalData: { searchStore },
     }));
     const miniprogram = {
-      evaluate: vi.fn(async (callback, fixture) => {
+      evaluate: vi.fn(async (callback, ...arguments_) => {
         events.push("evaluate");
-        return callback(fixture);
+        return callback(...arguments_);
       }),
       reLaunch: vi.fn(async (url) => {
         events.push(`reLaunch:${url}`);
@@ -260,6 +260,37 @@ describe("catalog automator deterministic search fixture", () => {
 
     expect(context.signal.aborted).toBe(true);
     expect(miniprogram.reLaunch).not.toHaveBeenCalled();
+  });
+
+  it("uses a unique token for every catalog fixture apply", async () => {
+    const searchStore = {
+      get: vi.fn(() => undefined),
+      set: vi.fn((fixture) => structuredClone(fixture)),
+    };
+    vi.stubGlobal("getApp", () => ({ globalData: { searchStore } }));
+    const runtimeTokens = [];
+    const miniprogram = {
+      evaluate: vi.fn(async (callback, ...arguments_) => {
+        if (callback.toString().includes("store.set(value)")) {
+          runtimeTokens.push(arguments_[0]);
+        }
+        return callback(...arguments_);
+      }),
+      reLaunch: vi.fn(async () => {}),
+    };
+    const applies = [];
+
+    await catalogAutomator.prepareCatalogHome(miniprogram, undefined, {
+      onApply: (apply) => applies.push(apply),
+    });
+    await catalogAutomator.prepareCatalogHome(miniprogram, undefined, {
+      onApply: (apply) => applies.push(apply),
+    });
+
+    expect(applies[0]).toMatchObject({ token: expect.any(String) });
+    expect(applies[1]).toMatchObject({ token: expect.any(String) });
+    expect(applies[0].token).not.toBe(applies[1].token);
+    expect(runtimeTokens).toEqual(applies.map((apply) => apply.token));
   });
 });
 
@@ -1262,7 +1293,7 @@ describe("catalog automator isolated runs and search restoration", () => {
     expect(events.at(-1)).toBe("close");
   });
 
-  it("restores after fixture apply settles beyond the bounded cleanup wait", async () => {
+  it("keeps the original search when fixture apply settles beyond cleanup", async () => {
     const { evidencePath, projectPath, root } = await createRunPaths();
     const original = {
       city: null,
@@ -1320,11 +1351,213 @@ describe("catalog automator isolated runs and search restoration", () => {
     await new Promise((resolve) => setTimeout(resolve, 40));
 
     expect(events.filter((event) => event === "restore").length).toBeGreaterThanOrEqual(
-      3,
+      2,
     );
-    expect(events.lastIndexOf("restore")).toBeGreaterThan(
+    expect(events.lastIndexOf("restore")).toBeLessThan(
       events.indexOf("apply-response"),
     );
+    expect(events.indexOf("close")).toBeLessThan(events.indexOf("apply-response"));
     expect(miniProgram.readSearch()).toEqual(original);
+  });
+
+  it("skips a queued fixture apply that executes after the runtime closes", async () => {
+    const { evidencePath, projectPath, root } = await createRunPaths();
+    const original = {
+      city: null,
+      checkin: "2026-08-12",
+      checkout: "2026-08-13",
+      guests: 2,
+    };
+    let search = structuredClone(original);
+    let closed = false;
+    let finishApply;
+    let evaluateAfterClose = 0;
+    const applyResponse = deferred();
+    const events = [];
+    const store = {
+      get: vi.fn(() => structuredClone(search)),
+      set: vi.fn((value) => {
+        search = structuredClone(value);
+        return structuredClone(search);
+      }),
+    };
+    vi.stubGlobal("getApp", () => ({ globalData: { searchStore: store } }));
+    const miniProgram = {
+      close: vi.fn(async () => {
+        events.push("close");
+        closed = true;
+      }),
+      currentPage: vi.fn(async () => null),
+      evaluate: vi.fn((callback, ...arguments_) => {
+        if (closed) {
+          evaluateAfterClose += 1;
+          return Promise.reject(new Error("runtime closed"));
+        }
+        const source = callback.toString();
+        if (source.includes("store.set(value)")) {
+          finishApply = () => {
+            events.push("late-apply");
+            const result = callback(...arguments_);
+            applyResponse.resolve(result);
+            return result;
+          };
+          return applyResponse.promise;
+        }
+        events.push(source.includes("snapshot.hasValue") ? "restore" : "snapshot");
+        return Promise.resolve(callback(...arguments_));
+      }),
+      reLaunch: vi.fn(async () => {}),
+      readSearch: () => structuredClone(search),
+    };
+
+    await expect(
+      catalogAutomator.run(
+        projectPath,
+        evidencePath,
+        path.join(root, "wechat-cli.bat"),
+        {
+          automatorApi: { launch: vi.fn(async () => miniProgram) },
+          environment: {},
+          timeouts: { actionMs: 1, lateSettleMs: 1 },
+          workflow: vi.fn(async () => {
+            throw new Error("workflow must not start");
+          }),
+        },
+      ),
+    ).rejects.toMatchObject({
+      message: "catalog automation failed",
+      step: "fixture",
+    });
+    expect(events.at(-1)).toBe("close");
+
+    expect(finishApply()).toEqual({ status: "skipped" });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    expect(evaluateAfterClose).toBe(0);
+    expect(miniProgram.readSearch()).toEqual(original);
+  });
+
+  it("restores an apply that runs before its cancellation tombstone", async () => {
+    const { evidencePath, projectPath, root } = await createRunPaths();
+    const original = {
+      city: null,
+      checkin: "2026-08-14",
+      checkout: "2026-08-15",
+      guests: 3,
+    };
+    let search = structuredClone(original);
+    let applyToken;
+    let restoreToken;
+    const store = {
+      get: vi.fn(() => structuredClone(search)),
+      set: vi.fn((value) => {
+        search = structuredClone(value);
+        return structuredClone(search);
+      }),
+    };
+    vi.stubGlobal("getApp", () => ({ globalData: { searchStore: store } }));
+    const miniProgram = {
+      close: vi.fn(async () => {}),
+      currentPage: vi.fn(async () => null),
+      evaluate: vi.fn((callback, ...arguments_) => {
+        const source = callback.toString();
+        if (source.includes("store.set(value)")) {
+          [applyToken] = arguments_;
+          const result = callback(...arguments_);
+          return new Promise((resolve) => setTimeout(() => resolve(result), 20));
+        }
+        if (source.includes("snapshot.hasValue")) {
+          [restoreToken] = arguments_;
+        }
+        return Promise.resolve(callback(...arguments_));
+      }),
+      reLaunch: vi.fn(async () => {}),
+      readSearch: () => structuredClone(search),
+    };
+
+    await expect(
+      catalogAutomator.run(
+        projectPath,
+        evidencePath,
+        path.join(root, "wechat-cli.bat"),
+        {
+          automatorApi: { launch: vi.fn(async () => miniProgram) },
+          environment: {},
+          timeouts: { actionMs: 1, lateSettleMs: 1 },
+          workflow: vi.fn(async () => {
+            throw new Error("workflow must not start");
+          }),
+        },
+      ),
+    ).rejects.toMatchObject({ step: "fixture" });
+
+    expect(applyToken).toEqual(expect.any(String));
+    expect(restoreToken).toBe(applyToken);
+    expect(miniProgram.readSearch()).toEqual(original);
+  });
+
+  it("closes with a safe cleanup failure when no tombstone restore succeeds", async () => {
+    const { evidencePath, projectPath, root } = await createRunPaths();
+    const original = {
+      city: null,
+      checkin: "2026-08-16",
+      checkout: "2026-08-17",
+      guests: 4,
+    };
+    let evaluateCalls = 0;
+    const close = vi.fn(async () => {});
+    const miniProgram = {
+      close,
+      currentPage: vi.fn(async () => null),
+      evaluate: vi.fn((callback, ...arguments_) => {
+        evaluateCalls += 1;
+        if (evaluateCalls === 1) {
+          return callback(...arguments_);
+        }
+        if (callback.toString().includes("store.set(value)")) {
+          return new Promise(() => {});
+        }
+        return Promise.reject(
+          new Error("Bearer private cleanup failure selector=.secret"),
+        );
+      }),
+      reLaunch: vi.fn(async () => {}),
+    };
+    vi.stubGlobal("getApp", () => ({
+      globalData: {
+        searchStore: {
+          get: () => structuredClone(original),
+          set: (value) => structuredClone(value),
+        },
+      },
+    }));
+
+    let error;
+    try {
+      await catalogAutomator.run(
+        projectPath,
+        evidencePath,
+        path.join(root, "wechat-cli.bat"),
+        {
+          automatorApi: { launch: vi.fn(async () => miniProgram) },
+          environment: {},
+          timeouts: { actionMs: 1, lateSettleMs: 1 },
+          workflow: vi.fn(async () => {
+            throw new Error("workflow must not start");
+          }),
+        },
+      );
+    } catch (caught) {
+      error = caught;
+    }
+
+    expect(close).toHaveBeenCalledOnce();
+    expect(error).toMatchObject({
+      message: "catalog automation failed",
+      step: "cleanup",
+    });
+    expect(JSON.stringify(catalogAutomator.formatCatalogFailure(error))).not.toMatch(
+      /Bearer|private|selector/i,
+    );
   });
 });

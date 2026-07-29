@@ -335,29 +335,47 @@ async function captureCatalogSearch(
 }
 
 function startCatalogFixtureApply(miniprogram) {
+  const token = randomUUID();
   const settled = Promise.resolve()
     .then(() =>
-      miniprogram.evaluate((value) => {
+      miniprogram.evaluate((fixtureToken, value) => {
+        const runtime = globalThis;
+        const stateKey = "__stayFableCatalogFixtureState";
+        const state =
+          runtime[stateKey] ||
+          (runtime[stateKey] = {
+            cancelled: Object.create(null),
+          });
+        if (state.cancelled[fixtureToken] === true) {
+          return { status: "skipped" };
+        }
         const store = getApp().globalData.searchStore;
         const stored = store.set(value);
         return {
-          city: {
-            id: stored.city.id,
-            code: stored.city.code,
-            name: stored.city.name,
+          fixture: {
+            city: {
+              id: stored.city.id,
+              code: stored.city.code,
+              name: stored.city.name,
+            },
+            checkin: stored.checkin,
+            checkout: stored.checkout,
+            guests: stored.guests,
           },
-          checkin: stored.checkin,
-          checkout: stored.checkout,
-          guests: stored.guests,
+          status: "applied",
         };
-      }, CATALOG_SEARCH_FIXTURE),
+      }, token, CATALOG_SEARCH_FIXTURE),
     )
-    .then((fixture) => {
-      assert.deepEqual(fixture, CATALOG_SEARCH_FIXTURE);
-      return fixture;
+    .then((result) => {
+      if (result && result.status === "skipped") {
+        return result;
+      }
+      assert.equal(result && result.status, "applied");
+      assert.deepEqual(result.fixture, CATALOG_SEARCH_FIXTURE);
+      return result;
     });
   settled.catch(() => undefined);
-  return { settled };
+  return { settled, token };
 }
 
 async function waitForCatalogFixtureApply(
@@ -376,6 +394,7 @@ async function waitForCatalogFixtureApply(
 
 async function restoreCatalogSearch(
   miniprogram,
+  apply,
   original,
   context,
   timeoutMs = ACTION_TIMEOUT_MS,
@@ -385,12 +404,20 @@ async function restoreCatalogSearch(
   await withTimeout(
     "restore catalog search",
     () =>
-      miniprogram.evaluate((snapshot) => {
+      miniprogram.evaluate((fixtureToken, snapshot) => {
+        const runtime = globalThis;
+        const stateKey = "__stayFableCatalogFixtureState";
+        const state =
+          runtime[stateKey] ||
+          (runtime[stateKey] = {
+            cancelled: Object.create(null),
+          });
+        state.cancelled[fixtureToken] = true;
         const store = getApp().globalData.searchStore;
         return snapshot.hasValue
           ? store.set(snapshot.value)
           : store.clear();
-      }, original),
+      }, apply.token, original),
     timeoutMs,
     cancellation,
   );
@@ -1426,13 +1453,15 @@ async function run(
       evidencePaths,
     );
   }
-  let searchRestored = originalSearch === undefined;
-  if (originalSearch !== undefined) {
+  let tombstoneRestored =
+    originalSearch === undefined || fixtureApply === undefined;
+  if (originalSearch !== undefined && fixtureApply !== undefined) {
     let restoreQueue = Promise.resolve();
     const restoreOriginalSearch = () => {
       const restoration = restoreQueue.then(() =>
         restoreCatalogSearch(
           miniprogram,
+          fixtureApply,
           originalSearch,
           createCancellationContext(),
           timeouts.actionMs,
@@ -1443,38 +1472,28 @@ async function run(
     };
     try {
       await restoreOriginalSearch();
-      searchRestored = true;
+      tombstoneRestored = true;
     } catch {
-      searchRestored = false;
+      // A second bounded restore attempt follows after apply settlement.
     }
-    if (fixtureApply) {
-      const restoreAfterSettle = fixtureApply.settled.finally(() =>
-        restoreOriginalSearch(),
+    try {
+      await withTimeout(
+        "late fixture apply",
+        () => fixtureApply.settled,
+        timeouts.lateSettleMs,
       );
-      restoreAfterSettle.catch(() => undefined);
-      try {
-        await withTimeout(
-          "late fixture apply",
-          () => fixtureApply.settled,
-          timeouts.lateSettleMs,
-        );
-      } catch {
-        // Closing the connection below bounds an apply that never settles.
-      }
-      try {
-        await restoreOriginalSearch();
-        searchRestored = true;
-      } catch {
-        searchRestored = false;
-      }
+    } catch {
+      // The successful tombstone restore prevents a queued apply from writing.
     }
-    if (!searchRestored && failure === null) {
-      failure = catalogFailure(
-        "cleanup",
-        currentPage,
-        evidencePaths,
-      );
+    try {
+      await restoreOriginalSearch();
+      tombstoneRestored = true;
+    } catch {
+      // A prior successful restore already made this fixture token harmless.
     }
+  }
+  if (!tombstoneRestored) {
+    failure = catalogFailure("cleanup", currentPage, evidencePaths);
   }
   try {
     await closeMiniProgram(miniprogram, timeouts.closeMs);
