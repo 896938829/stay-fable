@@ -531,8 +531,17 @@ describe("catalog automator runtime UI evidence", () => {
     };
   }
 
-  it("captures a real card, validates its visible action, then calls the page property handler", async () => {
+  it("captures a real card, validates its visible action, then dispatches the page property handler inside the runtime", async () => {
     const events = [];
+    const openProperty = vi.fn((event) => {
+      events.push(`handler:openProperty:${event.detail.id}`);
+    });
+    vi.stubGlobal("getCurrentPages", () => [
+      {
+        route: "pages/property-list/property-list",
+        openProperty,
+      },
+    ]);
     const propertyRoot = {
       outerWxml: vi.fn(async () => {
         events.push("tree");
@@ -552,8 +561,11 @@ describe("catalog automator runtime UI evidence", () => {
         events.push(`root:${selector}`);
         return propertyRoot;
       }),
-      callMethod: vi.fn(async (method, event) => {
-        events.push(`page:${method}:${event.detail.id}`);
+    };
+    const miniprogram = {
+      evaluate: vi.fn(async (callback, ...arguments_) => {
+        events.push(`evaluate:${arguments_[0]}`);
+        return callback(...arguments_);
       }),
     };
     const capture = vi.fn(async () => {
@@ -562,6 +574,7 @@ describe("catalog automator runtime UI evidence", () => {
 
     await expect(
       catalogAutomator.openFirstProperty(
+        miniprogram,
         page,
         [{ id: propertyId, name: "西湖云栖酒店" }],
         catalogAutomator.createCancellationContext(),
@@ -573,9 +586,15 @@ describe("catalog automator runtime UI evidence", () => {
       "root:.property-list-page",
       "tree",
       "capture",
-      `page:openProperty:${propertyId}`,
+      `evaluate:${JSON.stringify({ id: propertyId })}`,
+      `handler:openProperty:${propertyId}`,
     ]);
-    expect(page.callMethod).toHaveBeenCalledWith("openProperty", {
+    expect(miniprogram.evaluate).toHaveBeenCalledOnce();
+    expect(miniprogram.evaluate.mock.calls[0]).toHaveLength(2);
+    expect(miniprogram.evaluate.mock.calls[0][1]).toBe(
+      JSON.stringify({ id: propertyId }),
+    );
+    expect(openProperty).toHaveBeenCalledWith({
       detail: { id: propertyId },
     });
   });
@@ -598,17 +617,18 @@ describe("catalog automator runtime UI evidence", () => {
           ].join(""),
         ),
       })),
-      callMethod: vi.fn(async () => {}),
     };
+    const miniprogram = { evaluate: vi.fn(async () => "unexpected") };
 
     await expect(
       catalogAutomator.openFirstProperty(
+        miniprogram,
         page,
         items,
         catalogAutomator.createCancellationContext(),
       ),
     ).rejects.toThrow("first property id is invalid");
-    expect(page.callMethod).not.toHaveBeenCalled();
+    expect(miniprogram.evaluate).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -635,17 +655,105 @@ describe("catalog automator runtime UI evidence", () => {
       $: vi.fn(async () => ({
         outerWxml: vi.fn(async () => tree),
       })),
-      callMethod: vi.fn(async () => {}),
     };
+    const miniprogram = { evaluate: vi.fn(async () => "unexpected") };
 
     await expect(
       catalogAutomator.openFirstProperty(
+        miniprogram,
         page,
         [{ id: propertyId, name: "西湖云栖酒店" }],
         catalogAutomator.createCancellationContext(),
       ),
     ).rejects.toThrow("property card rendering evidence is invalid");
-    expect(page.callMethod).not.toHaveBeenCalled();
+    expect(miniprogram.evaluate).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    {
+      label: "wrong route",
+      serializedPayload: JSON.stringify({ id: propertyId }),
+      runtimePage: {
+        route: "pages/home/home",
+        openProperty: vi.fn(),
+      },
+    },
+    {
+      label: "missing page handler",
+      serializedPayload: JSON.stringify({ id: propertyId }),
+      runtimePage: {
+        route: "pages/property-list/property-list",
+      },
+    },
+    {
+      label: "invalid runtime id",
+      serializedPayload: JSON.stringify({ id: "not-a-property-id" }),
+      runtimePage: {
+        route: "pages/property-list/property-list",
+        openProperty: vi.fn(),
+      },
+    },
+  ])(
+    "fails safely without invoking a handler for $label",
+    async ({ runtimePage, serializedPayload }) => {
+      vi.stubGlobal("getCurrentPages", () => [runtimePage]);
+      const page = {
+        $: vi.fn(async () => ({
+          outerWxml: vi.fn(async () =>
+            [
+              "<components/property-card/property-card>",
+              '<button class="property-card__tap-target" aria-label="查看西湖云栖酒店"></button>',
+              "</components/property-card/property-card>",
+            ].join(""),
+          ),
+        })),
+      };
+      const miniprogram = {
+        evaluate: vi.fn(async (callback) =>
+          callback(serializedPayload),
+        ),
+      };
+
+      await expect(
+        catalogAutomator.openFirstProperty(
+          miniprogram,
+          page,
+          [{ id: propertyId, name: "西湖云栖酒店" }],
+          catalogAutomator.createCancellationContext(),
+        ),
+      ).rejects.toThrow("property action dispatch failed");
+      if (runtimePage.openProperty) {
+        expect(runtimePage.openProperty).not.toHaveBeenCalled();
+      }
+    },
+  );
+
+  it("turns an Automator evaluate exception into a safe action failure", async () => {
+    const page = {
+      $: vi.fn(async () => ({
+        outerWxml: vi.fn(async () =>
+          [
+            "<components/property-card/property-card>",
+            '<button class="property-card__tap-target" aria-label="查看西湖云栖酒店"></button>',
+            "</components/property-card/property-card>",
+          ].join(""),
+        ),
+      })),
+    };
+    const miniprogram = {
+      evaluate: vi.fn(async () => {
+        throw new Error("Bearer private SDK failure");
+      }),
+    };
+
+    await expect(
+      catalogAutomator.openFirstProperty(
+        miniprogram,
+        page,
+        [{ id: propertyId, name: "西湖云栖酒店" }],
+        catalogAutomator.createCancellationContext(),
+      ),
+    ).rejects.toThrow("property action dispatch failed");
   });
 
   it("polls until the nightly DOM count exactly matches page data", async () => {

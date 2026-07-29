@@ -1174,6 +1174,7 @@ async function filterElement(page, type, context) {
 }
 
 async function openFirstProperty(
+  miniprogram,
   page,
   items,
   context,
@@ -1222,11 +1223,47 @@ async function openFirstProperty(
     typeof propertyId === "string" && UUID_PATTERN.test(propertyId),
     "first property id is invalid",
   );
-  await runInteraction(context, "open property", () =>
-    page.callMethod("openProperty", {
-      detail: { id: propertyId },
-    }),
-  );
+  const serializedPayload = JSON.stringify({ id: propertyId });
+  try {
+    const result = await runInteraction(context, "open property", () =>
+      miniprogram.evaluate((serializedAction) => {
+        const payload = JSON.parse(serializedAction);
+        const payloadKeys =
+          payload && typeof payload === "object"
+            ? Object.keys(payload)
+            : [];
+        if (
+          payloadKeys.length !== 1 ||
+          payloadKeys[0] !== "id" ||
+          typeof payload.id !== "string" ||
+          !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+            payload.id,
+          )
+        ) {
+          throw new Error("property action payload invalid");
+        }
+        const pages = getCurrentPages();
+        const runtimePage =
+          Array.isArray(pages) && pages.length > 0
+            ? pages[pages.length - 1]
+            : null;
+        if (
+          !runtimePage ||
+          runtimePage.route !== "pages/property-list/property-list"
+        ) {
+          throw new Error("property action route invalid");
+        }
+        if (typeof runtimePage.openProperty !== "function") {
+          throw new Error("property action handler unavailable");
+        }
+        runtimePage.openProperty({ detail: { id: payload.id } });
+        return "catalog-property-action-dispatched";
+      }, serializedPayload),
+    );
+    assert.equal(result, "catalog-property-action-dispatched");
+  } catch {
+    throw new Error("property action dispatch failed");
+  }
 }
 
 function safeSearchSnapshot(search) {
@@ -1377,6 +1414,7 @@ async function catalogWorkflow(
   assertPropertyOnlyItems(current.data.items);
 
   await openFirstProperty(
+    miniprogram,
     current.page,
     current.data.items,
     context,

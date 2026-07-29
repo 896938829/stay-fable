@@ -133,7 +133,8 @@ describe("WeChat location privacy configuration", () => {
     expect(script).toContain('"property-card"');
     expect(script).toContain('"HOMESTAY"');
     expect(script).toMatch(/propertyList\.outerWxml\(\)/);
-    expect(script).toMatch(
+    expect(script).toMatch(/miniprogram\.evaluate\(/);
+    expect(script).not.toMatch(
       /page\.callMethod\(\s*"openProperty",\s*\{/,
     );
     expect(script).not.toMatch(/propertyAction\.tap\(\)/);
