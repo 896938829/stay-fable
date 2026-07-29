@@ -149,6 +149,7 @@ docker run -d --name "$api_container" \
   --user node --read-only --tmpfs /tmp \
   --workdir /app \
   -v "$validation_root/api:/app:ro" \
+  -v "$repo_root/scripts/verify-slice-3-runtime.mjs:/verify-slice-3-runtime.mjs:ro" \
   -p 127.0.0.1:3000:3000 \
   -e NODE_ENV=development \
   -e PORT=3000 \
@@ -215,6 +216,13 @@ docker run --rm \
   -v "$repo_root/scripts/verify-slice-2-runtime.mjs:/verify-slice-2-runtime.mjs:ro" \
   -e "API_BASE_URL=http://${api_container}:3000" \
   "$node_image" node /verify-slice-2-runtime.mjs
+
+docker exec \
+  --user node \
+  -e "API_BASE_URL=http://127.0.0.1:3000" \
+  -e "DATABASE_URL=$database_url" \
+  "$api_container" \
+  node /verify-slice-3-runtime.mjs
 
 echo 'SLICE2_RUNTIME_READY http://127.0.0.1:3000'
 
