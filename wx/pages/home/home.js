@@ -167,12 +167,33 @@ function safeSessionResult(promise) {
   );
 }
 
+function observeNavigationFailure(result, fail) {
+  if (result === false) {
+    fail();
+    return;
+  }
+  try {
+    if (
+      result !== null &&
+      (typeof result === "object" || typeof result === "function")
+    ) {
+      const then = result.then;
+      if (typeof then === "function") {
+        then.call(result, () => {}, fail);
+      }
+    }
+  } catch {
+    fail();
+  }
+}
+
 function createHomePage(dependencies = {}) {
   const wxApi = dependencies.wxApi || globalThis.wx;
   const getApplication = dependencies.getApp || globalThis.getApp;
   const locationService = dependencies.locationService || require("../../services/location");
   const setTimer = dependencies.setTimeout || globalThis.setTimeout;
   const clearTimer = dependencies.clearTimeout || globalThis.clearTimeout;
+  let propertyNavigationPending = false;
 
   function readSearch(app) {
     try {
@@ -255,6 +276,7 @@ function createHomePage(dependencies = {}) {
     },
 
     onShow() {
+      propertyNavigationPending = false;
       this._locationActive = true;
       this._locationOperation = null;
       if (this.data.locating) {
@@ -286,6 +308,7 @@ function createHomePage(dependencies = {}) {
     },
 
     onUnload() {
+      propertyNavigationPending = false;
       this._locationActive = false;
       cancelLocationOperation(this, clearTimer);
     },
@@ -398,13 +421,26 @@ function createHomePage(dependencies = {}) {
     },
 
     searchProperties() {
-      if (!this.data.canSearch || this.data.status !== "ready") {
+      if (
+        !this.data.canSearch ||
+        this.data.status !== "ready" ||
+        propertyNavigationPending
+      ) {
         return;
       }
-      wxApi.showToast({
-        title: "供给浏览将在下一开发切片开放",
-        icon: "none",
-      });
+      propertyNavigationPending = true;
+      const unlock = () => {
+        propertyNavigationPending = false;
+      };
+      try {
+        const result = wxApi.navigateTo({
+          url: "/pages/property-list/property-list",
+          fail: unlock,
+        });
+        observeNavigationFailure(result, unlock);
+      } catch {
+        unlock();
+      }
     },
   };
 }

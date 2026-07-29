@@ -714,17 +714,79 @@ describe("home page interactions", () => {
     expect(page.data.status).toBe("ready");
   });
 
-  it("does not invent property results when search is tapped", () => {
+  it("opens property results only with a complete ready search and without a toast", () => {
     const page = pageContext(
       createHomePage({ getApp: () => app, locationService, wxApi }),
     );
     page.data.canSearch = true;
     page.data.status = "ready";
+
     page.searchProperties.call(page);
-    expect(wxApi.showToast).toHaveBeenCalledWith({
-      title: "供给浏览将在下一开发切片开放",
-      icon: "none",
+
+    expect(wxApi.navigateTo).toHaveBeenCalledWith({
+      url: "/pages/property-list/property-list",
+      fail: expect.any(Function),
     });
-    expect(wxApi.navigateTo).not.toHaveBeenCalled();
+    expect(wxApi.showToast).not.toHaveBeenCalled();
   });
+
+  it.each([
+    ["an incomplete search", { canSearch: false, status: "ready" }],
+    ["an authentication error", { canSearch: true, status: "error" }],
+  ])("does not navigate for %s", (_label, state) => {
+    const page = pageContext(
+      createHomePage({ getApp: () => app, locationService, wxApi }),
+    );
+    Object.assign(page.data, state);
+
+    page.searchProperties.call(page);
+
+    expect(wxApi.navigateTo).not.toHaveBeenCalled();
+    expect(wxApi.showToast).not.toHaveBeenCalled();
+  });
+
+  it("single-flights navigation and unlocks when the page is shown again", () => {
+    const page = pageContext(
+      createHomePage({ getApp: () => app, locationService, wxApi }),
+    );
+    page.data.canSearch = true;
+    page.data.status = "ready";
+
+    page.searchProperties.call(page);
+    page.searchProperties.call(page);
+    expect(wxApi.navigateTo).toHaveBeenCalledOnce();
+
+    page.onShow.call(page);
+    page.searchProperties.call(page);
+    expect(wxApi.navigateTo).toHaveBeenCalledTimes(2);
+  });
+
+  it.each(["callback", "throw", "thenable"])(
+    "unlocks after a %s navigation failure",
+    async (failureMode) => {
+      wxApi.navigateTo.mockImplementationOnce((options) => {
+        if (failureMode === "callback") {
+          options.fail({ errMsg: "private callback failure" });
+          return undefined;
+        }
+        if (failureMode === "throw") {
+          throw new Error("private synchronous failure");
+        }
+        return Promise.reject(new Error("private promise failure"));
+      });
+      const page = pageContext(
+        createHomePage({ getApp: () => app, locationService, wxApi }),
+      );
+      page.data.canSearch = true;
+      page.data.status = "ready";
+
+      page.searchProperties.call(page);
+      await Promise.resolve();
+      await Promise.resolve();
+      page.searchProperties.call(page);
+
+      expect(wxApi.navigateTo).toHaveBeenCalledTimes(2);
+      expect(JSON.stringify(wxApi.showToast.mock.calls)).not.toContain("private");
+    },
+  );
 });

@@ -2,7 +2,10 @@
   "pages": [
     "pages/home/home",
     "pages/city-select/city-select",
-    "pages/date-guest-select/date-guest-select"
+    "pages/date-guest-select/date-guest-select",
+    "pages/property-list/property-list",
+    "pages/property-detail/property-detail",
+    "pages/room-detail/room-detail"
   ],
   "window": {
     "navigationBarBackgroundColor": "#FBF7F2",
