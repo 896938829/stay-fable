@@ -146,8 +146,62 @@ function isCatalogDate(value) {
   );
 }
 
-function isValidIpv4(hostname) {
+function parseIpv4Number(value) {
+  let digits = value;
+  let radix = 10;
+  if (/^0[xX]/.test(digits)) {
+    digits = digits.slice(2);
+    radix = 16;
+  } else if (digits.length >= 2 && digits.startsWith("0")) {
+    digits = digits.slice(1);
+    radix = 8;
+  }
+  if (digits === "") {
+    return 0;
+  }
+  const patterns = {
+    8: /^[0-7]+$/,
+    10: /^\d+$/,
+    16: /^[0-9A-Fa-f]+$/,
+  };
+  if (!patterns[radix].test(digits)) {
+    return null;
+  }
+  const parsed = Number.parseInt(digits, radix);
+  return Number.isSafeInteger(parsed) ? parsed : null;
+}
+
+function hasValidWhatwgIpv4Syntax(hostname) {
   const parts = hostname.split(".");
+  if (parts[parts.length - 1] === "") {
+    parts.pop();
+  }
+  if (parts.length < 1) {
+    return false;
+  }
+  const lastPart = parts[parts.length - 1];
+  const lastNumber = parseIpv4Number(lastPart);
+  const endsInNumber = lastNumber !== null || /^\d+$/.test(lastPart);
+  if (!endsInNumber) {
+    return true;
+  }
+  if (parts.length > 4) {
+    return false;
+  }
+  const numbers = parts.map(parseIpv4Number);
+  if (numbers.some((part) => part === null)) {
+    return false;
+  }
+  for (let index = 0; index < numbers.length - 1; index += 1) {
+    if (numbers[index] > 255) {
+      return false;
+    }
+  }
+  return numbers[numbers.length - 1] < 256 ** (5 - numbers.length);
+}
+
+function isValidEmbeddedIpv4(value) {
+  const parts = value.split(".");
   return (
     parts.length === 4 &&
     parts.every(
@@ -159,19 +213,71 @@ function isValidIpv4(hostname) {
   );
 }
 
-function isValidHttpsHostname(hostname) {
-  if (hostname.length < 1 || hostname.length > 253) {
+function isValidIpv6Literal(value) {
+  const halves = value.split("::");
+  if (halves.length > 2) {
     return false;
   }
-  if (/^\d+(?:\.\d+)*$/.test(hostname)) {
-    return isValidIpv4(hostname);
+  const segments = [];
+  for (const half of halves) {
+    if (half === "") {
+      continue;
+    }
+    const halfSegments = half.split(":");
+    if (halfSegments.some((segment) => segment === "")) {
+      return false;
+    }
+    segments.push(...halfSegments);
   }
-  return hostname.split(".").every(
-    (label) =>
-      label.length >= 1 &&
-      label.length <= 63 &&
-      /^[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?$/.test(label),
-  );
+
+  let units = 0;
+  for (let index = 0; index < segments.length; index += 1) {
+    const segment = segments[index];
+    if (segment.includes(".")) {
+      if (
+        index !== segments.length - 1 ||
+        !isValidEmbeddedIpv4(segment) ||
+        (halves.length === 2 && halves[1] === "")
+      ) {
+        return false;
+      }
+      units += 2;
+    } else {
+      if (!/^[0-9A-Fa-f]{1,4}$/.test(segment)) {
+        return false;
+      }
+      units += 1;
+    }
+  }
+  return halves.length === 2 ? units < 8 : units === 8;
+}
+
+function isValidPort(value) {
+  if (value === "") {
+    return true;
+  }
+  if (!/^\d+$/.test(value)) {
+    return false;
+  }
+  const normalized = value.replace(/^0+/, "") || "0";
+  return normalized.length <= 5 && Number(normalized) <= 65535;
+}
+
+function isValidWhatwgHostname(value) {
+  let decoded;
+  try {
+    decoded = decodeURIComponent(value);
+    encodeURI(decoded);
+  } catch {
+    return false;
+  }
+  if (
+    decoded === "" ||
+    /[\u0000-\u0020\u007f#%/:<>?@[\\\]^|]/.test(decoded)
+  ) {
+    return false;
+  }
+  return hasValidWhatwgIpv4Syntax(decoded);
 }
 
 function isValidHttpsResource(value) {
@@ -179,28 +285,41 @@ function isValidHttpsResource(value) {
   const delimiterIndex = remainder.search(/[/?#]/);
   const authority =
     delimiterIndex === -1 ? remainder : remainder.slice(0, delimiterIndex);
-  if (
-    authority === "" ||
-    authority.includes("@") ||
-    authority.includes("[") ||
-    authority.includes("]")
-  ) {
+  if (authority === "" || authority.includes("@")) {
     return false;
   }
 
-  const colonIndex = authority.lastIndexOf(":");
-  let hostname = authority;
-  if (colonIndex !== -1) {
-    if (authority.indexOf(":") !== colonIndex) {
+  if (authority.startsWith("[")) {
+    const closingBracket = authority.indexOf("]");
+    if (closingBracket === -1) {
       return false;
     }
-    hostname = authority.slice(0, colonIndex);
-    const port = authority.slice(colonIndex + 1);
-    if (!/^\d{1,5}$/.test(port) || Number(port) > 65535) {
+    const literal = authority.slice(1, closingBracket);
+    const suffix = authority.slice(closingBracket + 1);
+    if (
+      !isValidIpv6Literal(literal) ||
+      (suffix !== "" &&
+        (!suffix.startsWith(":") || !isValidPort(suffix.slice(1))))
+    ) {
       return false;
     }
+    return true;
   }
-  return isValidHttpsHostname(hostname);
+
+  if (authority.includes("[") || authority.includes("]")) {
+    return false;
+  }
+  const colonIndex = authority.lastIndexOf(":");
+  if (colonIndex !== -1 && authority.indexOf(":") !== colonIndex) {
+    return false;
+  }
+  const hostname =
+    colonIndex === -1 ? authority : authority.slice(0, colonIndex);
+  const port = colonIndex === -1 ? null : authority.slice(colonIndex + 1);
+  return (
+    isValidWhatwgHostname(hostname) &&
+    (port === null || isValidPort(port))
+  );
 }
 
 function isCatalogResource(value) {

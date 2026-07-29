@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 
+import { catalogResourceSchema } from "../../packages/api-contracts/src/catalog.ts";
 import contracts from "../services/contracts.js";
 
 const {
@@ -81,6 +82,33 @@ const roomTypeDetail = {
   booking_policy: "入住当日 18:00 前可免费取消。",
   nightly_prices: [nightlyPrice],
 };
+
+const acceptedHttpsResources = [
+  "https://cdn.example.com/images/photo.jpg?width=480#hero",
+  "https://[2001:db8::1]/image.jpg",
+  "https://例子.测试/image.jpg",
+  "https://example.com./x",
+  "https://foo_bar.example/x",
+  "https://example..com/x",
+  "https://-example.com/x",
+  "https://example.com:/x",
+  "https://example.com:000000443/x",
+  "https://example.com/x?width=480#hero",
+  "https://xn--fsqu00a.xn--0zwm56d/x",
+  "https://127.1/x",
+  "https://0x7f.1/x",
+  "https://0177.0.0.1/x",
+  "https://2130706433/x",
+];
+const rejectedHttpsResources = [
+  "https://user:pass@example.com/x",
+  "https://%",
+  "https://%zz.example/x",
+  "https://example.com:bad/photo.jpg",
+  "https://example.com:65536/photo.jpg",
+  "https://[invalid]/x",
+  "https://256.0.0.1/x",
+];
 
 function expectInvalid(callback) {
   expect(callback).toThrow(
@@ -195,13 +223,6 @@ describe("catalog response contracts", () => {
     "/assets/photo.jpg",
     "/images/",
     "/images/../secret.jpg",
-    "https://user:secret@cdn.example.com/photo.jpg",
-    "https://%",
-    "https://example.com:bad/photo.jpg",
-    "https://[invalid]/x",
-    "https://example..com/photo.jpg",
-    "https://-example.com/photo.jpg",
-    "https://example.com:65536/photo.jpg",
   ])("rejects unsafe catalog resource %j", (resource) => {
     expectInvalid(() =>
       assertPropertyListResponse({
@@ -217,6 +238,32 @@ describe("catalog response contracts", () => {
     );
     expectInvalid(() => assertRoomTypeDetail({ ...roomTypeDetail, cover_url: resource }));
   });
+
+  it.each(acceptedHttpsResources)(
+    "accepts every planned HTTPS resource accepted by the shared schema: %j",
+    (resource) => {
+      expect(catalogResourceSchema.safeParse(resource).success).toBe(true);
+      expect(
+        assertPropertyListResponse({
+          items: [{ ...propertyListItem, cover_url: resource }],
+          next_cursor: null,
+        }).items[0].cover_url,
+      ).toBe(resource);
+    },
+  );
+
+  it.each(rejectedHttpsResources)(
+    "rejects every malformed HTTPS resource rejected by the shared schema: %j",
+    (resource) => {
+      expect(catalogResourceSchema.safeParse(resource).success).toBe(false);
+      expectInvalid(() =>
+        assertPropertyListResponse({
+          items: [{ ...propertyListItem, cover_url: resource }],
+          next_cursor: null,
+        }),
+      );
+    },
+  );
 
   it("bounds facility highlights, availability counts, cursors, and detail collections", () => {
     expectInvalid(() =>
