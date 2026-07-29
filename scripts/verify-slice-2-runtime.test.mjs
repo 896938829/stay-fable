@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { clearTimeout, setTimeout } from "node:timers";
 import test from "node:test";
 
 import { verifySliceTwoRuntime } from "./verify-slice-2-runtime.mjs";
@@ -10,6 +11,7 @@ const propertyIds = [
   "20000000-0000-4000-8000-000000000003",
 ];
 const roomIds = ["30000000-0000-4000-8000-000000000001", "30000000-0000-4000-8000-000000000002"];
+const replacementPropertyId = "20000000-0000-4000-8000-000000000004";
 const accessToken = "catalog-access-token-that-must-stay-secret";
 const refreshToken = "catalog-refresh-token-that-must-stay-secret";
 const nextCursor = "catalog-page-two";
@@ -121,6 +123,22 @@ function createHarness(responses = validResponses()) {
   return { calls, fetch, logs, queue };
 }
 
+async function rejectsBeforeGuard(promise, expected) {
+  let guard;
+  const guarded = Promise.race([
+    promise,
+    new Promise((_, reject) => {
+      guard = setTimeout(() => reject(new Error("test timeout guard fired")), 250);
+    }),
+  ]);
+
+  try {
+    await assert.rejects(guarded, expected);
+  } finally {
+    clearTimeout(guard);
+  }
+}
+
 test("verifies the seeded catalog filters, pagination, hierarchy, and redaction", async () => {
   const harness = createHarness();
 
@@ -153,6 +171,33 @@ test("verifies the seeded catalog filters, pagination, hierarchy, and redaction"
   assert.match(renderedLogs, /catalog validation: pass/);
   assert.doesNotMatch(renderedLogs, new RegExp(accessToken));
   assert.doesNotMatch(renderedLogs, new RegExp(refreshToken));
+});
+
+test("fails quickly when fetch never settles", async () => {
+  await rejectsBeforeGuard(
+    verifySliceTwoRuntime({
+      baseUrl: "http://api:3000",
+      fetch: async () => new Promise(() => {}),
+      log: () => {},
+      requestTimeoutMs: 20,
+    }),
+    /catalog fetch timed out/,
+  );
+});
+
+test("fails quickly when response JSON never settles", async () => {
+  await rejectsBeforeGuard(
+    verifySliceTwoRuntime({
+      baseUrl: "http://api:3000",
+      fetch: async () => ({
+        status: 201,
+        json: async () => new Promise(() => {}),
+      }),
+      log: () => {},
+      requestTimeoutMs: 20,
+    }),
+    /catalog response JSON timed out/,
+  );
 });
 
 test("fails on any unexpected HTTP status", async () => {
@@ -203,6 +248,237 @@ test("fails when cursor pages contain duplicate property IDs", async () => {
     }),
     /duplicate property ID/,
   );
+});
+
+test("fails when the Hangzhou baseline replaces a deterministic property ID", async () => {
+  const responses = validResponses();
+  const originalJson = responses[1].json;
+  responses[1].json = async () => {
+    const body = await originalJson();
+    return {
+      ...body,
+      data: {
+        ...body.data,
+        items: [
+          body.data.items[0],
+          body.data.items[1],
+          property(replacementPropertyId, "FARM_STAY"),
+        ],
+      },
+    };
+  };
+  const harness = createHarness(responses);
+
+  await assert.rejects(
+    verifySliceTwoRuntime({
+      baseUrl: "http://api:3000",
+      fetch: harness.fetch,
+      log: (message) => harness.logs.push(message),
+    }),
+    /deterministic Hangzhou properties/,
+  );
+});
+
+test("fails when unique cursor pages replace a Hangzhou baseline property", async () => {
+  const responses = validResponses();
+  responses[5] = response(200, {
+    data: {
+      items: [property(replacementPropertyId, "FARM_STAY")],
+      next_cursor: null,
+    },
+  });
+  const harness = createHarness(responses);
+
+  await assert.rejects(
+    verifySliceTwoRuntime({
+      baseUrl: "http://api:3000",
+      fetch: harness.fetch,
+      log: (message) => harness.logs.push(message),
+    }),
+    /cursor pages differed from the Hangzhou baseline/,
+  );
+});
+
+test("fails when a Hangzhou property carries inconsistent city semantics", async () => {
+  const responses = validResponses();
+  const originalJson = responses[1].json;
+  responses[1].json = async () => {
+    const body = await originalJson();
+    return {
+      ...body,
+      data: {
+        ...body.data,
+        items: body.data.items.map((item, index) =>
+          index === 2 ? { ...item, city: { ...item.city, code: "520100" } } : item,
+        ),
+      },
+    };
+  };
+  const harness = createHarness(responses);
+
+  await assert.rejects(
+    verifySliceTwoRuntime({
+      baseUrl: "http://api:3000",
+      fetch: harness.fetch,
+      log: (message) => harness.logs.push(message),
+    }),
+    /Hangzhou city semantics/,
+  );
+});
+
+test("fails when the HOMESTAY filter returns a property outside the Hangzhou baseline", async () => {
+  const responses = validResponses();
+  responses[2] = response(200, {
+    data: {
+      items: [property(replacementPropertyId, "HOMESTAY")],
+      next_cursor: null,
+    },
+  });
+  const harness = createHarness(responses);
+
+  await assert.rejects(
+    verifySliceTwoRuntime({
+      baseUrl: "http://api:3000",
+      fetch: harness.fetch,
+      log: (message) => harness.logs.push(message),
+    }),
+    /HOMESTAY result did not match the Hangzhou baseline/,
+  );
+});
+
+test("fails when the HOMESTAY filter changes a baseline property's type", async () => {
+  const responses = validResponses();
+  responses[2] = response(200, {
+    data: {
+      items: [property(propertyIds[0], "HOMESTAY")],
+      next_cursor: null,
+    },
+  });
+  const harness = createHarness(responses);
+
+  await assert.rejects(
+    verifySliceTwoRuntime({
+      baseUrl: "http://api:3000",
+      fetch: harness.fetch,
+      log: (message) => harness.logs.push(message),
+    }),
+    /HOMESTAY result did not match the Hangzhou baseline/,
+  );
+});
+
+test("fails when property detail ignores the requested property path", async () => {
+  const responses = validResponses();
+  const originalJson = responses[3].json;
+  responses[3].json = async () => {
+    const body = await originalJson();
+    return { ...body, data: { ...body.data, id: propertyIds[1] } };
+  };
+  const harness = createHarness(responses);
+
+  await assert.rejects(
+    verifySliceTwoRuntime({
+      baseUrl: "http://api:3000",
+      fetch: harness.fetch,
+      log: (message) => harness.logs.push(message),
+    }),
+    /property detail ID did not match the request/,
+  );
+});
+
+test("fails when room detail ignores the requested room path", async () => {
+  const responses = validResponses();
+  const originalJson = responses[7].json;
+  responses[7].json = async () => {
+    const body = await originalJson();
+    return { ...body, data: { ...body.data, id: roomIds[1] } };
+  };
+  const harness = createHarness(responses);
+
+  await assert.rejects(
+    verifySliceTwoRuntime({
+      baseUrl: "http://api:3000",
+      fetch: harness.fetch,
+      log: (message) => harness.logs.push(message),
+    }),
+    /room detail ID did not match the request/,
+  );
+});
+
+test("fails when room detail belongs to another property", async () => {
+  const responses = validResponses();
+  const originalJson = responses[7].json;
+  responses[7].json = async () => {
+    const body = await originalJson();
+    return {
+      ...body,
+      data: {
+        ...body.data,
+        property: { ...body.data.property, id: propertyIds[1] },
+      },
+    };
+  };
+  const harness = createHarness(responses);
+
+  await assert.rejects(
+    verifySliceTwoRuntime({
+      baseUrl: "http://api:3000",
+      fetch: harness.fetch,
+      log: (message) => harness.logs.push(message),
+    }),
+    /room detail property ID did not match the request/,
+  );
+});
+
+test("rejects a malformed property ID before any later Bearer request", async () => {
+  const responses = validResponses();
+  const originalJson = responses[1].json;
+  responses[1].json = async () => {
+    const body = await originalJson();
+    return {
+      ...body,
+      data: {
+        ...body.data,
+        items: [{ ...body.data.items[0], id: "../../escape" }, ...body.data.items.slice(1)],
+      },
+    };
+  };
+  const harness = createHarness(responses);
+
+  await assert.rejects(
+    verifySliceTwoRuntime({
+      baseUrl: "http://api:3000",
+      fetch: harness.fetch,
+      log: (message) => harness.logs.push(message),
+    }),
+    /property ID must be a UUID v4/,
+  );
+  assert.equal(harness.calls.length, 2);
+});
+
+test("rejects a malformed room type ID before requesting its path", async () => {
+  const responses = validResponses();
+  const originalJson = responses[6].json;
+  responses[6].json = async () => {
+    const body = await originalJson();
+    return {
+      ...body,
+      data: {
+        ...body.data,
+        room_types: [{ ...body.data.room_types[0], id: "../wrong-room" }, body.data.room_types[1]],
+      },
+    };
+  };
+  const harness = createHarness(responses);
+
+  await assert.rejects(
+    verifySliceTwoRuntime({
+      baseUrl: "http://api:3000",
+      fetch: harness.fetch,
+      log: (message) => harness.logs.push(message),
+    }),
+    /room type ID must be a UUID v4/,
+  );
+  assert.equal(harness.calls.length, 7);
 });
 
 test("fails when a property list leaks room collections", async () => {
