@@ -63,6 +63,10 @@ describe("search store", () => {
     { guests: 1.5 },
     { guests: 11 },
     { city: { ...city, id: "bad" } },
+    { city: { ...city, code: "c".repeat(33) } },
+    { city: { ...city, name: "城".repeat(65) } },
+    { city: { ...city, code: " \t " } },
+    { city: Object.assign(Object.create({ inherited: true }), city) },
     { longitude: 120.1 },
   ])("rejects invalid updates atomically: %o", (update) => {
     const { store, stored } = setup();
@@ -75,6 +79,23 @@ describe("search store", () => {
     );
     expect(store.get()).toEqual(original);
     expect(stored()).toEqual(original);
+  });
+
+  it("replaces a persisted context with an oversized city using safe defaults", () => {
+    const { store, stored } = setup({
+      city: { ...city, name: "城".repeat(65) },
+      checkin: "2026-07-30",
+      checkout: "2026-08-02",
+      guests: 3,
+    });
+
+    expect(store.initializeDefaults()).toEqual({
+      city: null,
+      checkin: "2026-07-30",
+      checkout: "2026-07-31",
+      guests: 2,
+    });
+    expect(stored()).toEqual(store.get());
   });
 
   it("clear restores and persists current defaults", () => {

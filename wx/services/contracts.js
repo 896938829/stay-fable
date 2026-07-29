@@ -74,21 +74,33 @@ function assertAuthSession(value) {
   };
 }
 
-function assertCity(value) {
-  if (
-    !isObject(value) ||
-    typeof value.id !== "string" ||
-    !UUID_PATTERN.test(value.id) ||
-    !isNonemptyString(value.code) ||
-    !isNonemptyString(value.name)
-  ) {
+function canonicalCity(value, exact) {
+  try {
+    if (
+      !isObject(value) ||
+      (exact && !hasExactKeys(value, ["id", "code", "name"]))
+    ) {
+      throw invalidResponse();
+    }
+    const id = value.id;
+    const code = value.code;
+    const name = value.name;
+    if (
+      typeof id !== "string" ||
+      !UUID_PATTERN.test(id) ||
+      !isBoundedString(code, 32) ||
+      !isBoundedString(name, 64)
+    ) {
+      throw invalidResponse();
+    }
+    return { id, code, name };
+  } catch {
     throw invalidResponse();
   }
-  return {
-    id: value.id,
-    code: value.code,
-    name: value.name,
-  };
+}
+
+function assertCity(value) {
+  return canonicalCity(value, false);
 }
 
 function assertResolvedLocation(value) {
@@ -230,21 +242,7 @@ function isSafeCatalogResourceUrl(value) {
 }
 
 function assertExactCity(value) {
-  if (
-    !isObject(value) ||
-    !hasExactKeys(value, ["id", "code", "name"]) ||
-    typeof value.id !== "string" ||
-    !UUID_PATTERN.test(value.id) ||
-    !isNonemptyString(value.code) ||
-    !isNonemptyString(value.name)
-  ) {
-    throw invalidResponse();
-  }
-  return {
-    id: value.id,
-    code: value.code,
-    name: value.name,
-  };
+  return canonicalCity(value, true);
 }
 
 function assertPropertyType(value) {

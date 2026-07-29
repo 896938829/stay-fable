@@ -18,6 +18,18 @@ function contextError() {
   return error;
 }
 
+function isPlainObject(value) {
+  if (value === null || Array.isArray(value) || typeof value !== "object") {
+    return false;
+  }
+  try {
+    const prototype = Object.getPrototypeOf(value);
+    return prototype === Object.prototype || prototype === null;
+  } catch {
+    return false;
+  }
+}
+
 function createSearchStore(options) {
   const { wxApi } = options;
   const storageKey = options.storageKey || DEFAULT_STORAGE_KEY;
@@ -35,9 +47,7 @@ function createSearchStore(options) {
   function validate(candidate) {
     try {
       if (
-        candidate === null ||
-        Array.isArray(candidate) ||
-        typeof candidate !== "object" ||
+        !isPlainObject(candidate) ||
         !CONTEXT_KEYS.every((key) => Object.prototype.hasOwnProperty.call(candidate, key)) ||
         Object.keys(candidate).some((key) => !CONTEXT_KEYS.includes(key))
       ) {
@@ -46,12 +56,7 @@ function createSearchStore(options) {
 
       let city = null;
       if (candidate.city !== null) {
-        assertCity(candidate.city);
-        city = {
-          id: candidate.city.id,
-          code: candidate.city.code,
-          name: candidate.city.name,
-        };
+        city = assertCity(candidate.city);
       }
 
       parseDate(candidate.checkin);
@@ -110,9 +115,7 @@ function createSearchStore(options) {
 
   function set(update) {
     if (
-      update === null ||
-      Array.isArray(update) ||
-      typeof update !== "object" ||
+      !isPlainObject(update) ||
       Object.keys(update).some((key) => !CONTEXT_KEYS.includes(key))
     ) {
       throw contextError();

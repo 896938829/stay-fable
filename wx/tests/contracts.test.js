@@ -95,6 +95,37 @@ describe("API contracts", () => {
     expectInvalid(() => assertResolvedLocation({ city }));
   });
 
+  it("bounds city labels, returns a canonical copy, and rejects hostile objects", () => {
+    const boundary = {
+      ...city,
+      code: "c".repeat(32),
+      name: "城".repeat(64),
+    };
+    const spaced = {
+      ...city,
+      code: " hangzhou ",
+      name: " 杭州 ",
+    };
+
+    expect(assertCity(boundary)).toEqual(boundary);
+    expect(assertCity(boundary)).not.toBe(boundary);
+    expect(assertCity(spaced)).toEqual(spaced);
+    for (const invalid of [
+      { ...city, code: "c".repeat(33) },
+      { ...city, name: "城".repeat(65) },
+      { ...city, code: " \t " },
+      { ...city, name: "\n" },
+      Object.assign(Object.create({ inherited: true }), city),
+      Object.defineProperty({ ...city }, "name", {
+        get() {
+          throw new Error("private getter");
+        },
+      }),
+    ]) {
+      expectInvalid(() => assertCity(invalid), "private getter");
+    }
+  });
+
   it("accepts only the stable API error response shape", () => {
     const response = {
       error: { code: "NOT_FOUND", message: "Missing", details: { field: "city" } },

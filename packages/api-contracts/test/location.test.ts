@@ -23,6 +23,36 @@ describe("location contracts", () => {
     });
   });
 
+  it("bounds nonblank city labels without transforming accepted values", () => {
+    const id = "10000000-0000-4000-8000-000000000001";
+    const boundary = {
+      id,
+      code: "c".repeat(32),
+      name: "城".repeat(64),
+    };
+
+    expect(citySchema.parse(boundary)).toEqual(boundary);
+    expect(
+      citySchema.parse({
+        id,
+        code: " 330100 ",
+        name: " 杭州 ",
+      }),
+    ).toEqual({
+      id,
+      code: " 330100 ",
+      name: " 杭州 ",
+    });
+    for (const invalid of [
+      { ...boundary, code: "c".repeat(33) },
+      { ...boundary, name: "城".repeat(65) },
+      { ...boundary, code: " \t " },
+      { ...boundary, name: "\n" },
+    ]) {
+      expect(citySchema.safeParse(invalid).success).toBe(false);
+    }
+  });
+
   it.each([
     { longitude: -180, latitude: -90 },
     { longitude: 180, latitude: 90 },

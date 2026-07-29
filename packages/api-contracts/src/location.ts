@@ -1,9 +1,15 @@
 import { z } from "zod";
 
+const boundedNonblankString = (maximum: number) =>
+  z
+    .string()
+    .max(maximum)
+    .refine((value) => value.trim().length > 0);
+
 export const citySchema = z.object({
   id: z.uuid(),
-  code: z.string(),
-  name: z.string(),
+  code: boundedNonblankString(32),
+  name: boundedNonblankString(64),
 });
 
 export const resolveLocationRequestSchema = z.object({
