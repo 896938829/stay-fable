@@ -38,10 +38,15 @@ const parseStoredJson = <T>(value: string | null): T | null => {
 export class RedisService implements OnModuleInit, OnModuleDestroy {
   private static readonly RATE_LIMIT_SCRIPT = `
 local count = redis.call('INCR', KEYS[1])
-if count == 1 then
-  redis.call('PEXPIRE', KEYS[1], ARGV[1])
+local ttl = redis.call('PTTL', KEYS[1])
+if ttl < 0 then
+  local expirySet = redis.call('PEXPIRE', KEYS[1], ARGV[1])
+  if expirySet ~= 1 then
+    return { count, 0 }
+  end
+  ttl = redis.call('PTTL', KEYS[1])
 end
-return { count, redis.call('PTTL', KEYS[1]) }
+return { count, ttl }
 `.trim();
 
   constructor(@Inject(REDIS_CLIENT) private readonly redis: RedisClient) {}
@@ -149,24 +154,30 @@ return { count, redis.call('PTTL', KEYS[1]) }
         key,
         String(windowMilliseconds),
       );
-      if (!Array.isArray(result) || result.length !== 2) {
+      if (!Array.isArray(result)) {
         throw new Error("Invalid rate limit result");
       }
 
-      const values: readonly unknown[] = result;
+      const length = result.length;
+      if (length !== 2) {
+        throw new Error("Invalid rate limit result");
+      }
+
+      const count: unknown = result[0];
+      const ttlMilliseconds: unknown = result[1];
       if (
-        typeof values[0] !== "number" ||
-        !Number.isSafeInteger(values[0]) ||
-        values[0] <= 0 ||
-        typeof values[1] !== "number" ||
-        !Number.isSafeInteger(values[1]) ||
-        values[1] <= 0 ||
-        values[1] > windowMilliseconds
+        typeof count !== "number" ||
+        !Number.isSafeInteger(count) ||
+        count <= 0 ||
+        typeof ttlMilliseconds !== "number" ||
+        !Number.isSafeInteger(ttlMilliseconds) ||
+        ttlMilliseconds <= 0 ||
+        ttlMilliseconds > windowMilliseconds
       ) {
         throw new Error("Invalid rate limit result");
       }
 
-      return { count: values[0], ttlMilliseconds: values[1] };
+      return { count, ttlMilliseconds };
     } catch {
       throw new Error("Redis rate limit failed");
     }

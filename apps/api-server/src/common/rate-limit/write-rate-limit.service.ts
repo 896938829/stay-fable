@@ -33,14 +33,19 @@ const isUserId = (value: unknown): value is string =>
   value.length <= USER_ID_MAX_LENGTH &&
   UUID_PATTERN.test(value);
 
-const isRateLimitResult = (value: unknown): value is { count: number; ttlMilliseconds: number } => {
+interface RateLimitResult {
+  count: number;
+  ttlMilliseconds: number;
+}
+
+const parseRateLimitResult = (value: unknown): RateLimitResult | null => {
   try {
     if (typeof value !== "object" || value === null || Array.isArray(value)) {
-      return false;
+      return null;
     }
 
     const { count, ttlMilliseconds } = value as { count?: unknown; ttlMilliseconds?: unknown };
-    return (
+    if (
       typeof count === "number" &&
       Number.isSafeInteger(count) &&
       count > 0 &&
@@ -48,9 +53,12 @@ const isRateLimitResult = (value: unknown): value is { count: number; ttlMillise
       Number.isSafeInteger(ttlMilliseconds) &&
       ttlMilliseconds > 0 &&
       ttlMilliseconds <= WINDOW_MILLISECONDS
-    );
+    ) {
+      return { count, ttlMilliseconds };
+    }
+    return null;
   } catch {
-    return false;
+    return null;
   }
 };
 
@@ -83,12 +91,13 @@ export class WriteRateLimitService {
       throw unavailable();
     }
 
-    if (!isRateLimitResult(result)) {
+    const snapshot = parseRateLimitResult(result);
+    if (snapshot === null) {
       throw unavailable();
     }
 
-    if (result.count > config.limit) {
-      throw rateLimited(result.ttlMilliseconds);
+    if (snapshot.count > config.limit) {
+      throw rateLimited(snapshot.ttlMilliseconds);
     }
   }
 }
