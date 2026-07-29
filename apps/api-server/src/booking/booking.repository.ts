@@ -663,9 +663,12 @@ export class BookingRepository {
   ): Promise<CreateBookingResult> {
     const advisoryRows = snapshotRows(
       await transaction.$queryRaw<unknown[]>(Prisma.sql`
-        SELECT pg_advisory_xact_lock(
-          hashtextextended(${input.userId}::text || ':' || ${input.idempotencyKey}, 0)
-        ) AS "locked"
+        SELECT NULL::text AS "locked"
+        FROM (
+          SELECT pg_advisory_xact_lock(
+            hashtextextended(${input.userId}::text || ':' || ${input.idempotencyKey}, 0)
+          ) AS lock_acquired
+        ) advisory
       `),
     );
     if (advisoryRows.length !== 1 || snapshotRecord(advisoryRows[0], ["locked"]).locked !== null) {

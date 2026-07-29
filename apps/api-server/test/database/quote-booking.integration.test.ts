@@ -1,10 +1,24 @@
-import { randomBytes } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 
 import { Pool, type PoolClient } from "pg";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 
+import type { BookingNumberGenerator } from "../../src/booking/booking-number.js";
+import {
+  BookingRepository,
+  type BookingDatabase,
+  type BookingTransaction,
+  type CreateBookingInput,
+  type CreateBookingResult,
+} from "../../src/booking/booking.repository.js";
+import { BookingsService } from "../../src/booking/bookings.service.js";
+import type { Clock } from "../../src/common/clock/clock.js";
+import type { WriteRateLimitService } from "../../src/common/rate-limit/write-rate-limit.service.js";
+import { DatabaseService } from "../../src/database/database.service.js";
+import { Prisma } from "../../src/generated/prisma/client.js";
+import { createQuoteFingerprint } from "../../src/pricing/quote-fingerprint.js";
 import { requireSafeDatabaseIntegrationUrl } from "./database-integration-guard.js";
 
 const runDatabaseIntegration = process.env.RUN_DATABASE_INTEGRATION === "true";
@@ -399,12 +413,55 @@ test.each([
   expect(inventoryCapacityExpression.test(definition)).toBe(true);
 });
 
+const createBarrier = (participants: number, timeoutMilliseconds: number) => {
+  let arrivals = 0;
+  let released = false;
+  let resolveRelease!: () => void;
+  let rejectRelease!: (error: Error) => void;
+  const releasePromise = new Promise<void>((resolve, reject) => {
+    resolveRelease = resolve;
+    rejectRelease = reject;
+  });
+  const timer = setTimeout(() => {
+    if (!released) {
+      released = true;
+      rejectRelease(new Error(`Barrier timed out after ${timeoutMilliseconds}ms`));
+    }
+  }, timeoutMilliseconds);
+
+  const release = (): void => {
+    if (!released) {
+      released = true;
+      clearTimeout(timer);
+      resolveRelease();
+    }
+  };
+
+  return {
+    async arrive(): Promise<void> {
+      if (released) {
+        return releasePromise;
+      }
+      arrivals += 1;
+      if (arrivals === participants) {
+        release();
+      } else if (arrivals > participants) {
+        throw new Error("Barrier participant overflow");
+      }
+      return releasePromise;
+    },
+    release,
+  };
+};
+
 describeDatabase(suiteName, () => {
   let client: PoolClient | undefined;
   let pool: Pool | undefined;
   let quotedSchema: string | undefined;
   let schemaName: string | undefined;
   let migrationApplied: Promise<void> | undefined;
+  let repositoryDatabase: DatabaseService | undefined;
+  let originalDatabaseUrl: string | undefined;
 
   const database = (): PoolClient => {
     if (client === undefined) {
@@ -508,6 +565,303 @@ describeDatabase(suiteName, () => {
     return migrationApplied;
   };
 
+  const activeRepositoryDatabase = (): DatabaseService => {
+    if (repositoryDatabase === undefined) {
+      throw new Error("Booking repository database was not initialized");
+    }
+    return repositoryDatabase;
+  };
+
+  const testNow = new Date("2030-01-01T00:00:00.000Z");
+  const clockAt = (value: Date): Clock => ({
+    now: () => new Date(Date.prototype.getTime.call(value)),
+  });
+  const nextBookingNumber = (): string =>
+    `SF20300101${randomBytes(6).toString("hex").toUpperCase()}`;
+  const nextIdempotencyKey = (): string => `key_${randomBytes(20).toString("hex")}`;
+
+  interface ScenarioFixture {
+    checkout: string;
+    dates: string[];
+    policy: string;
+    prices: Array<{ rack: number; sale: number }>;
+    propertyId: string;
+    propertyName: string;
+    roomId: string;
+    roomName: string;
+    users: string[];
+  }
+
+  interface ScenarioState {
+    bookingRows: Array<{ booking_number: string; id: string; quote_id: string; user_id: string }>;
+    historyCount: number;
+    holdCount: number;
+    holdStatuses: string[];
+    inventories: Array<{
+      business_date: string;
+      held_inventory: number;
+      sold_inventory: number;
+      total_inventory: number;
+      version: number;
+    }>;
+  }
+
+  const createScenarioFixture = async (input: {
+    checkout: string;
+    dates: string[];
+    totals: number[];
+    userCount?: number;
+  }): Promise<ScenarioFixture> => {
+    const db = database();
+    const users = Array.from({ length: input.userCount ?? 1 }, () => randomUUID());
+    for (const userId of users) {
+      await db.query(`INSERT INTO "user" (id, updated_at) VALUES ($1::uuid, CURRENT_TIMESTAMP)`, [
+        userId,
+      ]);
+    }
+    const propertyId = randomUUID();
+    const roomId = randomUUID();
+    const suffix = roomId.slice(0, 8);
+    const propertyName = `并发测试酒店-${suffix}`;
+    const roomName = `并发测试房型-${suffix}`;
+    const policy = `并发测试政策-${suffix}`;
+    await db.query(
+      `
+      INSERT INTO property (
+        id, city_id, type, name_zh, address_zh, location, short_description_zh,
+        description_zh, policies_zh, cover_url, status, updated_at
+      )
+      SELECT
+        $1::uuid, city.id, 'HOTEL', $2, '测试地址',
+        ST_SetSRID(ST_MakePoint(120, 30), 4326)::geography, '测试简介',
+        '测试描述', '测试政策', 'https://example.test/property.jpg', 'OPEN', CURRENT_TIMESTAMP
+      FROM city
+      ORDER BY city.created_at, city.id
+      LIMIT 1
+    `,
+      [propertyId, propertyName],
+    );
+    await db.query(
+      `
+      INSERT INTO room_type (
+        id, property_id, name_zh, bed_type_zh, area_sqm, max_guests, cover_url,
+        description_zh, booking_policy_zh, status, updated_at
+      )
+      VALUES (
+        $1::uuid, $2::uuid, $3, '大床', 30.00, 4, 'https://example.test/room.jpg',
+        '测试房型描述', $4, 'ON_SALE', CURRENT_TIMESTAMP
+      )
+    `,
+      [roomId, propertyId, roomName, policy],
+    );
+    const prices = input.dates.map((_, index) => ({
+      sale: 15_000 + index * 1_000,
+      rack: 18_000 + index * 1_000,
+    }));
+    for (const [index, businessDate] of input.dates.entries()) {
+      await db.query(
+        `
+        INSERT INTO daily_price (
+          room_type_id, business_date, sale_price_cents, rack_price_cents, updated_at
+        ) VALUES ($1::uuid, $2::date, $3, $4, CURRENT_TIMESTAMP)
+      `,
+        [roomId, businessDate, prices[index]?.sale, prices[index]?.rack],
+      );
+      await db.query(
+        `
+        INSERT INTO daily_inventory (
+          room_type_id, business_date, total_inventory, held_inventory,
+          sold_inventory, version, updated_at
+        ) VALUES ($1::uuid, $2::date, $3, 0, 0, 0, CURRENT_TIMESTAMP)
+      `,
+        [roomId, businessDate, input.totals[index]],
+      );
+    }
+    return {
+      checkout: input.checkout,
+      dates: input.dates,
+      policy,
+      prices,
+      propertyId,
+      propertyName,
+      roomId,
+      roomName,
+      users,
+    };
+  };
+
+  const createQuote = async (
+    fixture: ScenarioFixture,
+    userId: string,
+    expiresAt = new Date("2030-01-01T00:05:00.000Z"),
+  ): Promise<string> => {
+    const nightlyPrices = fixture.dates.map((businessDate, index) => ({
+      business_date: businessDate,
+      sale_price_cents: fixture.prices[index]?.sale,
+      rack_price_cents: fixture.prices[index]?.rack,
+      currency: "CNY",
+    }));
+    const property = { id: fixture.propertyId, name: fixture.propertyName };
+    const roomType = {
+      id: fixture.roomId,
+      name: fixture.roomName,
+      cover_url: "https://example.test/room.jpg",
+    };
+    const fingerprint = createQuoteFingerprint({
+      property,
+      roomType: {
+        id: roomType.id,
+        name: roomType.name,
+        coverUrl: roomType.cover_url,
+      },
+      checkin: fixture.dates[0]!,
+      checkout: fixture.checkout,
+      guests: 2,
+      bookingPolicy: fixture.policy,
+      nightlyPrices: fixture.dates.map((businessDate, index) => ({
+        businessDate,
+        salePriceCents: fixture.prices[index]!.sale,
+        rackPriceCents: fixture.prices[index]!.rack,
+      })),
+    });
+    const total = fixture.prices.reduce((sum, price) => sum + price.sale, 0);
+    const quote = await database().query<{ id: string }>(
+      `
+      INSERT INTO quote (
+        user_id, property_id, room_type_id, checkin_date, checkout_date, guests,
+        nightly_prices, property_snapshot, room_type_snapshot, booking_policy_snapshot,
+        total_price_cents, currency, fingerprint, expires_at, created_at
+      ) VALUES (
+        $1::uuid, $2::uuid, $3::uuid, $4::date, $5::date, 2,
+        $6::jsonb, $7::jsonb, $8::jsonb, $9, $10, 'CNY', $11, $12, $13
+      )
+      RETURNING id::text
+    `,
+      [
+        userId,
+        fixture.propertyId,
+        fixture.roomId,
+        fixture.dates[0],
+        fixture.checkout,
+        JSON.stringify(nightlyPrices),
+        JSON.stringify(property),
+        JSON.stringify(roomType),
+        fixture.policy,
+        total,
+        fingerprint,
+        expiresAt,
+        new Date("2029-12-31T23:59:00.000Z"),
+      ],
+    );
+    const quoteId = quote.rows[0]?.id;
+    if (quoteId === undefined) {
+      throw new Error("Quote fixture was not created");
+    }
+    return quoteId;
+  };
+
+  const repositoryInput = (
+    userId: string,
+    quoteId: string,
+    idempotencyKey = nextIdempotencyKey(),
+    bookingNumber = nextBookingNumber(),
+  ): CreateBookingInput => ({
+    userId,
+    quoteId,
+    idempotencyKey,
+    bookingNumber,
+    now: new Date(testNow),
+  });
+
+  const createThroughRepository = (
+    input: CreateBookingInput,
+    bookingDatabase: BookingDatabase = activeRepositoryDatabase(),
+    clock: Clock = clockAt(testNow),
+  ): Promise<CreateBookingResult> =>
+    new BookingRepository(bookingDatabase, clock).createFromQuote(input);
+
+  const createConcurrentDatabase = (
+    barrier: ReturnType<typeof createBarrier>,
+    backendPids: Set<number>,
+  ): BookingDatabase => {
+    const source = activeRepositoryDatabase();
+    return {
+      $queryRaw: <T = unknown>(query: Prisma.Sql) => source.$queryRaw<T>(query),
+      $transaction: <T>(
+        operation: (transaction: BookingTransaction) => Promise<T>,
+        options: { isolationLevel: "ReadCommitted" },
+      ) =>
+        source.$transaction(async (transaction) => {
+          const rows = await transaction.$queryRaw<Array<{ pid: number }>>(
+            Prisma.sql`SELECT pg_backend_pid()::integer AS pid`,
+          );
+          const pid = rows[0]?.pid;
+          if (!Number.isInteger(pid)) {
+            throw new Error("Unable to capture PostgreSQL backend pid");
+          }
+          backendPids.add(pid!);
+          await barrier.arrive();
+          return operation(transaction);
+        }, options),
+    };
+  };
+
+  const readScenarioState = async (fixture: ScenarioFixture): Promise<ScenarioState> => {
+    const bookingRows = await database().query<ScenarioState["bookingRows"][number]>(
+      `
+      SELECT id::text, quote_id::text, user_id::text, booking_number
+      FROM booking
+      WHERE room_type_id = $1::uuid
+      ORDER BY created_at, id
+    `,
+      [fixture.roomId],
+    );
+    const counts = await database().query<{ history_count: number; hold_count: number }>(
+      `
+      SELECT
+        (
+          SELECT COUNT(*)::integer
+          FROM inventory_hold hold
+          JOIN booking ON booking.id = hold.booking_id
+          WHERE booking.room_type_id = $1::uuid
+        ) AS hold_count,
+        (
+          SELECT COUNT(*)::integer
+          FROM booking_status_history history
+          JOIN booking ON booking.id = history.booking_id
+          WHERE booking.room_type_id = $1::uuid
+        ) AS history_count
+    `,
+      [fixture.roomId],
+    );
+    const inventories = await database().query<ScenarioState["inventories"][number]>(
+      `
+      SELECT business_date::text, total_inventory, held_inventory, sold_inventory, version
+      FROM daily_inventory
+      WHERE room_type_id = $1::uuid
+      ORDER BY business_date
+    `,
+      [fixture.roomId],
+    );
+    const holds = await database().query<{ status: string }>(
+      `
+      SELECT hold.status::text
+      FROM inventory_hold hold
+      JOIN booking ON booking.id = hold.booking_id
+      WHERE booking.room_type_id = $1::uuid
+      ORDER BY hold.business_date, hold.id
+    `,
+      [fixture.roomId],
+    );
+    return {
+      bookingRows: bookingRows.rows,
+      historyCount: counts.rows[0]?.history_count ?? -1,
+      holdCount: counts.rows[0]?.hold_count ?? -1,
+      holdStatuses: holds.rows.map(({ status }) => status),
+      inventories: inventories.rows,
+    };
+  };
+
   const expectCheckViolation = async (sql: string, values: unknown[], constraint?: string) => {
     await database().query("BEGIN");
     try {
@@ -531,11 +885,22 @@ describeDatabase(suiteName, () => {
     await client.query(`CREATE SCHEMA ${quotedSchema}`);
     await client.query(`SET search_path TO ${quotedSchema}, public`);
     await createBaselineFixtures();
+    if (schemaName === undefined) {
+      throw new Error("Quote booking test schema was not generated");
+    }
+    originalDatabaseUrl = process.env.DATABASE_URL;
+    const repositoryUrl = new URL(connectionString);
+    repositoryUrl.searchParams.set("schema", schemaName);
+    repositoryUrl.searchParams.set("options", `-c search_path=${schemaName},public`);
+    process.env.DATABASE_URL = repositoryUrl.toString();
+    repositoryDatabase = new DatabaseService();
   });
 
   afterAll(async () => {
     const cleanupErrors: unknown[] = [];
     try {
+      await repositoryDatabase?.onModuleDestroy();
+      repositoryDatabase = undefined;
       if (quotedSchema !== undefined && pool !== undefined) {
         await pool.query(`DROP SCHEMA ${quotedSchema} CASCADE`);
       }
@@ -547,6 +912,11 @@ describeDatabase(suiteName, () => {
         await pool?.end();
       } catch (error) {
         cleanupErrors.push(error);
+      }
+      if (originalDatabaseUrl === undefined) {
+        delete process.env.DATABASE_URL;
+      } else {
+        process.env.DATABASE_URL = originalDatabaseUrl;
       }
     }
     if (cleanupErrors.length > 0) {
@@ -1288,6 +1658,396 @@ describeDatabase(suiteName, () => {
         room_type_count: 1,
         daily_price_count: 1,
         daily_inventory_count: 1,
+      },
+    ]);
+  }, 25_000);
+
+  test("serializes two users competing for one available room night", async () => {
+    await applyTargetMigration();
+    const fixture = await createScenarioFixture({
+      dates: ["2030-02-01"],
+      checkout: "2030-02-02",
+      totals: [1],
+      userCount: 2,
+    });
+    const firstQuote = await createQuote(fixture, fixture.users[0]!);
+    const secondQuote = await createQuote(fixture, fixture.users[1]!);
+    const barrier = createBarrier(2, 5_000);
+    const backendPids = new Set<number>();
+    const concurrentDatabase = createConcurrentDatabase(barrier, backendPids);
+    let results: CreateBookingResult[];
+    try {
+      results = await Promise.all([
+        createThroughRepository(repositoryInput(fixture.users[0]!, firstQuote), concurrentDatabase),
+        createThroughRepository(
+          repositoryInput(fixture.users[1]!, secondQuote),
+          concurrentDatabase,
+        ),
+      ]);
+    } finally {
+      barrier.release();
+    }
+    expect(backendPids.size).toBe(2);
+    expect(results.map(({ kind }) => kind).sort()).toEqual(["CREATED", "INVENTORY_UNAVAILABLE"]);
+    const state = await readScenarioState(fixture);
+    expect(state.bookingRows).toHaveLength(1);
+    expect(state.holdCount).toBe(1);
+    expect(state.holdStatuses).toEqual(["HELD"]);
+    expect(state.historyCount).toBe(1);
+    expect(state.inventories).toEqual([
+      {
+        business_date: "2030-02-01",
+        total_inventory: 1,
+        held_inventory: 1,
+        sold_inventory: 0,
+        version: 1,
+      },
+    ]);
+  }, 25_000);
+
+  test("replays concurrent requests with the same user and idempotency key exactly once", async () => {
+    await applyTargetMigration();
+    const fixture = await createScenarioFixture({
+      dates: ["2030-03-01"],
+      checkout: "2030-03-02",
+      totals: [1],
+    });
+    const quoteId = await createQuote(fixture, fixture.users[0]!);
+    const idempotencyKey = nextIdempotencyKey();
+    const barrier = createBarrier(2, 5_000);
+    const backendPids = new Set<number>();
+    const concurrentDatabase = createConcurrentDatabase(barrier, backendPids);
+    let results: CreateBookingResult[];
+    try {
+      results = await Promise.all([
+        createThroughRepository(
+          repositoryInput(fixture.users[0]!, quoteId, idempotencyKey),
+          concurrentDatabase,
+        ),
+        createThroughRepository(
+          repositoryInput(fixture.users[0]!, quoteId, idempotencyKey),
+          concurrentDatabase,
+        ),
+      ]);
+    } finally {
+      barrier.release();
+    }
+    expect(backendPids.size).toBe(2);
+    expect(results.map(({ kind }) => kind).sort()).toEqual(["CREATED", "REPLAYED"]);
+    const bookingIds = results.flatMap((result) =>
+      result.kind === "CREATED" || result.kind === "REPLAYED" ? [result.booking.booking_id] : [],
+    );
+    const bookingNumbers = results.flatMap((result) =>
+      result.kind === "CREATED" || result.kind === "REPLAYED"
+        ? [result.booking.booking_number]
+        : [],
+    );
+    expect(new Set(bookingIds).size).toBe(1);
+    expect(new Set(bookingNumbers).size).toBe(1);
+    const state = await readScenarioState(fixture);
+    expect(state.bookingRows).toHaveLength(1);
+    expect(state.holdCount).toBe(1);
+    expect(state.holdStatuses).toEqual(["HELD"]);
+    expect(state.historyCount).toBe(1);
+    expect(state.inventories).toEqual([
+      {
+        business_date: "2030-03-01",
+        total_inventory: 1,
+        held_inventory: 1,
+        sold_inventory: 0,
+        version: 1,
+      },
+    ]);
+  }, 25_000);
+
+  test("allows only one idempotency key to consume the same quote", async () => {
+    await applyTargetMigration();
+    const fixture = await createScenarioFixture({
+      dates: ["2030-04-01"],
+      checkout: "2030-04-02",
+      totals: [1],
+    });
+    const quoteId = await createQuote(fixture, fixture.users[0]!);
+    const barrier = createBarrier(2, 5_000);
+    const backendPids = new Set<number>();
+    const concurrentDatabase = createConcurrentDatabase(barrier, backendPids);
+    let results: CreateBookingResult[];
+    try {
+      results = await Promise.all([
+        createThroughRepository(repositoryInput(fixture.users[0]!, quoteId), concurrentDatabase),
+        createThroughRepository(repositoryInput(fixture.users[0]!, quoteId), concurrentDatabase),
+      ]);
+    } finally {
+      barrier.release();
+    }
+    expect(backendPids.size).toBe(2);
+    expect(results.map(({ kind }) => kind).sort()).toEqual(["CREATED", "QUOTE_ALREADY_USED"]);
+    const state = await readScenarioState(fixture);
+    expect(state.bookingRows).toHaveLength(1);
+    expect(state.holdCount).toBe(1);
+    expect(state.holdStatuses).toEqual(["HELD"]);
+    expect(state.historyCount).toBe(1);
+    expect(state.inventories).toEqual([
+      {
+        business_date: "2030-04-01",
+        total_inventory: 1,
+        held_inventory: 1,
+        sold_inventory: 0,
+        version: 1,
+      },
+    ]);
+  }, 25_000);
+
+  test("rolls back a multi-night booking when any night is unavailable", async () => {
+    await applyTargetMigration();
+    const fixture = await createScenarioFixture({
+      dates: ["2030-05-01", "2030-05-02"],
+      checkout: "2030-05-03",
+      totals: [1, 0],
+    });
+    const quoteId = await createQuote(fixture, fixture.users[0]!);
+    await expect(
+      createThroughRepository(repositoryInput(fixture.users[0]!, quoteId)),
+    ).resolves.toEqual({ kind: "INVENTORY_UNAVAILABLE" });
+    const state = await readScenarioState(fixture);
+    expect(state.bookingRows).toEqual([]);
+    expect(state.holdCount).toBe(0);
+    expect(state.holdStatuses).toEqual([]);
+    expect(state.historyCount).toBe(0);
+    expect(state.inventories).toEqual([
+      {
+        business_date: "2030-05-01",
+        total_inventory: 1,
+        held_inventory: 0,
+        sold_inventory: 0,
+        version: 0,
+      },
+      {
+        business_date: "2030-05-02",
+        total_inventory: 0,
+        held_inventory: 0,
+        sold_inventory: 0,
+        version: 0,
+      },
+    ]);
+  }, 25_000);
+
+  test("creates a user-owned replacement quote after price and policy changes without holds", async () => {
+    await applyTargetMigration();
+    const fixture = await createScenarioFixture({
+      dates: ["2030-06-01"],
+      checkout: "2030-06-02",
+      totals: [1],
+    });
+    const userId = fixture.users[0]!;
+    const quoteId = await createQuote(fixture, userId);
+    await database().query(
+      `
+      UPDATE daily_price
+      SET sale_price_cents = sale_price_cents + 500,
+          rack_price_cents = rack_price_cents + 500,
+          updated_at = CURRENT_TIMESTAMP
+      WHERE room_type_id = $1::uuid
+    `,
+      [fixture.roomId],
+    );
+    await database().query(
+      `UPDATE room_type SET booking_policy_zh = $2, updated_at = CURRENT_TIMESTAMP WHERE id = $1::uuid`,
+      [fixture.roomId, `${fixture.policy}-changed`],
+    );
+    const result = await createThroughRepository(repositoryInput(userId, quoteId));
+    expect(result.kind).toBe("QUOTE_CHANGED");
+    if (result.kind === "QUOTE_CHANGED") {
+      expect(result.details.replacement_quote.total_price_cents).toBe(15_500);
+      expect(result.details.replacement_quote.booking_policy).toBe(`${fixture.policy}-changed`);
+    }
+    const replacements = await database().query<{ id: string; user_id: string }>(
+      `
+      SELECT id::text, user_id::text
+      FROM quote
+      WHERE room_type_id = $1::uuid AND id <> $2::uuid
+    `,
+      [fixture.roomId, quoteId],
+    );
+    expect(replacements.rows).toHaveLength(1);
+    expect(replacements.rows[0]?.user_id).toBe(userId);
+    if (result.kind === "QUOTE_CHANGED") {
+      expect(replacements.rows[0]?.id).toBe(result.details.replacement_quote.quote_id);
+    }
+    const state = await readScenarioState(fixture);
+    expect(state.bookingRows).toEqual([]);
+    expect(state.holdCount).toBe(0);
+    expect(state.holdStatuses).toEqual([]);
+    expect(state.historyCount).toBe(0);
+    expect(state.inventories).toEqual([
+      {
+        business_date: "2030-06-01",
+        total_inventory: 1,
+        held_inventory: 0,
+        sold_inventory: 0,
+        version: 0,
+      },
+    ]);
+  }, 25_000);
+
+  test("does not hold inventory for an expired quote", async () => {
+    await applyTargetMigration();
+    const fixture = await createScenarioFixture({
+      dates: ["2030-07-01"],
+      checkout: "2030-07-02",
+      totals: [1],
+    });
+    const quoteId = await createQuote(
+      fixture,
+      fixture.users[0]!,
+      new Date("2030-01-01T00:04:00.000Z"),
+    );
+    await expect(
+      createThroughRepository(
+        repositoryInput(fixture.users[0]!, quoteId),
+        activeRepositoryDatabase(),
+        clockAt(new Date("2030-01-01T00:05:00.000Z")),
+      ),
+    ).resolves.toEqual({ kind: "QUOTE_EXPIRED" });
+    const state = await readScenarioState(fixture);
+    expect(state.bookingRows).toEqual([]);
+    expect(state.holdCount).toBe(0);
+    expect(state.holdStatuses).toEqual([]);
+    expect(state.historyCount).toBe(0);
+    expect(state.inventories).toEqual([
+      {
+        business_date: "2030-07-01",
+        total_inventory: 1,
+        held_inventory: 0,
+        sold_inventory: 0,
+        version: 0,
+      },
+    ]);
+  }, 25_000);
+
+  test("hides another user's quote as expired without reads or holds", async () => {
+    await applyTargetMigration();
+    const fixture = await createScenarioFixture({
+      dates: ["2030-08-01"],
+      checkout: "2030-08-02",
+      totals: [1],
+      userCount: 2,
+    });
+    const quoteId = await createQuote(fixture, fixture.users[0]!);
+    await expect(
+      createThroughRepository(repositoryInput(fixture.users[1]!, quoteId)),
+    ).resolves.toEqual({ kind: "QUOTE_EXPIRED" });
+    const state = await readScenarioState(fixture);
+    expect(state.bookingRows).toEqual([]);
+    expect(state.holdCount).toBe(0);
+    expect(state.holdStatuses).toEqual([]);
+    expect(state.historyCount).toBe(0);
+    expect(state.inventories).toEqual([
+      {
+        business_date: "2030-08-01",
+        total_inventory: 1,
+        held_inventory: 0,
+        sold_inventory: 0,
+        version: 0,
+      },
+    ]);
+  }, 25_000);
+
+  test("rolls back a booking-number collision and retries the full service transaction once", async () => {
+    await applyTargetMigration();
+    const collisionNumber = nextBookingNumber();
+    const blocker = await createScenarioFixture({
+      dates: ["2030-09-01"],
+      checkout: "2030-09-02",
+      totals: [1],
+    });
+    const blockerUser = blocker.users[0]!;
+    const blockerQuote = await createQuote(blocker, blockerUser);
+    await database().query(
+      `
+      INSERT INTO booking (
+        user_id, quote_id, property_id, room_type_id, booking_number, status,
+        checkin_date, checkout_date, guests, property_snapshot, room_type_snapshot,
+        nightly_prices, booking_policy_snapshot, total_price_cents, currency,
+        idempotency_key, expires_at, created_at, updated_at
+      ) VALUES (
+        $1::uuid, $2::uuid, $3::uuid, $4::uuid, $5, 'PENDING_PAYMENT',
+        $6::date, $7::date, 2, $8::jsonb, $9::jsonb, $10::jsonb, $11,
+        $12, 'CNY', $13, $14, $15, $15
+      )
+    `,
+      [
+        blockerUser,
+        blockerQuote,
+        blocker.propertyId,
+        blocker.roomId,
+        collisionNumber,
+        blocker.dates[0],
+        blocker.checkout,
+        JSON.stringify({ id: blocker.propertyId, name: blocker.propertyName }),
+        JSON.stringify({
+          id: blocker.roomId,
+          name: blocker.roomName,
+          cover_url: "https://example.test/room.jpg",
+        }),
+        JSON.stringify([
+          {
+            business_date: blocker.dates[0],
+            sale_price_cents: blocker.prices[0]!.sale,
+            rack_price_cents: blocker.prices[0]!.rack,
+            currency: "CNY",
+          },
+        ]),
+        blocker.policy,
+        blocker.prices[0]!.sale,
+        nextIdempotencyKey(),
+        new Date("2030-01-01T00:15:00.000Z"),
+        new Date("2029-12-31T23:59:00.000Z"),
+      ],
+    );
+
+    const fixture = await createScenarioFixture({
+      dates: ["2030-10-01"],
+      checkout: "2030-10-02",
+      totals: [1],
+    });
+    const userId = fixture.users[0]!;
+    const quoteId = await createQuote(fixture, userId);
+    const successfulNumber = nextBookingNumber();
+    const generatedNumbers = [collisionNumber, successfulNumber];
+    let generatorCalls = 0;
+    const generator: BookingNumberGenerator = {
+      next: () => {
+        generatorCalls += 1;
+        const value = generatedNumbers.shift();
+        if (value === undefined) {
+          throw new Error("Unexpected booking number request");
+        }
+        return value;
+      },
+    };
+    const rateLimit = {
+      checkBookings: () => Promise.resolve(),
+    } as unknown as WriteRateLimitService;
+    const repository = new BookingRepository(activeRepositoryDatabase(), clockAt(testNow));
+    const service = new BookingsService(repository, rateLimit, clockAt(testNow), generator);
+    const result = await service.create(userId, nextIdempotencyKey(), { quote_id: quoteId });
+    expect(result.replayed).toBe(false);
+    expect(result.booking.booking_number).toBe(successfulNumber);
+    expect(generatorCalls).toBe(2);
+    const state = await readScenarioState(fixture);
+    expect(state.bookingRows).toHaveLength(1);
+    expect(state.bookingRows[0]?.booking_number).toBe(successfulNumber);
+    expect(state.holdCount).toBe(1);
+    expect(state.holdStatuses).toEqual(["HELD"]);
+    expect(state.historyCount).toBe(1);
+    expect(state.inventories).toEqual([
+      {
+        business_date: "2030-10-01",
+        total_inventory: 1,
+        held_inventory: 1,
+        sold_inventory: 0,
+        version: 1,
       },
     ]);
   }, 25_000);
