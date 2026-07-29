@@ -1,14 +1,18 @@
 "use strict";
 
 const assert = require("node:assert/strict");
+const { spawn } = require("node:child_process");
 const { randomUUID } = require("node:crypto");
 const {
+  access,
   link,
   mkdir,
   mkdtemp,
+  readdir,
   realpath,
   rm,
   rmdir,
+  stat,
   writeFile,
 } = require("node:fs/promises");
 const path = require("node:path");
@@ -37,7 +41,22 @@ const BOOKING_MODAL_PROBE_STATE_KEY =
   "__stayFableCatalogBookingModalProbeState";
 const ACTION_TIMEOUT_MS = 10_000;
 const WORKFLOW_TIMEOUT_MS = 120_000;
+const WINDOWS_CLI_CONNECT_TIMEOUT_MS = 20_000;
+const WINDOWS_CLI_EXIT_GRACE_MS = 1_000;
+const WINDOWS_CLI_POST_CONNECT_MS = 5_000;
+const WINDOWS_CLI_BOOTSTRAP =
+  "const e=process.argv[1],a=process.argv.slice(2).filter(function(x){return x!=='--electron'});if(!process.env.cwd)process.env.cwd=process.cwd();process.argv=[process.execPath,'--ms-enable-electron-run-as-node',e,'--electron'].concat(a);require(e)";
+const WINDOWS_NON_ELECTRON_EXECUTABLES = new Set([
+  "node.exe",
+  "node-18.exe",
+  "wxfilewatcher.exe",
+  "wxfilewatcher_x64.exe",
+  "notification_helper.exe",
+  "wechatdevtools.exe",
+]);
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
+const UUID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const CATALOG_SEARCH_FIXTURE = Object.freeze({
   city: Object.freeze({
     id: "10000000-0000-4000-8000-000000000001",
@@ -195,6 +214,215 @@ function buildLaunchOptions(projectPath, explicitCliPath, environment = {}) {
   return { cliPath, projectPath };
 }
 
+function isWindowsBatchCli(cliPath, platform = process.platform) {
+  return (
+    platform === "win32" &&
+    typeof cliPath === "string" &&
+    path.extname(cliPath).toLowerCase() === ".bat"
+  );
+}
+
+async function resolveWindowsCliRuntime(cliPath) {
+  const installRoot = path.dirname(cliPath);
+  const cliEntryPath = path.join(
+    installRoot,
+    "resources",
+    "app.asar.unpacked",
+    "js",
+    "common",
+    "cli",
+    "index.js",
+  );
+  await access(cliEntryPath);
+  const candidates = [];
+  for (const entry of await readdir(installRoot, {
+    withFileTypes: true,
+  })) {
+    if (
+      !entry.isFile() ||
+      path.extname(entry.name).toLowerCase() !== ".exe" ||
+      WINDOWS_NON_ELECTRON_EXECUTABLES.has(entry.name.toLowerCase())
+    ) {
+      continue;
+    }
+    const executablePath = path.join(installRoot, entry.name);
+    if ((await stat(executablePath)).size > 50_000_000) {
+      candidates.push(executablePath);
+    }
+  }
+  if (candidates.length !== 1) {
+    throw new Error("WeChat DevTools Electron runtime is unavailable");
+  }
+  return {
+    cliEntryPath,
+    electronPath: candidates[0],
+    installRoot,
+  };
+}
+
+function allocatePort() {
+  return new Promise((resolve, reject) => {
+    const server = require("node:net").createServer();
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => {
+      const address = server.address();
+      const port =
+        address && typeof address === "object" ? address.port : 0;
+      server.close((error) => {
+        if (error) {
+          reject(error);
+        } else if (!Number.isInteger(port) || port <= 0) {
+          reject(new Error("automation port is unavailable"));
+        } else {
+          resolve(port);
+        }
+      });
+    });
+  });
+}
+
+async function launchWindowsBatchMiniProgram(
+  automatorApi,
+  options,
+  dependencies = {},
+) {
+  if (typeof automatorApi?.connect !== "function") {
+    throw new Error("automator connect API is unavailable");
+  }
+  const resolveRuntime =
+    dependencies.resolveWindowsCliRuntime || resolveWindowsCliRuntime;
+  const selectPort = dependencies.allocatePort || allocatePort;
+  const spawnProcess = dependencies.spawnProcess || spawn;
+  const wait = dependencies.sleep || sleep;
+  const environment = dependencies.environment || process.env;
+  const runtime = await resolveRuntime(options.cliPath);
+  const port = await selectPort();
+  const cliEnvironment = {
+    ...environment,
+    ELECTRON_RUN_AS_NODE: "1",
+    cwd: options.cwd || process.cwd(),
+  };
+  delete cliEnvironment.ELECTRON;
+  const cliArguments = [
+    "-e",
+    WINDOWS_CLI_BOOTSTRAP,
+    runtime.cliEntryPath,
+    "auto",
+    "--project",
+    options.projectPath,
+    "--auto-port",
+    String(port),
+  ];
+  const state = {
+    error: null,
+    exitCode: null,
+    exitedAt: null,
+  };
+  let child;
+  try {
+    child = spawnProcess(runtime.electronPath, cliArguments, {
+      cwd: runtime.installRoot,
+      env: cliEnvironment,
+      stdio: "ignore",
+      windowsHide: true,
+    });
+    child.once("error", (error) => {
+      state.error = error;
+    });
+    child.once("exit", (code) => {
+      state.exitCode = code;
+      state.exitedAt = Date.now();
+      if (code !== 0) {
+        state.error = new Error("WeChat DevTools CLI exited unexpectedly");
+      }
+    });
+    child.unref();
+
+    const deadline =
+      Date.now() +
+      (dependencies.connectTimeoutMs ??
+        WINDOWS_CLI_CONNECT_TIMEOUT_MS);
+    let lastConnectionError;
+    while (Date.now() < deadline) {
+      if (state.error) {
+        throw state.error;
+      }
+      let miniprogram;
+      try {
+        miniprogram = await automatorApi.connect({
+          wsEndpoint: `ws://127.0.0.1:${port}`,
+        });
+      } catch (error) {
+        lastConnectionError = error;
+      }
+      if (miniprogram) {
+        await wait(
+          dependencies.postConnectMs ??
+            WINDOWS_CLI_POST_CONNECT_MS,
+        );
+        if (state.error) {
+          try {
+            miniprogram.disconnect();
+          } catch {
+            // The CLI failure remains the useful launch error.
+          }
+          throw state.error;
+        }
+        return miniprogram;
+      }
+      if (
+        state.exitCode === 0 &&
+        state.exitedAt !== null &&
+        Date.now() - state.exitedAt >=
+          (dependencies.exitGraceMs ??
+            WINDOWS_CLI_EXIT_GRACE_MS)
+      ) {
+        throw new Error(
+          "WeChat DevTools project window must be closed before automation launch",
+        );
+      }
+      await wait(dependencies.pollIntervalMs ?? 200);
+    }
+    throw (
+      lastConnectionError ||
+      new Error("WeChat DevTools automation endpoint is unavailable")
+    );
+  } catch (error) {
+    if (child && state.exitedAt === null) {
+      try {
+        child.kill();
+      } catch {
+        // The original launch failure remains authoritative.
+      }
+    }
+    throw error;
+  }
+}
+
+function selectDefaultAutomatorApi(
+  automatorApi,
+  options,
+  dependencies = {},
+) {
+  if (
+    !isWindowsBatchCli(
+      options.cliPath,
+      dependencies.platform ?? process.platform,
+    )
+  ) {
+    return automatorApi;
+  }
+  return {
+    launch(launchOptions) {
+      return launchWindowsBatchMiniProgram(
+        automatorApi,
+        launchOptions,
+        dependencies,
+      );
+    },
+  };
+}
+
 function launchMiniProgram(
   automatorApi,
   options,
@@ -336,9 +564,11 @@ async function captureCatalogSearch(
 
 function startCatalogFixtureApply(miniprogram) {
   const token = randomUUID();
+  const serializedFixture = JSON.stringify(CATALOG_SEARCH_FIXTURE);
   const settled = Promise.resolve()
     .then(() =>
-      miniprogram.evaluate((fixtureToken, value) => {
+      miniprogram.evaluate((fixtureToken, serializedValue) => {
+        const value = JSON.parse(serializedValue);
         const runtime = globalThis;
         const stateKey = "__stayFableCatalogFixtureState";
         const state =
@@ -364,7 +594,7 @@ function startCatalogFixtureApply(miniprogram) {
           },
           status: "applied",
         };
-      }, token, CATALOG_SEARCH_FIXTURE),
+      }, token, serializedFixture),
     )
     .then((result) => {
       if (result && result.status === "skipped") {
@@ -400,11 +630,13 @@ async function restoreCatalogSearch(
   timeoutMs = ACTION_TIMEOUT_MS,
 ) {
   const cancellation = context || createCancellationContext();
+  const serializedSnapshot = JSON.stringify(original);
   cancellation.throwIfAborted();
   await withTimeout(
     "restore catalog search",
     () =>
-      miniprogram.evaluate((fixtureToken, snapshot) => {
+      miniprogram.evaluate((fixtureToken, serializedValue) => {
+        const snapshot = JSON.parse(serializedValue);
         const runtime = globalThis;
         const stateKey = "__stayFableCatalogFixtureState";
         const state =
@@ -417,7 +649,7 @@ async function restoreCatalogSearch(
         return snapshot.hasValue
           ? store.set(snapshot.value)
           : store.clear();
-      }, apply.token, original),
+      }, apply.token, serializedSnapshot),
     timeoutMs,
     cancellation,
   );
@@ -924,32 +1156,6 @@ async function capturePage(
   }
 }
 
-async function captureComponent(
-  component,
-  evidenceRoot,
-  name,
-  evidencePaths,
-  context,
-  options = {},
-) {
-  const cancellation = context || createCancellationContext();
-  const tree = await withTimeout(
-    `${name} component tree`,
-    () => component.wxml(),
-    options.timeoutMs ?? ACTION_TIMEOUT_MS,
-    cancellation,
-  );
-  cancellation.throwIfAborted();
-  await writeTree(
-    evidenceRoot,
-    options.evidenceParent || evidenceRoot,
-    name,
-    tree,
-    evidencePaths,
-    cancellation,
-  );
-}
-
 async function filterElement(page, type, context) {
   const filters = await runInteraction(context, "catalog filters", () =>
     page.$$(FILTER_SELECTOR),
@@ -965,6 +1171,62 @@ async function filterElement(page, type, context) {
     }
   }
   return null;
+}
+
+async function openFirstProperty(
+  page,
+  items,
+  context,
+  options = {},
+) {
+  const propertyList = await requireElement(
+    page,
+    PROPERTY_LIST_SELECTOR,
+    context,
+  );
+  const tree = await runInteraction(
+    context,
+    "property card rendering evidence",
+    () => propertyList.outerWxml(),
+  );
+  const propertyCardTag =
+    `<components/${PROPERTY_CARD_SELECTOR}/${PROPERTY_CARD_SELECTOR}`;
+  const propertyCardCount = tree.split(propertyCardTag).length - 1;
+  const actionLabels = [
+    ...tree.matchAll(
+      /<button class="property-card__tap-target" aria-label="([^"]*)"/g,
+    ),
+  ].map((match) => match[1]);
+  assert.ok(
+    Array.isArray(items) &&
+      items.length > 0 &&
+      propertyCardCount === items.length &&
+      tree.includes(
+        `class="${PROPERTY_CARD_ACTION_SELECTOR.slice(1)}"`,
+      ) &&
+      actionLabels.length === items.length &&
+      items.every(
+        (item, index) =>
+          item &&
+          typeof item.name === "string" &&
+          actionLabels[index] === `查看${item.name}`,
+      ),
+    "property card rendering evidence is invalid",
+  );
+  if (typeof options.capture === "function") {
+    await options.capture();
+  }
+
+  const propertyId = items?.[0]?.id;
+  assert.ok(
+    typeof propertyId === "string" && UUID_PATTERN.test(propertyId),
+    "first property id is invalid",
+  );
+  await runInteraction(context, "open property", () =>
+    page.callMethod("openProperty", {
+      detail: { id: propertyId },
+    }),
+  );
 }
 
 function safeSearchSnapshot(search) {
@@ -1114,27 +1376,23 @@ async function catalogWorkflow(
   );
   assertPropertyOnlyItems(current.data.items);
 
-  const propertyCards = await runInteraction(context, "property cards", () =>
-    current.page.$$(PROPERTY_CARD_SELECTOR),
-  );
-  assert.ok(propertyCards.length > 0, "property card missing");
-  const propertyCard = propertyCards[0];
-  await captureComponent(
-    propertyCard,
-    evidenceRoot,
-    "04-first-property-card",
-    evidencePaths,
+  await openFirstProperty(
+    current.page,
+    current.data.items,
     context,
-    { evidenceParent },
-  );
-  const propertyAction = await runInteraction(
-    context,
-    "property card action",
-    () => propertyCard.$(PROPERTY_CARD_ACTION_SELECTOR),
-  );
-  assert.ok(propertyAction, "property card action missing");
-  await runInteraction(context, "open property", () =>
-    propertyAction.tap(),
+    {
+      capture: () =>
+        capturePage(
+          miniprogram,
+          current.page,
+          PROPERTY_LIST_SELECTOR,
+          evidenceRoot,
+          "04-property-card-rendering",
+          evidencePaths,
+          context,
+          { evidenceParent },
+        ),
+    },
   );
 
   stepTracker.enter("property-detail");
@@ -1345,8 +1603,14 @@ async function run(
   const artifact = { evidenceParent, evidencePaths, evidenceRoot };
   let miniprogram;
   try {
+    const automatorApi =
+      dependencies.automatorApi ||
+      selectDefaultAutomatorApi(automator, launchOptions, {
+        ...dependencies.windowsLauncher,
+        environment: dependencies.environment || process.env,
+      });
     miniprogram = await launchMiniProgram(
-      dependencies.automatorApi || automator,
+      automatorApi,
       launchOptions,
     );
   } catch {
@@ -1549,6 +1813,7 @@ module.exports = {
   closeMiniProgram,
   createCancellationContext,
   launchMiniProgram,
+  openFirstProperty,
   parseCliArguments,
   prepareCatalogHome,
   restoreCatalogSearch,
@@ -1559,7 +1824,9 @@ module.exports = {
   capturePage,
   confirmBookingModal,
   installBookingModalProbe,
+  launchWindowsBatchMiniProgram,
   restoreBookingModalProbe,
+  selectDefaultAutomatorApi,
   withBookingModalProbe,
   formatCatalogFailure,
   publishTempFile,

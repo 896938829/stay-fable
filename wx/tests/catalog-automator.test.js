@@ -7,6 +7,7 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { spawn } from "node:child_process";
+import { EventEmitter } from "node:events";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -183,6 +184,76 @@ describe("catalog automator launch configuration", () => {
     expect(automatorApi.launch).toHaveBeenCalledOnce();
     expect(automatorApi.launch).toHaveBeenCalledWith(options);
   });
+
+  it("uses the official Electron CLI entry for a Windows batch launcher", async () => {
+    const child = new EventEmitter();
+    child.kill = vi.fn();
+    child.unref = vi.fn();
+    const miniProgram = {
+      disconnect: vi.fn(),
+    };
+    const automatorApi = {
+      connect: vi.fn(async () => miniProgram),
+      launch: vi.fn(async () => {
+        throw new Error("the batch file must not be spawned by Node");
+      }),
+    };
+    const spawnProcess = vi.fn(() => child);
+    const launchOptions = {
+      cliPath: "C:\\tools\\wechat\\cli.bat",
+      projectPath: "C:\\workspace\\wx",
+    };
+    const runtime = {
+      cliEntryPath:
+        "C:\\tools\\wechat\\resources\\app.asar.unpacked\\js\\common\\cli\\index.js",
+      electronPath: "C:\\tools\\wechat\\微信开发者工具.exe",
+      installRoot: "C:\\tools\\wechat",
+    };
+
+    const selectedApi = catalogAutomator.selectDefaultAutomatorApi(
+      automatorApi,
+      launchOptions,
+      {
+        allocatePort: vi.fn(async () => 45123),
+        environment: { SAFE_VALUE: "present" },
+        platform: "win32",
+        resolveWindowsCliRuntime: vi.fn(async () => runtime),
+        sleep: vi.fn(async () => {}),
+        spawnProcess,
+      },
+    );
+
+    await expect(selectedApi.launch(launchOptions)).resolves.toBe(
+      miniProgram,
+    );
+    expect(automatorApi.launch).not.toHaveBeenCalled();
+    expect(automatorApi.connect).toHaveBeenCalledWith({
+      wsEndpoint: "ws://127.0.0.1:45123",
+    });
+    expect(spawnProcess).toHaveBeenCalledOnce();
+    expect(spawnProcess.mock.calls[0][0]).toBe(runtime.electronPath);
+    expect(spawnProcess.mock.calls[0][1]).toEqual(
+      expect.arrayContaining([
+        runtime.cliEntryPath,
+        "auto",
+        "--project",
+        launchOptions.projectPath,
+        "--auto-port",
+        "45123",
+      ]),
+    );
+    expect(spawnProcess.mock.calls[0][2]).toMatchObject({
+      cwd: runtime.installRoot,
+      stdio: "ignore",
+      windowsHide: true,
+    });
+    expect(spawnProcess.mock.calls[0][2].env).toMatchObject({
+      ELECTRON_RUN_AS_NODE: "1",
+      SAFE_VALUE: "present",
+    });
+    expect(child.kill).not.toHaveBeenCalled();
+    expect(child.unref).toHaveBeenCalledOnce();
+  });
 });
 
 describe("catalog automator deterministic search fixture", () => {
@@ -292,6 +363,64 @@ describe("catalog automator deterministic search fixture", () => {
     expect(applies[0].token).not.toBe(applies[1].token);
     expect(runtimeTokens).toEqual(applies.map((apply) => apply.token));
   });
+
+  it("recreates plain search snapshots inside the Automator runtime", async () => {
+    const original = {
+      city: null,
+      checkin: "2026-08-02",
+      checkout: "2026-08-03",
+      guests: 2,
+    };
+    let search = structuredClone(original);
+    const searchStore = {
+      get: vi.fn(() => structuredClone(search)),
+      set: vi.fn((value) => {
+        if (
+          Object.getPrototypeOf(value) !== Object.prototype ||
+          (value.city !== null &&
+            Object.getPrototypeOf(value.city) !== Object.prototype)
+        ) {
+          throw new Error("Invalid search context");
+        }
+        search = structuredClone(value);
+        return structuredClone(search);
+      }),
+    };
+    vi.stubGlobal("getApp", () => ({
+      globalData: { searchStore },
+    }));
+    const miniprogram = {
+      evaluate: vi.fn(async (callback, ...arguments_) => {
+        const bridgedArguments = arguments_.map((argument) => {
+          if (argument === null || typeof argument !== "object") {
+            return argument;
+          }
+          return Object.assign(
+            Object.create({ automatorTransport: true }),
+            structuredClone(argument),
+          );
+        });
+        return callback(...bridgedArguments);
+      }),
+      reLaunch: vi.fn(async () => {}),
+    };
+    let apply;
+
+    await catalogAutomator.prepareCatalogHome(miniprogram, undefined, {
+      onApply(value) {
+        apply = value;
+      },
+    });
+    expect(search).toEqual(catalogAutomator.CATALOG_SEARCH_FIXTURE);
+
+    await catalogAutomator.restoreCatalogSearch(
+      miniprogram,
+      apply,
+      { hasValue: true, value: original },
+      catalogAutomator.createCancellationContext(),
+    );
+    expect(search).toEqual(original);
+  });
 });
 
 describe("catalog automator page polling", () => {
@@ -391,6 +520,7 @@ describe("catalog automator runtime UI evidence", () => {
     content: "报价与预订将在下一开发切片开放",
     showCancel: false,
   };
+  const propertyId = "20000000-0000-4000-8000-000000000001";
 
   function createModalMiniProgram(confirmModal = vi.fn(async () => ({}))) {
     return {
@@ -400,6 +530,123 @@ describe("catalog automator runtime UI evidence", () => {
       native: vi.fn(() => ({ confirmModal })),
     };
   }
+
+  it("captures a real card, validates its visible action, then calls the page property handler", async () => {
+    const events = [];
+    const propertyRoot = {
+      outerWxml: vi.fn(async () => {
+        events.push("tree");
+        return [
+          '<view class="page-shell property-list-page">',
+          "<components/property-card/property-card>",
+          '<view class="property-card">',
+          '<button class="property-card__tap-target" aria-label="查看西湖云栖酒店"></button>',
+          "</view>",
+          "</components/property-card/property-card>",
+          "</view>",
+        ].join("");
+      }),
+    };
+    const page = {
+      $: vi.fn(async (selector) => {
+        events.push(`root:${selector}`);
+        return propertyRoot;
+      }),
+      callMethod: vi.fn(async (method, event) => {
+        events.push(`page:${method}:${event.detail.id}`);
+      }),
+    };
+    const capture = vi.fn(async () => {
+      events.push("capture");
+    });
+
+    await expect(
+      catalogAutomator.openFirstProperty(
+        page,
+        [{ id: propertyId, name: "西湖云栖酒店" }],
+        catalogAutomator.createCancellationContext(),
+        { capture },
+      ),
+    ).resolves.toBeUndefined();
+
+    expect(events).toEqual([
+      "root:.property-list-page",
+      "tree",
+      "capture",
+      `page:openProperty:${propertyId}`,
+    ]);
+    expect(page.callMethod).toHaveBeenCalledWith("openProperty", {
+      detail: { id: propertyId },
+    });
+  });
+
+  it.each([
+    { items: [{ name: "西湖云栖酒店" }] },
+    {
+      items: [
+        { id: "not-a-property-id", name: "西湖云栖酒店" },
+      ],
+    },
+  ])("rejects a missing or invalid first property id: %#", async ({ items }) => {
+    const page = {
+      $: vi.fn(async () => ({
+        outerWxml: vi.fn(async () =>
+          [
+            "<components/property-card/property-card>",
+            '<button class="property-card__tap-target" aria-label="查看西湖云栖酒店"></button>',
+            "</components/property-card/property-card>",
+          ].join(""),
+        ),
+      })),
+      callMethod: vi.fn(async () => {}),
+    };
+
+    await expect(
+      catalogAutomator.openFirstProperty(
+        page,
+        items,
+        catalogAutomator.createCancellationContext(),
+      ),
+    ).rejects.toThrow("first property id is invalid");
+    expect(page.callMethod).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    {
+      label: "missing component",
+      tree:
+        '<view><button class="property-card__tap-target" aria-label="查看西湖云栖酒店"></button></view>',
+    },
+    {
+      label: "missing internal action",
+      tree:
+        "<components/property-card/property-card></components/property-card/property-card>",
+    },
+    {
+      label: "wrong action label",
+      tree: [
+        "<components/property-card/property-card>",
+        '<button class="property-card__tap-target" aria-label="查看其他旅店"></button>',
+        "</components/property-card/property-card>",
+      ].join(""),
+    },
+  ])("rejects $label rendering evidence", async ({ tree }) => {
+    const page = {
+      $: vi.fn(async () => ({
+        outerWxml: vi.fn(async () => tree),
+      })),
+      callMethod: vi.fn(async () => {}),
+    };
+
+    await expect(
+      catalogAutomator.openFirstProperty(
+        page,
+        [{ id: propertyId, name: "西湖云栖酒店" }],
+        catalogAutomator.createCancellationContext(),
+      ),
+    ).rejects.toThrow("property card rendering evidence is invalid");
+    expect(page.callMethod).not.toHaveBeenCalled();
+  });
 
   it("polls until the nightly DOM count exactly matches page data", async () => {
     const row = {};
