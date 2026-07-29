@@ -22,6 +22,33 @@ const HOMESTAY_TYPE = "HOMESTAY";
 const ACTION_TIMEOUT_MS = 10_000;
 const WORKFLOW_TIMEOUT_MS = 120_000;
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
+const CATALOG_SEARCH_FIXTURE = Object.freeze({
+  city: Object.freeze({
+    id: "10000000-0000-4000-8000-000000000001",
+    code: "330100",
+    name: "杭州",
+  }),
+  checkin: "2026-07-30",
+  checkout: "2026-08-01",
+  guests: 3,
+});
+const FAILURE_STEPS = new Set([
+  "arguments",
+  "launch",
+  "fixture",
+  "home",
+  "property-list",
+  "homestay-filter",
+  "restore-all",
+  "property-detail",
+  "room-detail",
+  "booking-notice",
+  "return-to-list",
+  "workflow",
+  "cleanup",
+]);
+const SAFE_PAGE_ROUTE_PATTERN =
+  /^pages\/[a-z0-9-]+\/[a-z0-9-]+$/;
 const UNSAFE_EVIDENCE_MARKERS = [
   ["access", "token"].join("_"),
   ["refresh", "token"].join("_"),
@@ -52,6 +79,125 @@ function withTimeout(label, task, timeoutMs = ACTION_TIMEOUT_MS) {
     );
   });
   return Promise.race([operation, deadline]).finally(() => clearTimeout(timer));
+}
+
+function invalidArguments() {
+  return new Error("catalog automator arguments are invalid");
+}
+
+function parseCliArguments(arguments_) {
+  if (
+    !Array.isArray(arguments_) ||
+    ![2, 4].includes(arguments_.length) ||
+    arguments_.some(
+      (argument) => typeof argument !== "string" || argument === "",
+    ) ||
+    (arguments_.length === 4 && arguments_[2] !== "--cli-path")
+  ) {
+    throw invalidArguments();
+  }
+  return {
+    projectPath: arguments_[0],
+    evidenceDirectory: arguments_[1],
+    cliPath: arguments_.length === 4 ? arguments_[3] : undefined,
+  };
+}
+
+function absolutePath(value) {
+  return (
+    typeof value === "string" &&
+    value !== "" &&
+    (path.win32.isAbsolute(value) || path.posix.isAbsolute(value))
+  );
+}
+
+function controlledCliPath(environment) {
+  try {
+    return environment &&
+      typeof environment === "object" &&
+      typeof environment.WECHAT_DEVTOOLS_CLI_PATH === "string"
+      ? environment.WECHAT_DEVTOOLS_CLI_PATH
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function buildLaunchOptions(projectPath, explicitCliPath, environment = {}) {
+  const cliPath =
+    explicitCliPath === undefined
+      ? controlledCliPath(environment)
+      : explicitCliPath;
+  if (!absolutePath(projectPath) || !absolutePath(cliPath)) {
+    throw new Error("WeChat DevTools CLI path is required");
+  }
+  return { cliPath, projectPath };
+}
+
+function launchMiniProgram(
+  automatorApi,
+  options,
+  timeoutMs = ACTION_TIMEOUT_MS * 3,
+) {
+  return withTimeout(
+    "launch mini-program",
+    () => automatorApi.launch(options),
+    timeoutMs,
+  );
+}
+
+function createStepTracker() {
+  let step = "launch";
+  return {
+    enter(nextStep) {
+      step = FAILURE_STEPS.has(nextStep) ? nextStep : "workflow";
+    },
+    get step() {
+      return step;
+    },
+  };
+}
+
+function safePageRoute(value) {
+  try {
+    const route =
+      typeof value === "string" ? value.replace(/^\/+/, "") : "";
+    return SAFE_PAGE_ROUTE_PATTERN.test(route) ? route : "unknown";
+  } catch {
+    return "unknown";
+  }
+}
+
+function catalogFailure(step, currentPage, evidencePaths) {
+  const error = new Error("catalog automation failed");
+  error.step = FAILURE_STEPS.has(step) ? step : "workflow";
+  error.currentPage = safePageRoute(currentPage);
+  error.evidencePaths = Array.isArray(evidencePaths)
+    ? [...evidencePaths]
+    : [];
+  return error;
+}
+
+async function prepareCatalogHome(miniprogram) {
+  const fixture = await withTimeout("establish catalog fixture", () =>
+    miniprogram.evaluate((value) => {
+      const stored = getApp().globalData.searchStore.set(value);
+      return {
+        city: {
+          id: stored.city.id,
+          code: stored.city.code,
+          name: stored.city.name,
+        },
+        checkin: stored.checkin,
+        checkout: stored.checkout,
+        guests: stored.guests,
+      };
+    }, CATALOG_SEARCH_FIXTURE),
+  );
+  assert.deepEqual(fixture, CATALOG_SEARCH_FIXTURE);
+  await withTimeout("open home", () =>
+    miniprogram.reLaunch("/pages/home/home"),
+  );
 }
 
 async function requireElement(container, selector) {
@@ -167,11 +313,21 @@ async function filterElement(page, type) {
 function safeSearchSnapshot(search) {
   assert.ok(search && typeof search === "object");
   assert.ok(search.city && typeof search.city === "object");
-  assert.equal(search.city.name, "杭州");
-  assert.match(search.checkin, DATE_PATTERN);
-  assert.match(search.checkout, DATE_PATTERN);
-  assert.equal(search.guests, 3);
+  const snapshot = {
+    city: {
+      id: search.city.id,
+      code: search.city.code,
+      name: search.city.name,
+    },
+    checkin: search.checkin,
+    checkout: search.checkout,
+    guests: search.guests,
+  };
+  assert.match(snapshot.checkin, DATE_PATTERN);
+  assert.match(snapshot.checkout, DATE_PATTERN);
+  assert.deepEqual(snapshot, CATALOG_SEARCH_FIXTURE);
   return {
+    cityId: snapshot.city.id,
     cityCode: search.city.code,
     cityName: search.city.name,
     checkin: search.checkin,
@@ -196,10 +352,15 @@ function assertPropertyOnlyItems(items) {
   }
 }
 
-async function catalogWorkflow(miniprogram, evidenceRoot, evidencePaths) {
-  await withTimeout("open home", () =>
-    miniprogram.reLaunch("/pages/home/home"),
-  );
+async function catalogWorkflow(
+  miniprogram,
+  evidenceRoot,
+  evidencePaths,
+  stepTracker,
+) {
+  stepTracker.enter("fixture");
+  await prepareCatalogHome(miniprogram);
+  stepTracker.enter("home");
   let current = await waitForPage(
     miniprogram,
     "pages/home/home",
@@ -221,6 +382,7 @@ async function catalogWorkflow(miniprogram, evidenceRoot, evidencePaths) {
     SEARCH_ACTION_SELECTOR,
   );
   await withTimeout("search properties", () => searchAction.tap());
+  stepTracker.enter("property-list");
   current = await waitForPage(
     miniprogram,
     "pages/property-list/property-list",
@@ -245,6 +407,7 @@ async function catalogWorkflow(miniprogram, evidenceRoot, evidencePaths) {
 
   const homestay = await filterElement(current.page, HOMESTAY_TYPE);
   assert.ok(homestay, "HOMESTAY filter missing");
+  stepTracker.enter("homestay-filter");
   await withTimeout("select HOMESTAY", () => homestay.tap());
   current.data = await waitForData(
     current.page,
@@ -264,6 +427,7 @@ async function catalogWorkflow(miniprogram, evidenceRoot, evidencePaths) {
 
   const all = await filterElement(current.page, "");
   assert.ok(all, "all-properties filter missing");
+  stepTracker.enter("restore-all");
   await withTimeout("restore all properties", () => all.tap());
   current.data = await waitForData(
     current.page,
@@ -289,6 +453,7 @@ async function catalogWorkflow(miniprogram, evidenceRoot, evidencePaths) {
   assert.ok(propertyAction, "property card action missing");
   await withTimeout("open property", () => propertyAction.tap());
 
+  stepTracker.enter("property-detail");
   current = await waitForPage(
     miniprogram,
     "pages/property-detail/property-detail",
@@ -311,6 +476,7 @@ async function catalogWorkflow(miniprogram, evidenceRoot, evidencePaths) {
 
   const roomAction = await requireElement(current.page, ROOM_ACTION_SELECTOR);
   await withTimeout("open room", () => roomAction.tap());
+  stepTracker.enter("room-detail");
   current = await waitForPage(
     miniprogram,
     "pages/room-detail/room-detail",
@@ -344,6 +510,7 @@ async function catalogWorkflow(miniprogram, evidenceRoot, evidencePaths) {
     current.page,
     ROOM_SELECTION_SELECTOR,
   );
+  stepTracker.enter("booking-notice");
   await withTimeout("show booking notice", () => roomSelection.tap());
   await capturePage(
     miniprogram,
@@ -357,6 +524,7 @@ async function catalogWorkflow(miniprogram, evidenceRoot, evidencePaths) {
     miniprogram.native().confirmModal(),
   );
 
+  stepTracker.enter("return-to-list");
   await withTimeout("return to property", () => miniprogram.navigateBack());
   await waitForPage(
     miniprogram,
@@ -373,6 +541,7 @@ async function catalogWorkflow(miniprogram, evidenceRoot, evidencePaths) {
     miniprogram.evaluate(() => {
       const search = getApp().globalData.searchStore.get();
       return {
+        cityId: search.city.id,
         cityCode: search.city.code,
         cityName: search.city.name,
         checkin: search.checkin,
@@ -407,7 +576,12 @@ async function catalogWorkflow(miniprogram, evidenceRoot, evidencePaths) {
   };
 }
 
-async function run(projectPath, evidenceDirectory) {
+async function run(
+  projectPath,
+  evidenceDirectory,
+  cliPath,
+  dependencies = {},
+) {
   assert.ok(path.isAbsolute(projectPath || ""), "absolute projectPath is required");
   assert.ok(evidenceDirectory, "evidenceDirectory is required");
   const projectRoot = await realpath(projectPath);
@@ -426,23 +600,46 @@ async function run(projectPath, evidenceDirectory) {
   );
 
   const evidencePaths = [];
-  const miniprogram = await withTimeout(
-    "launch mini-program",
-    () => automator.launch({ projectPath: projectRoot }),
-    ACTION_TIMEOUT_MS * 3,
-  );
+  const stepTracker = createStepTracker();
+  let launchOptions;
+  try {
+    launchOptions = buildLaunchOptions(
+      projectRoot,
+      cliPath,
+      dependencies.environment || process.env,
+    );
+  } catch {
+    throw catalogFailure("launch", "unknown", evidencePaths);
+  }
+  let miniprogram;
+  try {
+    miniprogram = await launchMiniProgram(
+      dependencies.automatorApi || automator,
+      launchOptions,
+    );
+  } catch {
+    throw catalogFailure("launch", "unknown", evidencePaths);
+  }
   let result;
   let failure = null;
+  let currentPage = "unknown";
   try {
     result = await withTimeout(
       "catalog workflow",
-      () => catalogWorkflow(miniprogram, evidenceRoot, evidencePaths),
+      () =>
+        catalogWorkflow(
+          miniprogram,
+          evidenceRoot,
+          evidencePaths,
+          stepTracker,
+        ),
       WORKFLOW_TIMEOUT_MS,
     );
   } catch {
     try {
       await withTimeout("failure evidence", async () => {
         const page = await miniprogram.currentPage();
+        currentPage = safePageRoute(page && page.path);
         if (page) {
           const root =
             (await page.$(ROOM_DETAIL_SELECTOR)) ||
@@ -464,15 +661,17 @@ async function run(projectPath, evidenceDirectory) {
     } catch {
       // A failed evidence capture must not mask the workflow failure.
     }
-    failure = new Error("catalog automation failed");
-    failure.evidencePaths = evidencePaths;
+    failure = catalogFailure(
+      stepTracker.step,
+      currentPage,
+      evidencePaths,
+    );
   }
   try {
     await withTimeout("close mini-program", () => miniprogram.close());
   } catch {
     if (failure === null) {
-      failure = new Error("catalog automation cleanup failed");
-      failure.evidencePaths = evidencePaths;
+      failure = catalogFailure("cleanup", currentPage, evidencePaths);
     }
   }
   if (failure !== null) {
@@ -482,15 +681,41 @@ async function run(projectPath, evidenceDirectory) {
 }
 
 if (require.main === module) {
-  run(process.argv[2], process.argv[3])
+  let cliArguments;
+  try {
+    cliArguments = parseCliArguments(process.argv.slice(2));
+  } catch (error) {
+    console.error(
+      JSON.stringify({
+        status: "fail",
+        message: error.message,
+        step: "arguments",
+        currentPage: "unknown",
+        evidencePaths: [],
+      }),
+    );
+    process.exitCode = 1;
+  }
+  const execution = cliArguments
+    ? run(
+        cliArguments.projectPath,
+        cliArguments.evidenceDirectory,
+        cliArguments.cliPath,
+      )
+    : Promise.resolve();
+  execution
     .then((result) =>
-      console.log(JSON.stringify({ status: "pass", ...result })),
+      result
+        ? console.log(JSON.stringify({ status: "pass", ...result }))
+        : undefined,
     )
     .catch((error) => {
       console.error(
         JSON.stringify({
           status: "fail",
           message: error.message,
+          step: error.step || "workflow",
+          currentPage: error.currentPage || "unknown",
           evidencePaths: error.evidencePaths || [],
         }),
       );
@@ -498,4 +723,11 @@ if (require.main === module) {
     });
 }
 
-module.exports = { run };
+module.exports = {
+  CATALOG_SEARCH_FIXTURE,
+  buildLaunchOptions,
+  launchMiniProgram,
+  parseCliArguments,
+  prepareCatalogHome,
+  run,
+};

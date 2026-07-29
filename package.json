@@ -23,6 +23,7 @@
   },
   "devDependencies": {
     "eslint": "10.8.0",
+    "miniprogram-automator": "0.12.1",
     "prettier": "3.9.6",
     "turbo": "2.10.7",
     "typescript": "7.0.2",
