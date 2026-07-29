@@ -37,7 +37,8 @@ powershell -NoProfile -File scripts/wsl-runtime-validation.ps1 -Distro Ubuntu-22
 4. 以固定摘要的 Node 镜像、`user=node`、只读根文件系统启动 API 和 Worker。
    API 仅监听 `127.0.0.1:3000`。
 5. 验证 PostGIS、Redis、健康探针、用户与文件系统权限，并运行身份隔离、城市种子、
-   PostGIS 定位解析、刷新令牌轮换及重放拒绝冒烟测试。
+   PostGIS 定位解析、刷新令牌轮换及重放拒绝冒烟测试；随后验证杭州 Catalog 三类住宿、
+   民宿筛选、人数容量、无重复游标分页、旅店—房型层级和内部库存字段脱敏。
 6. 连续观察 Worker 10 分钟，要求始终运行、重启次数为零，且日志无致命错误、
    连接错误或重连循环。
 7. 无论成功或失败，都只清理由本次随机所有权令牌创建的容器、网络和临时目录。
@@ -56,8 +57,10 @@ identity isolation: pass
 seeded cities: pass
 PostGIS location resolution: pass
 refresh rotation and replay rejection: pass
-SLICE1_RUNTIME_STABLE_10_MINUTES
-SLICE1_RUNTIME_CLEANUP_COMPLETE
+catalog validation: pass
+SLICE2_RUNTIME_READY http://127.0.0.1:3000
+SLICE2_RUNTIME_STABLE_10_MINUTES
+SLICE2_RUNTIME_CLEANUP_COMPLETE
 ```
 
 API 与 Worker 的检查结果还必须包含 `user=node`、`readonly=true`，每分钟 Worker

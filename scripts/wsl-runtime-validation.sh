@@ -209,7 +209,14 @@ docker run --rm \
   -e "API_BASE_URL=http://${api_container}:3000" \
   "$node_image" node /verify-slice-1-runtime.mjs
 
-echo 'SLICE1_RUNTIME_READY http://127.0.0.1:3000'
+docker run --rm \
+  --network "${compose_project}_default" \
+  --user node --read-only --tmpfs /tmp \
+  -v "$repo_root/scripts/verify-slice-2-runtime.mjs:/verify-slice-2-runtime.mjs:ro" \
+  -e "API_BASE_URL=http://${api_container}:3000" \
+  "$node_image" node /verify-slice-2-runtime.mjs
+
+echo 'SLICE2_RUNTIME_READY http://127.0.0.1:3000'
 
 worker_failure_pattern='("level" *: *(50|60)([,} ])|"level" *: *"(error|fatal)"|(^| )FATAL( |:)|uncaught *(exception)?|unhandled *(rejection)?|ECONN[A-Z_]*|reconnect(ion)? +loop)'
 for minute in $(seq 1 10); do
@@ -228,7 +235,7 @@ for minute in $(seq 1 10); do
   fi
 done
 
-echo 'SLICE1_RUNTIME_STABLE_10_MINUTES'
+echo 'SLICE2_RUNTIME_STABLE_10_MINUTES'
 cleanup_validation 0
 trap - EXIT
-echo 'SLICE1_RUNTIME_CLEANUP_COMPLETE'
+echo 'SLICE2_RUNTIME_CLEANUP_COMPLETE'

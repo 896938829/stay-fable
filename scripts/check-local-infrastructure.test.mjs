@@ -52,8 +52,9 @@ test("documents the required WSL2 runtime verification", async () => {
     assert.match(windowsScript, /finally \{[\s\S]*Runtime ownership check failed/);
     assert.match(wslScript, /docker ps --format[\s\S]*docker ps -a --format/);
     assert.match(wslScript, /--user node --read-only --tmpfs \/tmp/);
-    assert.match(wslScript, /SLICE1_RUNTIME_STABLE_10_MINUTES/);
-    assert.match(wslScript, /SLICE1_RUNTIME_CLEANUP_COMPLETE/);
+    assert.match(wslScript, /verify-slice-2-runtime\.mjs/);
+    assert.match(wslScript, /SLICE2_RUNTIME_STABLE_10_MINUTES/);
+    assert.match(wslScript, /SLICE2_RUNTIME_CLEANUP_COMPLETE/);
     assert.doesNotMatch(wslScript, /docker compose[^\r\n]*down[^\r\n]*--volumes/);
     return;
   }
