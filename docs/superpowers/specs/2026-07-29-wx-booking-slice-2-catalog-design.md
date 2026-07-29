@@ -73,7 +73,7 @@ PropertyMediaType: IMAGE
 
 | 表 | 关键字段 | 关键约束 |
 | --- | --- | --- |
-| `property` | `id`、`city_id`、`type`、`name_zh`、`address_zh`、`location`、`description_zh`、`policies_zh`、`cover_url`、`status`、`display_order`、审计时间 | 城市外键；名称和文本长度有界；坐标为 `geography(Point,4326)`；`display_order >= 0` |
+| `property` | `id`、`city_id`、`type`、`name_zh`、`address_zh`、`location`、`short_description_zh`、`description_zh`、`policies_zh`、`cover_url`、`status`、`display_order`、审计时间 | 城市外键；名称和文本长度有界；坐标为 `geography(Point,4326)`；`display_order >= 0` |
 | `property_media` | `id`、`property_id`、`type`、`url`、`alt_zh`、`display_order` | 旅店外键级联删除；`property_id + display_order` 唯一 |
 | `facility` | `id`、`code`、`name_zh`、`display_order` | `code` 唯一且稳定；`display_order >= 0` |
 | `property_facility` | `property_id`、`facility_id` | 联合主键，两个外键级联删除 |
@@ -199,7 +199,8 @@ GET /api/v1/room-types/:roomTypeId
 
 - UUID、枚举、日期和人数由 DTO 校验。
 - `checkout` 必须晚于 `checkin`，区间最多 30 晚。
-- `checkin` 不早于注入时钟对应的当前业务日。
+- `checkin` 不早于注入时钟对应的当前业务日；MVP 业务时区固定为
+  `Asia/Shanghai`，不得用服务器本地时区推断。
 - 日期解析只接受严格 `YYYY-MM-DD`，不经过 JavaScript 本地时区隐式转换。
 - 所有列表查询都参数化；动态筛选只组合固定 Prisma 字段或固定 SQL 片段。
 
@@ -259,8 +260,9 @@ wx/
 - 房型详情展示所属旅店、房型内容、逐晚价格和预订规则。
 - “选择此房型”在 Slice 2 显示“报价与预订将在下一切片开放”，不创建伪订单。
 
-页面 URL 只携带旅店或房型 UUID。城市、日期和人数继续从内存 search store 读取，不把
-完整搜索上下文或会话令牌放入 URL、日志或同步存储。
+页面 URL 只携带旅店或房型 UUID。城市、日期和人数继续从 Slice 1 已验证的共享 search
+store 读取，并沿用其受控持久化；Catalog 页面不得把完整搜索上下文或会话令牌另存到新
+storage key，也不得放入 URL 或日志。会话令牌只由既有 session store 管理。
 
 ### 8.3 页面状态
 
