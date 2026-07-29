@@ -38,4 +38,17 @@ describe("AppModule logging middleware", () => {
       ]),
     );
   });
+
+  it("imports the catalog module without instantiating live dependencies", async () => {
+    process.env.NODE_ENV = "test";
+    process.env.DATABASE_URL = "postgresql://localhost:5432/stay_fable";
+    process.env.REDIS_URL = "redis://localhost:6379";
+    const [{ AppModule }, { CatalogModule }] = await Promise.all([
+      import("../src/app.module.js"),
+      import("../src/catalog/catalog.module.js"),
+    ]);
+    const imports = Reflect.getMetadata("imports", AppModule) as unknown[];
+
+    expect(imports).toContain(CatalogModule);
+  });
 });

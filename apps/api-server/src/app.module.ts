@@ -3,6 +3,7 @@ import { ConfigModule } from "@nestjs/config";
 import { LoggerModule } from "nestjs-pino";
 
 import { validateRuntimeConfig } from "./config/runtime-config.js";
+import { CatalogModule } from "./catalog/catalog.module.js";
 import { DatabaseModule } from "./database/database.module.js";
 import { HealthController } from "./health/health.controller.js";
 import { HealthService } from "./health/health.service.js";
@@ -28,6 +29,7 @@ import { LocationModule } from "./location/location.module.js";
     DatabaseModule,
     IdentityModule,
     LocationModule,
+    CatalogModule,
   ],
   controllers: [HealthController],
   providers: [HealthService],
