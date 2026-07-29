@@ -128,6 +128,10 @@ describe("catalog display components", () => {
     expect(cardWxml).toContain('aria-disabled="{{!viewModel.interactive}}"');
     expect(cardWxml).toContain('wx:if="{{viewModel.interactive}}"');
     expect(cardWxml).not.toContain('aria-role="button"');
+    expect(cardWxml).toContain('wx:if="{{viewModel.coverUrl && !coverFailed}}"');
+    expect(cardWxml).toContain('binderror="handleCoverError"');
+    expect(cardWxml).toContain('data-src="{{viewModel.coverUrl}}"');
+    expect(cardWxml).toContain('lazy-load="{{true}}"');
     expect(cardWxss).toContain("min-height: 88rpx");
   });
 
@@ -150,6 +154,7 @@ describe("catalog display components", () => {
     );
 
     expect(setData).toHaveBeenCalledWith({
+      coverFailed: false,
       viewModel: {
         id: PROPERTY_ID,
         typeLabel: "酒店",
@@ -187,6 +192,7 @@ describe("catalog display components", () => {
     ).not.toThrow();
 
     expect(setData).toHaveBeenCalledWith({
+      coverFailed: false,
       viewModel: {
         id: "",
         typeLabel: "旅店",
@@ -216,6 +222,7 @@ describe("catalog display components", () => {
     );
 
     expect(setData).toHaveBeenCalledWith({
+      coverFailed: false,
       viewModel: expect.objectContaining({
         id: PROPERTY_ID,
         priceCents: null,
@@ -251,12 +258,110 @@ describe("catalog display components", () => {
         },
       );
       expect(setData).toHaveBeenCalledWith({
+        coverFailed: false,
         viewModel: expect.objectContaining({
           coverUrl: "",
           interactive: true,
         }),
       });
     }
+  });
+
+  it("normalizes and deduplicates facilities before limiting them to four", async () => {
+    const definition = await loadDefinition("property-card");
+    const setData = vi.fn();
+
+    definition.observers.property.call(
+      { setData },
+      {
+        ...property,
+        facility_highlights: [
+          "免费停车",
+          " 免费停车 ",
+          "早餐",
+          "早餐",
+          "湖景",
+          "接送",
+          "不应显示",
+        ],
+      },
+    );
+
+    expect(setData).toHaveBeenCalledWith({
+      coverFailed: false,
+      viewModel: expect.objectContaining({
+        facilities: ["免费停车", "早餐", "湖景", "接送"],
+      }),
+    });
+  });
+
+  it.each(["constructor", "toString"])(
+    "falls back safely for inherited property type key %s",
+    async (type) => {
+      const definition = await loadDefinition("property-card");
+      const setData = vi.fn();
+
+      definition.observers.property.call(
+        { setData },
+        {
+          ...property,
+          type,
+        },
+      );
+
+      expect(setData).toHaveBeenCalledWith({
+        coverFailed: false,
+        viewModel: expect.objectContaining({
+          typeLabel: "旅店",
+        }),
+      });
+      expect(typeof setData.mock.calls[0][0].viewModel.typeLabel).toBe("string");
+    },
+  );
+
+  it("resets cover failure for a new URL and ignores a stale image error", async () => {
+    const definition = await loadDefinition("property-card");
+    const firstCover = "https://cdn.example.com/property-a.jpg";
+    const secondCover = "https://cdn.example.com/property-b.jpg";
+    const context = {
+      data: {
+        coverFailed: definition.data.coverFailed,
+        viewModel: definition.data.viewModel,
+      },
+      setData: vi.fn(function setData(patch) {
+        Object.assign(context.data, patch);
+      }),
+    };
+
+    definition.observers.property.call(context, {
+      ...property,
+      cover_url: firstCover,
+    });
+    expect(context.data.coverFailed).toBe(false);
+
+    definition.methods.handleCoverError.call(context, {
+      currentTarget: { dataset: { src: firstCover } },
+    });
+    expect(context.data.coverFailed).toBe(true);
+
+    definition.observers.property.call(context, {
+      ...property,
+      cover_url: secondCover,
+    });
+    expect(context.data.coverFailed).toBe(false);
+    expect(context.data.viewModel.coverUrl).toBe(secondCover);
+
+    context.setData.mockClear();
+    definition.methods.handleCoverError.call(context, {
+      currentTarget: { dataset: { src: firstCover } },
+    });
+    expect(context.setData).not.toHaveBeenCalled();
+    expect(context.data.coverFailed).toBe(false);
+
+    definition.methods.handleCoverError.call(context, {
+      currentTarget: { dataset: { src: secondCover } },
+    });
+    expect(context.data.coverFailed).toBe(true);
   });
 
   it("emits only the property UUID and ignores invalid or unavailable input", async () => {

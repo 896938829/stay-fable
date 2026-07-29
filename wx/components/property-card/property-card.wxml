@@ -4,10 +4,13 @@
   aria-disabled="{{!viewModel.interactive}}"
 >
   <image
-    wx:if="{{viewModel.coverUrl}}"
+    wx:if="{{viewModel.coverUrl && !coverFailed}}"
     class="property-card__cover"
     src="{{viewModel.coverUrl}}"
+    data-src="{{viewModel.coverUrl}}"
     mode="aspectFill"
+    lazy-load="{{true}}"
+    binderror="handleCoverError"
     aria-role="img"
     aria-label="{{viewModel.coverAlt}}"
   />

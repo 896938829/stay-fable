@@ -26,6 +26,33 @@ function safeCoverUrl(value) {
   return isSafeCatalogResourceUrl(value) ? value : "";
 }
 
+function propertyTypeLabel(type) {
+  return Object.prototype.hasOwnProperty.call(TYPE_LABELS, type)
+    ? TYPE_LABELS[type]
+    : "旅店";
+}
+
+function facilityHighlights(value) {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  const facilities = [];
+  const seen = new Set();
+  for (const item of value) {
+    const normalized = boundedText(item, 80, "");
+    if (normalized === "" || seen.has(normalized)) {
+      continue;
+    }
+    seen.add(normalized);
+    facilities.push(normalized);
+    if (facilities.length === 4) {
+      break;
+    }
+  }
+  return facilities;
+}
+
 function isAvailablePrice(value) {
   return Number.isSafeInteger(value) && value >= 0;
 }
@@ -40,17 +67,12 @@ function viewModelFor(property) {
       ? source.id
       : "";
   const name = boundedText(source.name, 120, "旅店信息暂不可用");
-  const facilities = Array.isArray(source.facility_highlights)
-    ? source.facility_highlights
-        .map((item) => boundedText(item, 80, ""))
-        .filter(Boolean)
-        .slice(0, 4)
-    : [];
+  const facilities = facilityHighlights(source.facility_highlights);
   const priceAvailable = isAvailablePrice(source.from_nightly_price_cents);
 
   return {
     id,
-    typeLabel: TYPE_LABELS[source.type] || "旅店",
+    typeLabel: propertyTypeLabel(source.type),
     name,
     description: boundedText(source.short_description, 240, "暂无简介"),
     coverUrl: safeCoverUrl(source.cover_url),
@@ -76,16 +98,32 @@ const definition = {
     },
   },
   data: {
+    coverFailed: false,
     viewModel: viewModelFor(null),
   },
   observers: {
     property(property) {
       this.setData({
+        coverFailed: false,
         viewModel: viewModelFor(property),
       });
     },
   },
   methods: {
+    handleCoverError(event) {
+      const failedUrl = event?.currentTarget?.dataset?.src;
+      const currentUrl = this.data?.viewModel?.coverUrl;
+      if (
+        typeof failedUrl !== "string" ||
+        failedUrl === "" ||
+        failedUrl !== currentUrl
+      ) {
+        return;
+      }
+      this.setData({
+        coverFailed: true,
+      });
+    },
     handleTap() {
       const property = this.data.property;
       if (
