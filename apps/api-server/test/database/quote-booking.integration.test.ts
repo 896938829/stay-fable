@@ -394,12 +394,12 @@ describeDatabase(suiteName, () => {
     const primaryKeys = await database().query<{ column_names: string[]; table_name: string }>(
       `
       SELECT child.relname AS table_name, array_agg(attribute.attname ORDER BY key_column.ordinality) AS column_names
-      FROM pg_constraint constraint
-      JOIN pg_class child ON child.oid = constraint.conrelid
+      FROM pg_constraint con
+      JOIN pg_class child ON child.oid = con.conrelid
       JOIN pg_namespace child_schema ON child_schema.oid = child.relnamespace
-      JOIN unnest(constraint.conkey) WITH ORDINALITY AS key_column(attribute_number, ordinality) ON true
+      JOIN unnest(con.conkey) WITH ORDINALITY AS key_column(attribute_number, ordinality) ON true
       JOIN pg_attribute attribute ON attribute.attrelid = child.oid AND attribute.attnum = key_column.attribute_number
-      WHERE constraint.contype = 'p' AND child_schema.nspname = $1
+      WHERE con.contype = 'p' AND child_schema.nspname = $1
         AND child.relname IN ('quote', 'booking', 'inventory_hold', 'booking_status_history')
       GROUP BY child.relname
       ORDER BY child.relname
@@ -422,15 +422,15 @@ describeDatabase(suiteName, () => {
     }>(
       `
       SELECT child.relname AS child_table, child_attribute.attname AS child_column,
-             parent.relname AS parent_table, constraint.confdeltype::text AS delete_action,
-             constraint.confupdtype::text AS update_action
-      FROM pg_constraint constraint
-      JOIN pg_class child ON child.oid = constraint.conrelid
+             parent.relname AS parent_table, con.confdeltype::text AS delete_action,
+             con.confupdtype::text AS update_action
+      FROM pg_constraint con
+      JOIN pg_class child ON child.oid = con.conrelid
       JOIN pg_namespace child_schema ON child_schema.oid = child.relnamespace
-      JOIN pg_class parent ON parent.oid = constraint.confrelid
-      JOIN unnest(constraint.conkey) WITH ORDINALITY AS child_key(attribute_number, ordinality) ON true
+      JOIN pg_class parent ON parent.oid = con.confrelid
+      JOIN unnest(con.conkey) WITH ORDINALITY AS child_key(attribute_number, ordinality) ON true
       JOIN pg_attribute child_attribute ON child_attribute.attrelid = child.oid AND child_attribute.attnum = child_key.attribute_number
-      WHERE constraint.contype = 'f' AND child_schema.nspname = $1
+      WHERE con.contype = 'f' AND child_schema.nspname = $1
         AND child.relname IN ('quote', 'booking', 'inventory_hold', 'booking_status_history')
       ORDER BY child.relname, child_attribute.attname
     `,
@@ -519,14 +519,14 @@ describeDatabase(suiteName, () => {
     const uniqueKeys = await database().query<{ column_names: string[]; table_name: string }>(
       `
       SELECT child.relname AS table_name, array_agg(attribute.attname ORDER BY key_column.ordinality) AS column_names
-      FROM pg_constraint constraint
-      JOIN pg_class child ON child.oid = constraint.conrelid
+      FROM pg_constraint con
+      JOIN pg_class child ON child.oid = con.conrelid
       JOIN pg_namespace child_schema ON child_schema.oid = child.relnamespace
-      JOIN unnest(constraint.conkey) WITH ORDINALITY AS key_column(attribute_number, ordinality) ON true
+      JOIN unnest(con.conkey) WITH ORDINALITY AS key_column(attribute_number, ordinality) ON true
       JOIN pg_attribute attribute ON attribute.attrelid = child.oid AND attribute.attnum = key_column.attribute_number
-      WHERE constraint.contype = 'u' AND child_schema.nspname = $1
+      WHERE con.contype = 'u' AND child_schema.nspname = $1
         AND child.relname IN ('booking', 'inventory_hold')
-      GROUP BY child.relname, constraint.oid
+      GROUP BY child.relname, con.oid
       ORDER BY child.relname, column_names
     `,
       [schema],
@@ -548,12 +548,12 @@ describeDatabase(suiteName, () => {
       table_name: string;
     }>(
       `
-      SELECT child.relname AS table_name, constraint.conname AS constraint_name,
-             pg_get_constraintdef(constraint.oid) AS definition
-      FROM pg_constraint constraint
-      JOIN pg_class child ON child.oid = constraint.conrelid
+      SELECT child.relname AS table_name, con.conname AS constraint_name,
+             pg_get_constraintdef(con.oid) AS definition
+      FROM pg_constraint con
+      JOIN pg_class child ON child.oid = con.conrelid
       JOIN pg_namespace child_schema ON child_schema.oid = child.relnamespace
-      WHERE constraint.contype = 'c' AND child_schema.nspname = $1
+      WHERE con.contype = 'c' AND child_schema.nspname = $1
         AND child.relname IN ('quote', 'booking', 'inventory_hold', 'booking_status_history', 'daily_price', 'daily_inventory')
     `,
       [schema],
