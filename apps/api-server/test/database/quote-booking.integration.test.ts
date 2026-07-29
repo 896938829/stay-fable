@@ -32,6 +32,20 @@ const migrationSqlHasForbiddenStatements = (migrationSql: string): boolean => {
   return destructiveStatement.test(migrationSql) || explicitDownSection.test(migrationSql);
 };
 
+const preBookingInventoryFixtureSql = `
+  ALTER TABLE "daily_inventory"
+  DROP CONSTRAINT IF EXISTS "daily_inventory_capacity_check";
+  ALTER TABLE "daily_inventory"
+  DROP CONSTRAINT IF EXISTS "daily_inventory_available_check";
+  ALTER TABLE "daily_inventory"
+  ADD CONSTRAINT "daily_inventory_available_check" CHECK (
+    "total_inventory" < 0
+    OR "held_inventory" < 0
+    OR "sold_inventory" < 0
+    OR "held_inventory" + "sold_inventory" <= "total_inventory"
+  );
+`;
+
 test.each([
   [
     "allows foreign-key actions",
@@ -55,6 +69,23 @@ test.each([
   ["rejects explicit down sections", "-- migrate:down\nSELECT 1;", true],
 ])("migration SQL guard %s", (_name, migrationSql, expected) => {
   expect(migrationSqlHasForbiddenStatements(migrationSql)).toBe(expected);
+});
+
+test("pre-booking fixture restores the original daily inventory capacity check", () => {
+  expect(preBookingInventoryFixtureSql).toMatch(
+    /ALTER\s+TABLE\s+"daily_inventory"\s+DROP\s+CONSTRAINT\s+IF\s+EXISTS\s+"daily_inventory_capacity_check"/,
+  );
+  expect(preBookingInventoryFixtureSql).toContain(
+    'ADD CONSTRAINT "daily_inventory_available_check" CHECK (',
+  );
+  expect(preBookingInventoryFixtureSql).toContain('"total_inventory" < 0');
+  expect(preBookingInventoryFixtureSql).toContain('"held_inventory" < 0');
+  expect(preBookingInventoryFixtureSql).toContain('"sold_inventory" < 0');
+  expect(preBookingInventoryFixtureSql).toContain(
+    '"held_inventory" + "sold_inventory" <= "total_inventory"',
+  );
+  expect(preBookingInventoryFixtureSql).not.toContain("daily_inventory_nonnegative_check");
+  expect(preBookingInventoryFixtureSql).not.toContain("daily_price_");
 });
 
 describeDatabase(suiteName, () => {
@@ -89,6 +120,7 @@ describeDatabase(suiteName, () => {
         `CREATE TABLE ${quotedSchema}."${table}" (LIKE public."${table}" INCLUDING ALL)`,
       );
     }
+    await db.query(preBookingInventoryFixtureSql);
 
     const city = await db.query<{ id: string }>(`
       INSERT INTO city (code, name_zh, center, updated_at)
