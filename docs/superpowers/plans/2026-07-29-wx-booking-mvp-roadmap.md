@@ -19,6 +19,23 @@
 每个切片同时修改数据库、NestJS API、原生微信小程序、测试和运行文档。后一个切片只在
 前一个切片的退出门禁通过后开始，避免长期维护页面假数据或第二套业务规则。
 
+## 2026-07-29 执行决策
+
+本决策仅处理 Slice 2 的 RC 工具阻断与 Slice 3 的开发排序，不降低 release 验收标准：
+
+- 不宣称 Slice 2 已完成；其自动化物理交互仍为
+  `NOT_COMPLETE/BLOCKED_BY_RC_AUTOMATOR`。
+- RC 开发者工具下 legacy Automator 的物理点击与导航分发不可靠，登记为 Slice 5 的 UAT 债务。
+  Slice 5 必须通过可复现的 Automator、人工开发者工具或手机证据完成正式用户链路，不能用单元
+  测试代替。
+- 允许开始 Slice 3 功能开发。Slice 2 的数据库、API、页面实现、微信官方编译、WSL2 运行时和
+  质量门禁已有通过证据；当前未关闭的阻断属于本地 RC 自动化工具，而不是已证实的业务正确性
+  失败。
+- 若 Slice 3 改变 Catalog 的搜索、旅店卡片、房型选择、modal 或返回链交互，Slice 5 UAT 必须
+  覆盖变更后的完整路径，并记录实际 commit、`/wx` tree 与脱敏截图。
+- release/main 仍执行全部既定门禁；未关闭的 Slice 2 UAT 债务以及未获有效风险例外的
+  Critical/High 漏洞均不得带入发布。
+
 ## 切片路线
 
 | 切片 | 用户可见结果 | 后端核心 | 退出门禁 |
@@ -44,4 +61,3 @@
 - Worker 与 API 最终按 `docs/operations/wsl-runtime-validation.md` 在 Ubuntu-22.04 验证。
 - `dev` 阶段漏洞只报告；进入 `release/main` 前 Critical/High 必须修复或有正式风险例外。
 - 每个任务遵循红灯测试、最小实现、绿灯验证和原子提交。
-
