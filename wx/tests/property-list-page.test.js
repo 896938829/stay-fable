@@ -135,7 +135,7 @@ describe("property list pure logic", () => {
       hostilePrototype,
       throwingGetter,
       { ...search, city: { ...search.city, code: "c".repeat(33) } },
-      { ...search, city: { ...search.city, name: "城".repeat(65) } },
+      { ...search, city: { ...search.city, name: "城".repeat(81) } },
     ]) {
       expect(() => toPropertyListView(candidate)).toThrow(
         expect.objectContaining({
@@ -331,6 +331,58 @@ describe("property list page state machine", () => {
     expect(reLaunch).toHaveBeenCalledTimes(2);
     expect(page.data.status).toBe("loading");
   });
+
+  it.each(["promise rejection", "fail callback"])(
+    "restores a hidden home navigation %s on show and single-flights its retry",
+    async (failureMode) => {
+      const retryNavigation = deferred();
+      let firstOptions;
+      const firstNavigation = deferred();
+      const reLaunch = vi
+        .fn()
+        .mockImplementationOnce((options) => {
+          firstOptions = options;
+          return failureMode === "promise rejection"
+            ? firstNavigation.promise
+            : undefined;
+        })
+        .mockReturnValueOnce(retryNavigation.promise);
+      const { page } = createPage({
+        searchValue: null,
+        wxApi: { navigateTo: vi.fn(), reLaunch },
+      });
+
+      const initialNavigation = page.onLoad.call(page);
+      page.onHide.call(page);
+      page.setData.mockClear();
+      if (failureMode === "promise rejection") {
+        firstNavigation.reject(new Error("private hidden rejection"));
+      } else {
+        firstOptions.fail({ errMsg: "private hidden callback failure" });
+      }
+      await initialNavigation;
+      expect(page.setData).not.toHaveBeenCalled();
+
+      page.onShow.call(page);
+      expect(page.data).toMatchObject({
+        status: "error",
+        errorMessage: "搜索条件已失效，请返回首页重新选择",
+      });
+      expect(JSON.stringify(page.data)).not.toContain("private");
+
+      const firstRetry = page.retry.call(page);
+      const secondRetry = page.retry.call(page);
+      expect(firstRetry).toBe(secondRetry);
+      expect(reLaunch).toHaveBeenCalledTimes(2);
+      retryNavigation.resolve();
+      await Promise.all([firstRetry, secondRetry]);
+      expect(reLaunch).toHaveBeenCalledTimes(2);
+      expect(page.data).toMatchObject({
+        status: "loading",
+        errorMessage: "",
+      });
+    },
+  );
 
   it("moves from loading to list and sends only the canonical search query", async () => {
     const first = deferred();

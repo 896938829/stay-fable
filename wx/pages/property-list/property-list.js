@@ -45,6 +45,7 @@ function createPropertyListPage(dependencies = {}) {
   let navigating = false;
   let searchContext = null;
   let homeNavigationAttempt = null;
+  let homeNavigationFailed = false;
   const inFlightCursors = new Set();
   const completedCursors = new Set();
 
@@ -180,6 +181,7 @@ function createPropertyListPage(dependencies = {}) {
       return homeNavigationAttempt.promise;
     }
 
+    homeNavigationFailed = false;
     page.setData({
       status: "loading",
       items: [],
@@ -203,6 +205,7 @@ function createPropertyListPage(dependencies = {}) {
         if (homeNavigationAttempt === attempt) {
           homeNavigationAttempt = null;
         }
+        homeNavigationFailed = !succeeded;
         if (!succeeded && active && searchContext === null) {
           renderInvalidSearchError(page);
         }
@@ -260,6 +263,7 @@ function createPropertyListPage(dependencies = {}) {
       active = true;
       hidden = false;
       navigating = false;
+      homeNavigationFailed = false;
       generation += 1;
       completedCursors.clear();
 
@@ -290,6 +294,9 @@ function createPropertyListPage(dependencies = {}) {
       if (searchContext === null) {
         active = true;
         hidden = false;
+        if (homeNavigationFailed) {
+          renderInvalidSearchError(this);
+        }
         return;
       }
       if (!hidden) {
@@ -320,6 +327,7 @@ function createPropertyListPage(dependencies = {}) {
       hidden = false;
       navigating = false;
       searchContext = null;
+      homeNavigationFailed = false;
       generation += 1;
       completedCursors.clear();
     },
