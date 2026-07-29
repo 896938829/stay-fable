@@ -512,6 +512,13 @@ describe("room detail native files", () => {
     }
     expect(pageSource).not.toMatch(/setStorage|request\s*\(|\.post\s*\(/);
     expect(logic).not.toMatch(/\.reduce\s*\(/);
+    const propertyIndex = wxml.indexOf("{{roomType.property.name}}");
+    const contentIndex = wxml.indexOf("{{roomType.description}}");
+    const policyIndex = wxml.indexOf("{{roomType.bookingPolicy}}");
+    const nightlyIndex = wxml.indexOf('wx:for="{{roomType.nightlyPrices}}"');
+    expect(propertyIndex).toBeLessThan(contentIndex);
+    expect(contentIndex).toBeLessThan(policyIndex);
+    expect(policyIndex).toBeLessThan(nightlyIndex);
     expect(wxss).toContain("env(safe-area-inset-bottom)");
     expect(wxss).toContain("var(--color-brand)");
     expect(wxss).toContain("var(--radius-medium)");

@@ -55,6 +55,11 @@
     </view>
 
     <view class="surface-card detail-section">
+      <text class="section-title">预订规则</text>
+      <text class="detail-section__body">{{roomType.bookingPolicy}}</text>
+    </view>
+
+    <view class="surface-card detail-section">
       <text class="section-title">逐晚价格</text>
       <text class="detail-section__hint">以下为展示价格，最终报价将在下一切片计算。</text>
       <view class="nightly-list">
@@ -74,11 +79,6 @@
           ></price>
         </view>
       </view>
-    </view>
-
-    <view class="surface-card detail-section">
-      <text class="section-title">预订规则</text>
-      <text class="detail-section__body">{{roomType.bookingPolicy}}</text>
     </view>
 
     <view class="selection-bar safe-bottom">
