@@ -1,6 +1,6 @@
 # Slice 2：目录浏览验证
 
-验证日期：2026-07-29（Asia/Shanghai）
+验证日期：2026-07-29–2026-07-30（Asia/Shanghai）
 
 范围：原生微信小程序 `/wx`、PostgreSQL/PostGIS、Redis、NestJS API 和 Worker。
 输入提交：`65af2512da46e6da47ab04b2cd79a0d8b5e3ad09`；对应 `/wx` tree：
