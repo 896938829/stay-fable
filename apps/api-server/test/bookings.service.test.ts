@@ -33,6 +33,14 @@ const BOOKING_ID = "30000000-0000-4000-8000-000000000001";
 const IDEMPOTENCY_KEY = "booking-key-1234567890_ABCDEFGHIJ";
 const NOW = new Date("2026-07-30T02:00:00.000Z");
 
+class FixedClock implements Clock {
+  constructor(private readonly value = NOW) {}
+
+  now(): Date {
+    return new Date(Date.prototype.getTime.call(this.value));
+  }
+}
+
 const booking = {
   booking_id: BOOKING_ID,
   booking_number: "SF20260730A1B2C3D4E5F6",
@@ -97,6 +105,16 @@ describe("BookingNumberGenerator", () => {
     const generator = createBookingNumberGenerator(source);
     expect(generator.next(new Date("2026-07-30T23:59:59.999Z"))).toBe("SF20260730A1B2C3D4E5F6");
     expect(source).toHaveBeenCalledWith(6);
+  });
+
+  it("does not call an own Buffer toString method", () => {
+    const bytes = Buffer.from("a1b2c3d4e5f6", "hex");
+    Object.defineProperty(bytes, "toString", {
+      value: () => {
+        throw new Error("buffer-method-secret");
+      },
+    });
+    expect(createBookingNumberGenerator(() => bytes).next(NOW)).toBe("SF20260730A1B2C3D4E5F6");
   });
 
   it.each([
@@ -421,7 +439,27 @@ const repositoryInput: CreateBookingInput = {
   now: NOW,
 };
 
-const createBookingDatabase = (responses: unknown[]) => {
+const dateWithHostileOwnMethods = (value: string): Date => {
+  const date = new Date(value);
+  Object.defineProperties(date, {
+    getTime: {
+      value: () => {
+        throw new Error("date-get-time-secret");
+      },
+    },
+    toISOString: {
+      value: () => {
+        throw new Error("date-iso-secret");
+      },
+    },
+  });
+  return date;
+};
+
+const createBookingDatabase = (
+  responses: unknown[],
+  hooks: { onQuery?: (sql: string) => void; onTransactionEnd?: () => void } = {},
+) => {
   let index = 0;
   const staged: string[] = [];
   const committed: string[] = [];
@@ -429,7 +467,8 @@ const createBookingDatabase = (responses: unknown[]) => {
   const transaction = {
     $queryRaw: vi.fn<(query: unknown) => Promise<unknown>>((query) => {
       const sql = (query as { sql?: string }).sql ?? "";
-      if (/\b(?:UPDATE|INSERT)\b/.test(sql)) {
+      hooks.onQuery?.(sql);
+      if (/^\s*(?:UPDATE|INSERT)\b/.test(sql)) {
         staged.push(sql);
       }
       const response = responses[index++];
@@ -460,6 +499,8 @@ const createBookingDatabase = (responses: unknown[]) => {
           rollbackCount += 1;
           staged.length = 0;
           throw error;
+        } finally {
+          hooks.onTransactionEnd?.();
         }
       },
     ),
@@ -470,6 +511,9 @@ const createBookingDatabase = (responses: unknown[]) => {
 
 const queryText = (call: unknown[] | undefined) =>
   (call?.[0] as { sql?: string } | undefined)?.sql ?? "";
+
+const repositoryFor = (database: BookingDatabase, clock: Clock = new FixedClock()) =>
+  new BookingRepository(database, clock);
 
 describe("BookingRepository", () => {
   it("runs the successful transaction in the fixed lock and write order with parameterized SQL", async () => {
@@ -488,7 +532,7 @@ describe("BookingRepository", () => {
       [{ id: "70000000-0000-4000-8000-000000000001" }],
     ];
     const { database, transaction } = createBookingDatabase(responses);
-    const repository = new BookingRepository(database as unknown as BookingDatabase);
+    const repository = repositoryFor(database as unknown as BookingDatabase);
 
     await expect(repository.createFromQuote(repositoryInput)).resolves.toEqual({
       kind: "CREATED",
@@ -502,6 +546,12 @@ describe("BookingRepository", () => {
     expect(sql[1]).toContain("idempotency_key");
     expect(sql[2]).toContain("FROM quote");
     expect(sql[2]).toContain("FOR UPDATE");
+    expect(sql[4]).toContain("FOR UPDATE OF property, room");
+    expect(sql[5]).toContain("FROM daily_price price");
+    expect(sql[5]).toContain('ORDER BY price."business_date" ASC');
+    expect(sql[5]).toContain("FOR UPDATE OF price");
+    expect(sql[5]).not.toContain("generate_series");
+    expect(sql[5]).not.toContain("LEFT JOIN");
     expect(sql[6]).toContain("ORDER BY");
     expect(sql[6]).toContain("FOR UPDATE");
     expect(sql[7]).toContain("held_inventory = held_inventory + 1");
@@ -519,9 +569,73 @@ describe("BookingRepository", () => {
     }
   });
 
+  it("keeps catalog and price locks until commit", async () => {
+    let releaseHistory!: (value: unknown) => void;
+    const history = new Promise<unknown>((resolve) => {
+      releaseHistory = resolve;
+    });
+    let catalogLocked = false;
+    let priceLocked = false;
+    let releaseUpdate: (() => void) | undefined;
+    const updatePassed = vi.fn();
+    const attemptUpdate = () =>
+      new Promise<void>((resolve) => {
+        if (!catalogLocked && !priceLocked) {
+          updatePassed();
+          resolve();
+          return;
+        }
+        releaseUpdate = () => {
+          updatePassed();
+          resolve();
+        };
+      });
+    const { database, transaction } = createBookingDatabase(
+      [
+        [{ locked: null }],
+        [],
+        [quoteRow],
+        [],
+        [currentBase],
+        currentNightly,
+        inventoryRows,
+        [{ roomTypeId: ROOM_TYPE_ID }],
+        [{ roomTypeId: ROOM_TYPE_ID }],
+        [bookingRecord],
+        [{ bookingId: BOOKING_ID }, { bookingId: BOOKING_ID }],
+        history,
+      ],
+      {
+        onQuery: (sql) => {
+          if (sql.includes("FOR UPDATE OF property, room")) {
+            catalogLocked = true;
+          }
+          if (sql.includes("FOR UPDATE OF price")) {
+            priceLocked = true;
+          }
+        },
+        onTransactionEnd: () => {
+          catalogLocked = false;
+          priceLocked = false;
+          releaseUpdate?.();
+        },
+      },
+    );
+    const repository = repositoryFor(database as unknown as BookingDatabase);
+    const bookingPromise = repository.createFromQuote(repositoryInput);
+    await vi.waitFor(() => expect(transaction.$queryRaw).toHaveBeenCalledTimes(12));
+    const updatePromise = attemptUpdate();
+    await Promise.resolve();
+    expect(updatePassed).not.toHaveBeenCalled();
+    releaseHistory([{ id: "70000000-0000-4000-8000-000000000001" }]);
+    await expect(bookingPromise).resolves.toEqual({ kind: "CREATED", booking });
+    await updatePromise;
+    expect(updatePassed).toHaveBeenCalledTimes(1);
+  });
+
   it("replays under the advisory lock before reading or locking the quote", async () => {
     const { database, transaction } = createBookingDatabase([[{ locked: null }], [bookingRecord]]);
-    const repository = new BookingRepository(database as unknown as BookingDatabase);
+    const repository = repositoryFor(database as unknown as BookingDatabase);
     await expect(repository.createFromQuote(repositoryInput)).resolves.toEqual({
       kind: "REPLAYED",
       booking,
@@ -553,9 +667,159 @@ describe("BookingRepository", () => {
       responses.push(usedRows);
     }
     const { database, transaction } = createBookingDatabase(responses);
-    const repository = new BookingRepository(database as unknown as BookingDatabase);
+    const repository = repositoryFor(database as unknown as BookingDatabase);
     await expect(repository.createFromQuote(repositoryInput)).resolves.toEqual({ kind });
     expect(transaction.$queryRaw).toHaveBeenCalledTimes(calls);
+  });
+
+  it("treats a missing current price night as an expired quote without writes", async () => {
+    const { database, transaction } = createBookingDatabase([
+      [{ locked: null }],
+      [],
+      [quoteRow],
+      [],
+      [currentBase],
+      currentNightly.slice(0, 1),
+    ]);
+    const repository = repositoryFor(database as unknown as BookingDatabase);
+    await expect(repository.createFromQuote(repositoryInput)).resolves.toEqual({
+      kind: "QUOTE_EXPIRED",
+    });
+    expect(transaction.$queryRaw).toHaveBeenCalledTimes(6);
+    expect(database.staged).toEqual([]);
+    expect(database.committed).toEqual([]);
+  });
+
+  it("uses one post-lock clock snapshot and expires a quote crossed while waiting", async () => {
+    const postLockNow = new Date("2026-07-30T02:05:00.000Z");
+    const clock: Clock = { now: vi.fn(() => postLockNow) };
+    const { database, transaction } = createBookingDatabase([
+      [{ locked: null }],
+      [],
+      [quoteRow],
+      [],
+    ]);
+    const repository = repositoryFor(database as unknown as BookingDatabase, clock);
+    await expect(repository.createFromQuote(repositoryInput)).resolves.toEqual({
+      kind: "QUOTE_EXPIRED",
+    });
+    expect(clock.now).toHaveBeenCalledTimes(1);
+    expect(transaction.$queryRaw).toHaveBeenCalledTimes(4);
+    expect(database.staged).toEqual([]);
+  });
+
+  it("derives replacement expiry from the post-lock clock snapshot", async () => {
+    const postLockNow = new Date("2026-07-30T02:01:00.000Z");
+    const changedNightly = currentNightly.map((night, index) =>
+      index === 0 ? { ...night, salePriceCents: 60_000 } : night,
+    );
+    const replacementRecord = {
+      id: replacementQuote.quote_id,
+      createdAt: postLockNow,
+      expiresAt: new Date("2026-07-30T02:06:00.000Z"),
+    };
+    const { database, transaction } = createBookingDatabase([
+      [{ locked: null }],
+      [],
+      [quoteRow],
+      [],
+      [currentBase],
+      changedNightly,
+      [replacementRecord],
+    ]);
+    const repository = repositoryFor(
+      database as unknown as BookingDatabase,
+      new FixedClock(postLockNow),
+    );
+    const result = await repository.createFromQuote(repositoryInput);
+    expect(result.kind).toBe("QUOTE_CHANGED");
+    if (result.kind === "QUOTE_CHANGED") {
+      expect(result.details.replacement_quote.expires_at).toBe("2026-07-30T02:06:00.000Z");
+    }
+    const insert = transaction.$queryRaw.mock.calls
+      .map((call) => call[0] as { sql: string; values: unknown[] })
+      .find((query) => query.sql.includes("INSERT INTO quote"));
+    expect(insert?.values).toContainEqual(new Date("2026-07-30T02:06:00.000Z"));
+  });
+
+  it("uses the post-lock time for inventory, booking and hold timestamps", async () => {
+    const postLockNow = new Date("2026-07-30T02:01:00.000Z");
+    const postLockExpiry = new Date("2026-07-30T02:16:00.000Z");
+    const hostileClockNow = new Date("2026-07-30T02:01:00.000Z");
+    Object.defineProperty(hostileClockNow, "getTime", {
+      value: () => {
+        throw new Error("clock-get-time-secret");
+      },
+    });
+    const transactionClock: Clock = { now: vi.fn(() => hostileClockNow) };
+    const record = {
+      ...bookingRecord,
+      expiresAt: postLockExpiry,
+      createdAt: postLockNow,
+    };
+    const { database, transaction } = createBookingDatabase([
+      [{ locked: null }],
+      [],
+      [quoteRow],
+      [],
+      [currentBase],
+      currentNightly,
+      inventoryRows,
+      [{ roomTypeId: ROOM_TYPE_ID }],
+      [{ roomTypeId: ROOM_TYPE_ID }],
+      [record],
+      [{ bookingId: BOOKING_ID }, { bookingId: BOOKING_ID }],
+      [{ id: "70000000-0000-4000-8000-000000000001" }],
+    ]);
+    const repository = repositoryFor(database as unknown as BookingDatabase, transactionClock);
+    const result = await repository.createFromQuote(repositoryInput);
+    expect(result.kind).toBe("CREATED");
+    if (result.kind === "CREATED") {
+      expect(result.booking.expires_at).toBe("2026-07-30T02:16:00.000Z");
+    }
+    const writeValues = transaction.$queryRaw.mock.calls
+      .map((call) => call[0] as { sql: string; values: unknown[] })
+      .filter((query) => /^\s*(?:UPDATE|INSERT)\b/.test(query.sql))
+      .flatMap((query) => query.values);
+    expect(writeValues.filter((value) => value instanceof Date)).not.toContainEqual(NOW);
+    expect(writeValues).toContainEqual(postLockNow);
+    expect(writeValues).toContainEqual(postLockExpiry);
+    expect(transactionClock.now).toHaveBeenCalledTimes(1);
+    expect(writeValues).not.toContain(hostileClockNow);
+  });
+
+  it.each([
+    [
+      "invalid",
+      {
+        now: () => new Date(Number.NaN),
+      },
+    ],
+    [
+      "throwing",
+      {
+        now: () => {
+          throw new Error("clock-secret");
+        },
+      },
+    ],
+  ])("rolls back an %s post-lock clock and surfaces safe 503", async (_name, repositoryClock) => {
+    const { database } = createBookingDatabase([[{ locked: null }], [], [quoteRow], []]);
+    const repository = repositoryFor(database as unknown as BookingDatabase, repositoryClock);
+    const service = new BookingsService(
+      repository,
+      createRateLimit() as unknown as WriteRateLimitService,
+      new FixedClock(),
+      createGenerator("SF20260730A1B2C3D4E5F6"),
+    );
+    const error = await captureBusinessError(
+      service.create(USER_ID, IDEMPOTENCY_KEY, { quote_id: QUOTE_ID }),
+    );
+    expect(error.getStatus()).toBe(503);
+    expect(error.code).toBe("BOOKING_SERVICE_UNAVAILABLE");
+    expect(database.rollbackCount).toBe(1);
+    expect(database.staged).toEqual([]);
+    expect(database.committed).toEqual([]);
   });
 
   it("commits a replacement quote on fingerprint change without locking inventory", async () => {
@@ -576,7 +840,7 @@ describe("BookingRepository", () => {
       changedNightly,
       [replacementRecord],
     ]);
-    const repository = new BookingRepository(database as unknown as BookingDatabase);
+    const repository = repositoryFor(database as unknown as BookingDatabase);
     const result = await repository.createFromQuote(repositoryInput);
     expect(result.kind).toBe("QUOTE_CHANGED");
     if (result.kind === "QUOTE_CHANGED") {
@@ -603,7 +867,7 @@ describe("BookingRepository", () => {
         currentNightly,
         lockedRows,
       ]);
-      const repository = new BookingRepository(database as unknown as BookingDatabase);
+      const repository = repositoryFor(database as unknown as BookingDatabase);
       await expect(repository.createFromQuote(repositoryInput)).resolves.toEqual({
         kind: "INVENTORY_UNAVAILABLE",
       });
@@ -623,7 +887,7 @@ describe("BookingRepository", () => {
       [{ roomTypeId: ROOM_TYPE_ID }],
       [],
     ]);
-    const repository = new BookingRepository(database as unknown as BookingDatabase);
+    const repository = repositoryFor(database as unknown as BookingDatabase);
     await expect(repository.createFromQuote(repositoryInput)).resolves.toEqual({
       kind: "INVENTORY_UNAVAILABLE",
     });
@@ -639,7 +903,7 @@ describe("BookingRepository", () => {
       [],
       [{ ...quoteRow, userId: "x" }],
     ]);
-    const repository = new BookingRepository(database as unknown as BookingDatabase);
+    const repository = repositoryFor(database as unknown as BookingDatabase);
     await expect(repository.createFromQuote(repositoryInput)).rejects.toThrow(
       "Unexpected booking repository data",
     );
@@ -647,6 +911,77 @@ describe("BookingRepository", () => {
     await expect(
       repository.createFromQuote({ ...repositoryInput, idempotencyKey: "short" }),
     ).rejects.toThrow("Invalid booking repository input");
+  });
+
+  it("uses Date built-ins after validating database dates", async () => {
+    const hostileQuote = {
+      ...quoteRow,
+      expiresAt: dateWithHostileOwnMethods("2026-07-30T02:05:00.000Z"),
+    };
+    const hostileBooking = {
+      ...bookingRecord,
+      expiresAt: dateWithHostileOwnMethods("2026-07-30T02:15:00.000Z"),
+      createdAt: dateWithHostileOwnMethods("2026-07-30T02:00:00.000Z"),
+    };
+    const { database } = createBookingDatabase([
+      [{ locked: null }],
+      [],
+      [hostileQuote],
+      [],
+      [currentBase],
+      currentNightly,
+      inventoryRows,
+      [{ roomTypeId: ROOM_TYPE_ID }],
+      [{ roomTypeId: ROOM_TYPE_ID }],
+      [hostileBooking],
+      [{ bookingId: BOOKING_ID }, { bookingId: BOOKING_ID }],
+      [{ id: "70000000-0000-4000-8000-000000000001" }],
+    ]);
+    const repository = repositoryFor(database as unknown as BookingDatabase);
+    await expect(repository.createFromQuote(repositoryInput)).resolves.toEqual({
+      kind: "CREATED",
+      booking,
+    });
+  });
+
+  it("snapshots a stateful history row only once", async () => {
+    let idReads = 0;
+    const history = new Proxy(
+      { id: "70000000-0000-4000-8000-000000000001" },
+      {
+        getOwnPropertyDescriptor: (target, key) => {
+          const descriptor = Reflect.getOwnPropertyDescriptor(target, key);
+          if (key !== "id" || descriptor === undefined) {
+            return descriptor;
+          }
+          idReads += 1;
+          return {
+            ...descriptor,
+            value: idReads === 1 ? "70000000-0000-4000-8000-000000000001" : "changed",
+          };
+        },
+      },
+    );
+    const { database } = createBookingDatabase([
+      [{ locked: null }],
+      [],
+      [quoteRow],
+      [],
+      [currentBase],
+      currentNightly,
+      inventoryRows,
+      [{ roomTypeId: ROOM_TYPE_ID }],
+      [{ roomTypeId: ROOM_TYPE_ID }],
+      [bookingRecord],
+      [{ bookingId: BOOKING_ID }, { bookingId: BOOKING_ID }],
+      [history],
+    ]);
+    const repository = repositoryFor(database as unknown as BookingDatabase);
+    await expect(repository.createFromQuote(repositoryInput)).resolves.toEqual({
+      kind: "CREATED",
+      booking,
+    });
+    expect(idReads).toBe(1);
   });
 
   const knownRequestError = (
@@ -710,7 +1045,7 @@ describe("BookingRepository", () => {
     const { database } = createBookingDatabase([]);
     database.$transaction.mockRejectedValueOnce(error);
     database.$queryRaw.mockResolvedValueOnce([bookingRecord]);
-    const repository = new BookingRepository(database as unknown as BookingDatabase);
+    const repository = repositoryFor(database as unknown as BookingDatabase);
 
     await expect(repository.createFromQuote(repositoryInput)).resolves.toEqual({
       kind: "REPLAYED",
@@ -731,7 +1066,7 @@ describe("BookingRepository", () => {
     const { database } = createBookingDatabase([]);
     database.$transaction.mockRejectedValueOnce(error);
     database.$queryRaw.mockResolvedValueOnce([]);
-    const repository = new BookingRepository(database as unknown as BookingDatabase);
+    const repository = repositoryFor(database as unknown as BookingDatabase);
 
     await expect(repository.createFromQuote(repositoryInput)).rejects.toBeInstanceOf(
       BookingNumberConflictError,
@@ -741,10 +1076,46 @@ describe("BookingRepository", () => {
 
   it("makes exactly one full service retry for a raw P2010 booking-number conflict", async () => {
     const error = nestedRawUnique(["booking_number"]);
-    const { database } = createBookingDatabase([[{ locked: null }], [bookingRecord]]);
-    database.$transaction.mockRejectedValueOnce(error);
+    const firstPostLockNow = new Date("2026-07-30T02:01:00.000Z");
+    const secondPostLockNow = new Date("2026-07-30T02:02:00.000Z");
+    const retriedRecord = {
+      ...bookingRecord,
+      bookingNumber: "SF20260730BBBBBBBBBBBB",
+      expiresAt: new Date("2026-07-30T02:17:00.000Z"),
+      createdAt: secondPostLockNow,
+    };
+    const { database } = createBookingDatabase([
+      [{ locked: null }],
+      [],
+      [quoteRow],
+      [],
+      [currentBase],
+      currentNightly,
+      inventoryRows,
+      [{ roomTypeId: ROOM_TYPE_ID }],
+      [{ roomTypeId: ROOM_TYPE_ID }],
+      error,
+      [{ locked: null }],
+      [],
+      [quoteRow],
+      [],
+      [currentBase],
+      currentNightly,
+      inventoryRows,
+      [{ roomTypeId: ROOM_TYPE_ID }],
+      [{ roomTypeId: ROOM_TYPE_ID }],
+      [retriedRecord],
+      [{ bookingId: BOOKING_ID }, { bookingId: BOOKING_ID }],
+      [{ id: "70000000-0000-4000-8000-000000000001" }],
+    ]);
     database.$queryRaw.mockResolvedValueOnce([]);
-    const repository = new BookingRepository(database as unknown as BookingDatabase);
+    const transactionClock: Clock = {
+      now: vi
+        .fn<() => Date>()
+        .mockReturnValueOnce(firstPostLockNow)
+        .mockReturnValueOnce(secondPostLockNow),
+    };
+    const repository = repositoryFor(database as unknown as BookingDatabase, transactionClock);
     const generator = createGenerator("SF20260730AAAAAAAAAAAA", "SF20260730BBBBBBBBBBBB");
     const service = new BookingsService(
       repository,
@@ -754,11 +1125,20 @@ describe("BookingRepository", () => {
     );
 
     await expect(service.create(USER_ID, IDEMPOTENCY_KEY, { quote_id: QUOTE_ID })).resolves.toEqual(
-      { kind: "REPLAYED", booking },
+      {
+        kind: "CREATED",
+        booking: {
+          ...booking,
+          booking_number: "SF20260730BBBBBBBBBBBB",
+          expires_at: "2026-07-30T02:17:00.000Z",
+          created_at: "2026-07-30T02:02:00.000Z",
+        },
+      },
     );
     expect(database.$transaction).toHaveBeenCalledTimes(2);
     expect(database.$queryRaw).toHaveBeenCalledTimes(1);
     expect(generator.next).toHaveBeenCalledTimes(2);
+    expect(transactionClock.now).toHaveBeenCalledTimes(2);
   });
 
   it.each([
@@ -777,7 +1157,7 @@ describe("BookingRepository", () => {
   ])("does not treat %s as a confirmed unique conflict", async (_name, error) => {
     const { database } = createBookingDatabase([]);
     database.$transaction.mockRejectedValueOnce(error);
-    const repository = new BookingRepository(database as unknown as BookingDatabase);
+    const repository = repositoryFor(database as unknown as BookingDatabase);
     await expect(repository.createFromQuote(repositoryInput)).rejects.toBe(error);
     expect(database.$queryRaw).not.toHaveBeenCalled();
   });
@@ -813,7 +1193,7 @@ describe("BookingRepository", () => {
     const { database } = createBookingDatabase([]);
     database.$transaction.mockRejectedValueOnce(error);
     database.$queryRaw.mockResolvedValueOnce([]);
-    const repository = new BookingRepository(database as unknown as BookingDatabase);
+    const repository = repositoryFor(database as unknown as BookingDatabase);
     await expect(repository.createFromQuote(repositoryInput)).rejects.toBe(error);
     expect(database.$queryRaw).toHaveBeenCalledTimes(1);
   });
@@ -854,7 +1234,7 @@ describe("BookingRepository", () => {
   ])("rejects malformed nested P2010 without lookup: %s", async (_name, error) => {
     const { database } = createBookingDatabase([]);
     database.$transaction.mockRejectedValueOnce(error);
-    const repository = new BookingRepository(database as unknown as BookingDatabase);
+    const repository = repositoryFor(database as unknown as BookingDatabase);
     await expect(repository.createFromQuote(repositoryInput)).rejects.toBe(error);
     expect(database.$queryRaw).not.toHaveBeenCalled();
   });
@@ -874,7 +1254,7 @@ describe("BookingRepository", () => {
       unique,
     ]);
     database.$queryRaw.mockResolvedValueOnce([]);
-    const repository = new BookingRepository(database as unknown as BookingDatabase);
+    const repository = repositoryFor(database as unknown as BookingDatabase);
     await expect(repository.createFromQuote(repositoryInput)).rejects.toBeInstanceOf(
       BookingNumberConflictError,
     );

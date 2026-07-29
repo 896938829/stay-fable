@@ -1,3 +1,4 @@
+import { Buffer } from "node:buffer";
 import { randomBytes as cryptographicRandomBytes } from "node:crypto";
 import { types as nodeTypes } from "node:util";
 
@@ -8,6 +9,12 @@ export interface BookingNumberGenerator {
 export const BOOKING_NUMBER_GENERATOR = Symbol("BOOKING_NUMBER_GENERATOR");
 
 type RandomBytesSource = (size: number) => Buffer;
+const bufferToStringDescriptor = Reflect.getOwnPropertyDescriptor(Buffer.prototype, "toString");
+const bufferToStringValue: unknown =
+  bufferToStringDescriptor !== undefined && Object.hasOwn(bufferToStringDescriptor, "value")
+    ? bufferToStringDescriptor.value
+    : undefined;
+const bufferToString = bufferToStringValue as (this: Buffer, encoding: BufferEncoding) => string;
 
 const unavailable = (): never => {
   throw new Error("Booking number unavailable");
@@ -34,7 +41,8 @@ export const createBookingNumberGenerator = (
         !Buffer.isBuffer(bytes) ||
         nodeTypes.isProxy(bytes) ||
         Reflect.getPrototypeOf(bytes) !== Buffer.prototype ||
-        bytes.length !== 6
+        bytes.length !== 6 ||
+        typeof bufferToStringValue !== "function"
       ) {
         return unavailable();
       }
@@ -46,7 +54,7 @@ export const createBookingNumberGenerator = (
       const year = String(utcYear).padStart(4, "0");
       const month = String(date.getUTCMonth() + 1).padStart(2, "0");
       const day = String(date.getUTCDate()).padStart(2, "0");
-      return `SF${year}${month}${day}${bytes.toString("hex").toUpperCase()}`;
+      return `SF${year}${month}${day}${bufferToString.call(bytes, "hex").toUpperCase()}`;
     } catch {
       return unavailable();
     }

@@ -10,6 +10,7 @@ import {
 } from "@stay-fable/api-contracts/booking";
 import { types as nodeTypes } from "node:util";
 
+import { CLOCK, type Clock } from "../common/clock/clock.js";
 import { DatabaseService } from "../database/database.service.js";
 import { Prisma } from "../generated/prisma/client.js";
 import { createQuoteFingerprint } from "../pricing/quote-fingerprint.js";
@@ -49,6 +50,7 @@ export class BookingNumberConflictError extends Error {
 }
 
 class InventoryUnavailableRollback extends Error {}
+class CurrentPriceUnavailable extends Error {}
 
 const UUID_PATTERN =
   /^(?:[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/i;
@@ -133,6 +135,9 @@ const validDate = (value: unknown): value is Date =>
   !nodeTypes.isProxy(value) &&
   Reflect.getPrototypeOf(value) === Date.prototype &&
   Number.isFinite(Date.prototype.getTime.call(value));
+const dateEpoch = (value: Date): number => Date.prototype.getTime.call(value);
+const cloneDate = (value: Date): Date => new Date(dateEpoch(value));
+const dateIso = (value: Date): string => Date.prototype.toISOString.call(value);
 const validInteger = (value: unknown, minimum = 0): value is number =>
   typeof value === "number" &&
   Number.isSafeInteger(value) &&
@@ -166,7 +171,7 @@ const materializeInput = (input: CreateBookingInput): CreateBookingInput => {
       quoteId: row.quoteId,
       idempotencyKey: row.idempotencyKey,
       bookingNumber: row.bookingNumber,
-      now: new Date(Date.prototype.getTime.call(row.now)),
+      now: cloneDate(row.now),
     };
   } catch {
     return invalidInput();
@@ -209,8 +214,8 @@ const materializeBooking = (value: unknown): BookingSummary => {
     guests: row.guests,
     total_price_cents: row.totalPriceCents,
     currency: row.currency,
-    expires_at: row.expiresAt.toISOString(),
-    created_at: row.createdAt.toISOString(),
+    expires_at: dateIso(row.expiresAt),
+    created_at: dateIso(row.createdAt),
   });
   if (!parsed.success) {
     return invalidData();
@@ -322,7 +327,7 @@ const materializeQuote = (value: unknown): MaterializedQuote => {
     total_price_cents: row.totalPriceCents,
     currency: row.currency,
     booking_policy: row.bookingPolicy,
-    expires_at: row.expiresAt.toISOString(),
+    expires_at: dateIso(row.expiresAt),
   });
   if (
     !response.success ||
@@ -341,7 +346,7 @@ const materializeQuote = (value: unknown): MaterializedQuote => {
     guests: response.data.guests,
     response: response.data,
     fingerprint: row.fingerprint,
-    expiresAt: new Date(row.expiresAt.getTime()),
+    expiresAt: cloneDate(row.expiresAt),
     bookingId: row.bookingId,
     bookingIdempotencyKey: row.bookingIdempotencyKey,
   };
@@ -368,6 +373,18 @@ const materializeCurrentQuote = (
   const nightlyRows = snapshotRows(nightlyValue).map((value) =>
     snapshotRecord(value, currentNightKeys),
   );
+  const expectedNights = dayDifference(quote.checkin, quote.checkout);
+  if (nightlyRows.length !== expectedNights) {
+    throw new CurrentPriceUnavailable();
+  }
+  for (const [index, night] of nightlyRows.entries()) {
+    if (typeof night.businessDate !== "string") {
+      return invalidData();
+    }
+    if (dayOrdinal(night.businessDate) !== dayOrdinal(quote.checkin) + index) {
+      throw new CurrentPriceUnavailable();
+    }
+  }
   if (
     typeof base.propertyId !== "string" ||
     !UUID_PATTERN.test(base.propertyId) ||
@@ -411,7 +428,7 @@ const materializeCurrentQuote = (
     total_price_cents: total,
     currency: "CNY",
     booking_policy: base.bookingPolicy,
-    expires_at: expiresAt.toISOString(),
+    expires_at: dateIso(expiresAt),
   });
   if (!parsed.success) {
     return invalidData();
@@ -600,7 +617,10 @@ const classifyUniqueConstraint = (error: unknown): UniqueClassification | null =
 
 @Injectable()
 export class BookingRepository {
-  constructor(@Inject(DatabaseService) private readonly database: BookingDatabase) {}
+  constructor(
+    @Inject(DatabaseService) private readonly database: BookingDatabase,
+    @Inject(CLOCK) private readonly clock: Clock,
+  ) {}
 
   async createFromQuote(input: CreateBookingInput): Promise<CreateBookingResult> {
     const trusted = materializeInput(input);
@@ -733,7 +753,8 @@ export class BookingRepository {
         ? { kind: "REPLAYED", booking: used.booking }
         : { kind: "QUOTE_ALREADY_USED" };
     }
-    if (input.now.getTime() >= quote.expiresAt.getTime()) {
+    const now = this.captureNow();
+    if (dateEpoch(now) >= dateEpoch(quote.expiresAt)) {
       return { kind: "QUOTE_EXPIRED" };
     }
 
@@ -753,6 +774,7 @@ export class BookingRepository {
           AND property."status" = 'OPEN'
           AND room."status" = 'ON_SALE'
         LIMIT 1
+        FOR UPDATE OF property, room
       `),
     );
     if (baseRows.length === 0) {
@@ -764,22 +786,27 @@ export class BookingRepository {
     const priceRows = snapshotRows(
       await transaction.$queryRaw<unknown[]>(Prisma.sql`
         SELECT
-          requested.business_date::text AS "businessDate",
+          price."business_date"::text AS "businessDate",
           price."sale_price_cents" AS "salePriceCents",
           price."rack_price_cents" AS "rackPriceCents"
-        FROM generate_series(
-          ${quote.checkin}::date,
-          (${quote.checkout}::date - INTERVAL '1 day'),
-          INTERVAL '1 day'
-        ) requested(business_date)
-        LEFT JOIN daily_price price
-          ON price."room_type_id" = ${quote.roomTypeId}::uuid
-         AND price."business_date" = requested.business_date
-        ORDER BY requested.business_date ASC
+        FROM daily_price price
+        WHERE price."room_type_id" = ${quote.roomTypeId}::uuid
+          AND price."business_date" >= ${quote.checkin}::date
+          AND price."business_date" < ${quote.checkout}::date
+        ORDER BY price."business_date" ASC
+        FOR UPDATE OF price
       `),
     );
-    const replacementExpiresAt = new Date(input.now.getTime() + 5 * 60_000);
-    const current = materializeCurrentQuote(quote, baseRows[0], priceRows, replacementExpiresAt);
+    const replacementExpiresAt = new Date(dateEpoch(now) + 5 * 60_000);
+    let current: ReturnType<typeof materializeCurrentQuote>;
+    try {
+      current = materializeCurrentQuote(quote, baseRows[0], priceRows, replacementExpiresAt);
+    } catch (error) {
+      if (error instanceof CurrentPriceUnavailable) {
+        return { kind: "QUOTE_EXPIRED" };
+      }
+      throw error;
+    }
     if (current.fingerprint !== quote.fingerprint) {
       const replacementRows = snapshotRows(
         await transaction.$queryRaw<unknown[]>(Prisma.sql`
@@ -823,7 +850,7 @@ export class BookingRepository {
         !UUID_PATTERN.test(replacementRecord.id) ||
         !validDate(replacementRecord.createdAt) ||
         !validDate(replacementRecord.expiresAt) ||
-        replacementRecord.expiresAt.getTime() !== replacementExpiresAt.getTime()
+        dateEpoch(replacementRecord.expiresAt) !== dateEpoch(replacementExpiresAt)
       ) {
         return invalidData();
       }
@@ -832,7 +859,7 @@ export class BookingRepository {
         replacement_quote: {
           ...current.response,
           quote_id: replacementRecord.id,
-          expires_at: replacementRecord.expiresAt.toISOString(),
+          expires_at: dateIso(replacementRecord.expiresAt),
         },
       });
       if (!details.success) {
@@ -885,7 +912,7 @@ export class BookingRepository {
           SET
             held_inventory = held_inventory + 1,
             version = version + 1,
-            updated_at = ${input.now}
+            updated_at = ${now}
           WHERE room_type_id = ${quote.roomTypeId}::uuid
             AND business_date = ${night.business_date}::date
             AND held_inventory + sold_inventory < total_inventory
@@ -901,7 +928,7 @@ export class BookingRepository {
       }
     }
 
-    const bookingExpiresAt = new Date(input.now.getTime() + 15 * 60_000);
+    const bookingExpiresAt = new Date(dateEpoch(now) + 15 * 60_000);
     const bookingRows = snapshotRows(
       await transaction.$queryRaw<unknown[]>(Prisma.sql`
         INSERT INTO booking (
@@ -928,7 +955,7 @@ export class BookingRepository {
           ${quote.response.currency},
           ${input.idempotencyKey},
           ${bookingExpiresAt},
-          ${input.now}
+          ${now}
         )
         RETURNING
           "id"::text AS "id",
@@ -963,7 +990,7 @@ export class BookingRepository {
               ${night.business_date}::date,
               'HELD',
               ${bookingExpiresAt},
-              ${input.now}
+              ${now}
             )`,
           ),
         )}
@@ -995,11 +1022,11 @@ export class BookingRepository {
         RETURNING "id"
       `),
     );
-    if (
-      historyRows.length !== 1 ||
-      typeof snapshotRecord(historyRows[0], ["id"]).id !== "string" ||
-      !UUID_PATTERN.test(snapshotRecord(historyRows[0], ["id"]).id as string)
-    ) {
+    if (historyRows.length !== 1) {
+      return invalidData();
+    }
+    const history = snapshotRecord(historyRows[0], ["id"]);
+    if (typeof history.id !== "string" || !UUID_PATTERN.test(history.id)) {
       return invalidData();
     }
     return { kind: "CREATED", booking: createdBooking };
@@ -1022,5 +1049,15 @@ export class BookingRepository {
         booking."created_at" AS "createdAt"
       FROM booking
     `;
+  }
+
+  private captureNow(): Date {
+    let now: unknown;
+    try {
+      now = this.clock.now();
+    } catch {
+      return invalidData();
+    }
+    return validDate(now) ? cloneDate(now) : invalidData();
   }
 }

@@ -67,7 +67,7 @@ export class BookingsService {
           quoteId: parsedBody.data.quote_id,
           idempotencyKey: parsedKey.data,
           bookingNumber,
-          now: new Date(now.getTime()),
+          now: new Date(Date.prototype.getTime.call(now)),
         });
       } catch (error) {
         if (error instanceof BookingNumberConflictError && attempt === 0) {
@@ -97,10 +97,10 @@ export class BookingsService {
   private captureNow(): Date {
     try {
       const now = this.clock.now();
-      if (!(now instanceof Date) || !Number.isFinite(now.getTime())) {
+      if (!(now instanceof Date) || !Number.isFinite(Date.prototype.getTime.call(now))) {
         throw new Error("Invalid clock");
       }
-      return new Date(now.getTime());
+      return new Date(Date.prototype.getTime.call(now));
     } catch {
       throw unavailable();
     }
