@@ -237,7 +237,6 @@ describe("BookingsController", () => {
     [409, "QUOTE_EXPIRED"],
     [409, "QUOTE_ALREADY_USED"],
     [409, "INVENTORY_UNAVAILABLE"],
-    [429, "RATE_LIMITED"],
     [503, "BOOKING_SERVICE_UNAVAILABLE"],
   ])("preserves safe %s %s errors", async (status, code) => {
     const { bookings, server } = await createApp();
@@ -248,6 +247,27 @@ describe("BookingsController", () => {
       .send(body)
       .expect(status);
     expect(response.body).toMatchObject({ error: { code, message: "安全提示" } });
+    expect(response.body).toHaveProperty("request_id");
+  });
+
+  it("preserves bounded rate-limit details", async () => {
+    const details = { retry_after_seconds: 37 };
+    const { bookings, server } = await createApp();
+    bookings.create.mockRejectedValueOnce(
+      new BusinessException(429, "RATE_LIMITED", "请求过于频繁，请稍后重试", details),
+    );
+    const response = await request(server)
+      .post("/api/v1/bookings")
+      .set("Idempotency-Key", IDEMPOTENCY_KEY)
+      .send(body)
+      .expect(429);
+    expect(response.body).toMatchObject({
+      error: {
+        code: "RATE_LIMITED",
+        message: "请求过于频繁，请稍后重试",
+        details,
+      },
+    });
     expect(response.body).toHaveProperty("request_id");
   });
 

@@ -22,7 +22,12 @@ import { BusinessException } from "../common/http/business.exception.js";
 import { CurrentUser, type AuthenticatedUser } from "../identity/current-user.js";
 import { SessionAuthGuard } from "../identity/session-auth.guard.js";
 import { BookingsService } from "./bookings.service.js";
-import { BookingEnvelopeDto, BookingErrorEnvelopeDto } from "./dto/booking-response.dto.js";
+import {
+  BookingConflictErrorEnvelopeDto,
+  BookingEnvelopeDto,
+  BookingErrorEnvelopeDto,
+  BookingRateLimitErrorEnvelopeDto,
+} from "./dto/booking-response.dto.js";
 import { CreateBookingPipe } from "./dto/create-booking.dto.js";
 
 const bookingRequestSchema = {
@@ -107,10 +112,13 @@ export class BookingsController {
     type: BookingErrorEnvelopeDto,
   })
   @ApiForbiddenResponse({ description: "User account disabled", type: BookingErrorEnvelopeDto })
-  @ApiConflictResponse({ description: "Booking conflict", type: BookingErrorEnvelopeDto })
+  @ApiConflictResponse({
+    description: "Booking conflict",
+    type: BookingConflictErrorEnvelopeDto,
+  })
   @ApiTooManyRequestsResponse({
     description: "Booking rate limited",
-    type: BookingErrorEnvelopeDto,
+    type: BookingRateLimitErrorEnvelopeDto,
   })
   @ApiServiceUnavailableResponse({
     description: "Booking service temporarily unavailable",

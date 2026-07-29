@@ -67,14 +67,54 @@ export class BookingErrorDto {
 
   @ApiProperty()
   message!: string;
-
-  @ApiPropertyOptional({ type: QuoteChangedDetailsDto })
-  details?: QuoteChangedDetailsDto;
 }
 
 export class BookingErrorEnvelopeDto {
   @ApiProperty({ type: BookingErrorDto })
   error!: BookingErrorDto;
+
+  @ApiProperty()
+  request_id!: string;
+}
+
+export class BookingConflictErrorDto {
+  @ApiProperty()
+  code!: string;
+
+  @ApiProperty()
+  message!: string;
+
+  @ApiPropertyOptional({ type: QuoteChangedDetailsDto })
+  details?: QuoteChangedDetailsDto;
+}
+
+export class BookingConflictErrorEnvelopeDto {
+  @ApiProperty({ type: BookingConflictErrorDto })
+  error!: BookingConflictErrorDto;
+
+  @ApiProperty()
+  request_id!: string;
+}
+
+export class RateLimitDetailsDto {
+  @ApiProperty({ type: "integer", minimum: 1, maximum: 60 })
+  retry_after_seconds!: number;
+}
+
+export class BookingRateLimitErrorDto {
+  @ApiProperty()
+  code!: string;
+
+  @ApiProperty()
+  message!: string;
+
+  @ApiProperty({ type: RateLimitDetailsDto })
+  details!: RateLimitDetailsDto;
+}
+
+export class BookingRateLimitErrorEnvelopeDto {
+  @ApiProperty({ type: BookingRateLimitErrorDto })
+  error!: BookingRateLimitErrorDto;
 
   @ApiProperty()
   request_id!: string;

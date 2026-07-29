@@ -147,11 +147,17 @@ describe("Booking slice OpenAPI", () => {
         $ref: "#/components/schemas/BookingEnvelopeDto",
       });
     }
-    for (const status of ["400", "401", "403", "409", "429", "503"]) {
+    for (const status of ["400", "401", "403", "503"]) {
       expect(bookingOperation?.responses?.[status]?.content?.["application/json"]?.schema).toEqual({
         $ref: "#/components/schemas/BookingErrorEnvelopeDto",
       });
     }
+    expect(bookingOperation?.responses?.["409"]?.content?.["application/json"]?.schema).toEqual({
+      $ref: "#/components/schemas/BookingConflictErrorEnvelopeDto",
+    });
+    expect(bookingOperation?.responses?.["429"]?.content?.["application/json"]?.schema).toEqual({
+      $ref: "#/components/schemas/BookingRateLimitErrorEnvelopeDto",
+    });
     expect(schemas?.BookingEnvelopeDto?.required).toEqual(["data", "request_id"]);
     expect(schemas?.BookingResponseDto?.required).toEqual([
       "booking_id",
@@ -174,6 +180,18 @@ describe("Booking slice OpenAPI", () => {
     ]);
     expect(schemas?.QuoteChangedDetailsDto?.properties?.replacement_quote).toEqual({
       $ref: "#/components/schemas/QuoteResponseDto",
+    });
+    expect(schemas?.BookingErrorDto?.properties).not.toHaveProperty("details");
+    expect(schemas?.BookingConflictErrorDto?.required).toEqual(["code", "message"]);
+    expect(schemas?.BookingConflictErrorDto?.properties?.details).toEqual({
+      $ref: "#/components/schemas/QuoteChangedDetailsDto",
+    });
+    expect(schemas?.BookingRateLimitErrorDto?.required).toEqual(["code", "message", "details"]);
+    expect(schemas?.RateLimitDetailsDto?.required).toEqual(["retry_after_seconds"]);
+    expect(schemas?.RateLimitDetailsDto?.properties?.retry_after_seconds).toEqual({
+      type: "integer",
+      minimum: 1,
+      maximum: 60,
     });
     expect(JSON.stringify(schemas?.BookingResponseDto)).not.toMatch(
       /inventory|fingerprint|user_id|version|history|held|sold/,
