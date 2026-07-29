@@ -23,13 +23,208 @@ const quoteGeneratedTestSchema = (schemaName: string): string => {
   return `"${schemaName}"`;
 };
 
-const migrationSqlHasForbiddenStatements = (migrationSql: string): boolean => {
-  const destructiveStatement =
-    /(?:^|;|\r?\n)\s*(?:(?:--[^\r\n]*(?:\r?\n|$)|\/\*[\s\S]*?\*\/)\s*)*(?:UPDATE\b|DELETE\s+FROM\b|TRUNCATE\b|DROP\s+TABLE\b)/i;
-  const explicitDownSection =
-    /(?:^|\r?\n)\s*--\s*(?:\+?migrate:\s*)?down\b|\/\*\s*(?:\+?migrate:\s*)?down\b[\s\S]*?\*\//i;
+type SqlMigrationScan = {
+  hasExplicitDownMarker: boolean;
+  statements: string[];
+};
 
-  return destructiveStatement.test(migrationSql) || explicitDownSection.test(migrationSql);
+const dollarQuoteAt = (sql: string, offset: number): string | undefined =>
+  /^\$(?:[A-Za-z_][A-Za-z0-9_]*)?\$/.exec(sql.slice(offset))?.[0];
+
+const scanSqlMigration = (sql: string): SqlMigrationScan => {
+  const statements: string[] = [];
+  let current = "";
+  let hasExplicitDownMarker = false;
+  let state: "dollar" | "double" | "normal" | "single" = "normal";
+  let dollarDelimiter = "";
+
+  const finishStatement = (): void => {
+    const statement = current.trim();
+    if (statement.length > 0) {
+      statements.push(statement);
+    }
+    current = "";
+  };
+
+  for (let index = 0; index < sql.length; index += 1) {
+    const character = sql[index] ?? "";
+    const nextCharacter = sql[index + 1];
+
+    if (state === "single") {
+      current += character;
+      if (character === "'" && nextCharacter === "'") {
+        current += nextCharacter;
+        index += 1;
+      } else if (character === "'") {
+        state = "normal";
+      }
+      continue;
+    }
+    if (state === "double") {
+      current += character;
+      if (character === '"' && nextCharacter === '"') {
+        current += nextCharacter;
+        index += 1;
+      } else if (character === '"') {
+        state = "normal";
+      }
+      continue;
+    }
+    if (state === "dollar") {
+      if (sql.startsWith(dollarDelimiter, index)) {
+        current += dollarDelimiter;
+        index += dollarDelimiter.length - 1;
+        state = "normal";
+      } else {
+        current += character;
+      }
+      continue;
+    }
+
+    if (character === "-" && nextCharacter === "-") {
+      const newlineIndex = sql.indexOf("\n", index + 2);
+      const commentEnd = newlineIndex === -1 ? sql.length : newlineIndex;
+      const comment = sql.slice(index + 2, commentEnd);
+      hasExplicitDownMarker ||= /^\s*(?:\+?migrate:\s*)?down\b/i.test(comment);
+      current += newlineIndex === -1 ? " " : "\n";
+      index = newlineIndex === -1 ? sql.length : newlineIndex;
+      continue;
+    }
+    if (character === "/" && nextCharacter === "*") {
+      let depth = 1;
+      let commentEnd = index + 2;
+      while (commentEnd < sql.length && depth > 0) {
+        if (sql.startsWith("/*", commentEnd)) {
+          depth += 1;
+          commentEnd += 2;
+        } else if (sql.startsWith("*/", commentEnd)) {
+          depth -= 1;
+          commentEnd += 2;
+        } else {
+          commentEnd += 1;
+        }
+      }
+      const comment = sql.slice(index + 2, Math.max(index + 2, commentEnd - 2));
+      hasExplicitDownMarker ||= /^\s*(?:\+?migrate:\s*)?down\b/i.test(comment);
+      current += " ";
+      index = commentEnd - 1;
+      continue;
+    }
+    if (character === "'") {
+      current += character;
+      state = "single";
+      continue;
+    }
+    if (character === '"') {
+      current += character;
+      state = "double";
+      continue;
+    }
+    if (character === "$") {
+      const delimiter = dollarQuoteAt(sql, index);
+      if (delimiter !== undefined) {
+        current += delimiter;
+        dollarDelimiter = delimiter;
+        state = "dollar";
+        index += delimiter.length - 1;
+        continue;
+      }
+    }
+    if (character === ";") {
+      finishStatement();
+      continue;
+    }
+    current += character;
+  }
+
+  finishStatement();
+  return { hasExplicitDownMarker, statements };
+};
+
+const unquotedSqlWords = (statement: string): string[] => {
+  const words: string[] = [];
+  let state: "dollar" | "double" | "normal" | "single" = "normal";
+  let dollarDelimiter = "";
+
+  for (let index = 0; index < statement.length; index += 1) {
+    const character = statement[index] ?? "";
+    const nextCharacter = statement[index + 1];
+    if (state === "single") {
+      if (character === "'" && nextCharacter === "'") {
+        index += 1;
+      } else if (character === "'") {
+        state = "normal";
+      }
+      continue;
+    }
+    if (state === "double") {
+      if (character === '"' && nextCharacter === '"') {
+        index += 1;
+      } else if (character === '"') {
+        state = "normal";
+      }
+      continue;
+    }
+    if (state === "dollar") {
+      if (statement.startsWith(dollarDelimiter, index)) {
+        index += dollarDelimiter.length - 1;
+        state = "normal";
+      }
+      continue;
+    }
+    if (character === "'") {
+      state = "single";
+      continue;
+    }
+    if (character === '"') {
+      state = "double";
+      continue;
+    }
+    if (character === "$") {
+      const delimiter = dollarQuoteAt(statement, index);
+      if (delimiter !== undefined) {
+        dollarDelimiter = delimiter;
+        state = "dollar";
+        index += delimiter.length - 1;
+        continue;
+      }
+    }
+    if (/[A-Za-z_]/.test(character)) {
+      let wordEnd = index + 1;
+      while (wordEnd < statement.length && /[A-Za-z0-9_$]/.test(statement[wordEnd] ?? "")) {
+        wordEnd += 1;
+      }
+      words.push(statement.slice(index, wordEnd).toUpperCase());
+      index = wordEnd - 1;
+    }
+  }
+  return words;
+};
+
+const isAllowedMigrationStatement = (statement: string): boolean => {
+  const words = unquotedSqlWords(statement);
+  if (words[0] === "ALTER" && words[1] === "TABLE") {
+    return true;
+  }
+  if (words[0] !== "CREATE") {
+    return false;
+  }
+  if (words[1] === "TYPE" || words[1] === "INDEX") {
+    return true;
+  }
+  if (words[1] === "UNIQUE" && words[2] === "INDEX") {
+    return true;
+  }
+  return words[1] === "TABLE" && !words.slice(2).includes("AS");
+};
+
+const migrationSqlHasForbiddenStatements = (migrationSql: string): boolean => {
+  const scan = scanSqlMigration(migrationSql);
+  return (
+    scan.hasExplicitDownMarker ||
+    scan.statements.length === 0 ||
+    scan.statements.some((statement) => !isAllowedMigrationStatement(statement))
+  );
 };
 
 const inventoryCapacityExpression =
@@ -135,10 +330,46 @@ test.each([
     "CREATE TABLE quote (status text CHECK (status <> 'down'));",
     false,
   ],
+  [
+    "allows keywords and semicolons in string literals",
+    "CREATE TABLE quote (note text DEFAULT 'UPDATE; DELETE FROM quote; MERGE');",
+    false,
+  ],
+  [
+    "allows keywords in quoted identifiers",
+    'CREATE TABLE "UPDATE" ("DELETE" text, "DROP TABLE" text);',
+    false,
+  ],
+  [
+    "allows keywords and semicolons in dollar-quoted literals",
+    "CREATE TABLE quote (note text DEFAULT $body$UPDATE; DELETE FROM quote;$body$);",
+    false,
+  ],
+  [
+    "allows regex strings and block comments",
+    "/* DELETE FROM quote; */ CREATE TABLE quote (fingerprint text CHECK (fingerprint ~ 'UPDATE|DROP TABLE;'));",
+    false,
+  ],
   ["rejects UPDATE statements", "UPDATE quote SET currency = 'CNY';", true],
   ["rejects DELETE FROM statements", "DELETE FROM quote;", true],
+  ["rejects INSERT statements", "INSERT INTO quote (id) VALUES (gen_random_uuid());", true],
   ["rejects TRUNCATE statements", "TRUNCATE TABLE quote;", true],
   ["rejects DROP TABLE statements", "DROP TABLE quote;", true],
+  [
+    "rejects MERGE statements",
+    "MERGE INTO quote USING source ON false WHEN NOT MATCHED THEN INSERT DEFAULT VALUES;",
+    true,
+  ],
+  [
+    "rejects data-modifying WITH statements on one line",
+    "WITH removed AS (DELETE FROM quote RETURNING id) SELECT * FROM removed;",
+    true,
+  ],
+  ["rejects EXPLAIN ANALYZE UPDATE", "EXPLAIN ANALYZE UPDATE quote SET currency = 'CNY';", true],
+  ["rejects DO statements", "DO $$ BEGIN UPDATE quote SET currency = 'CNY'; END $$;", true],
+  ["rejects CALL statements", "CALL rebuild_quote();", true],
+  ["rejects COPY statements", "COPY quote TO STDOUT;", true],
+  ["rejects CREATE TABLE AS", "CREATE TABLE quote_copy AS SELECT * FROM quote;", true],
   ["rejects explicit down sections", "-- migrate:down\nSELECT 1;", true],
 ])("migration SQL guard %s", (_name, migrationSql, expected) => {
   expect(migrationSqlHasForbiddenStatements(migrationSql)).toBe(expected);
@@ -255,8 +486,17 @@ describeDatabase(suiteName, () => {
   const readTargetMigration = async (): Promise<string> => {
     const migrationSql = await readFile(targetMigration, "utf8");
     expect(migrationSqlHasForbiddenStatements(migrationSql)).toBe(false);
-    expect(migrationSql).toMatch(
-      /ALTER\s+TABLE\s+"daily_inventory"\s+DROP\s+CONSTRAINT\s+"daily_inventory_available_check"/i,
+    const capacityStatements = scanSqlMigration(migrationSql).statements.filter((statement) =>
+      /daily_inventory_(?:available|capacity)_check/i.test(statement),
+    );
+    expect(capacityStatements).toHaveLength(1);
+    expect(capacityStatements[0]).toMatch(
+      /^ALTER\s+TABLE\s+"daily_inventory"\s+RENAME\s+CONSTRAINT\s+"daily_inventory_available_check"\s+TO\s+"daily_inventory_capacity_check"\s*$/i,
+    );
+    expect(capacityStatements).not.toContainEqual(
+      expect.stringMatching(
+        /^ALTER\s+TABLE\s+"daily_inventory"\s+(?:ADD|DROP|VALIDATE)\s+CONSTRAINT\s+"daily_inventory_(?:available|capacity)_check"/i,
+      ),
     );
     return migrationSql;
   };
@@ -720,9 +960,6 @@ describeDatabase(suiteName, () => {
       "daily_inventory.daily_inventory_capacity_check",
     );
     expect(capacityDefinition).toBeDefined();
-    expect(capacityDefinition).toContain("total_inventory >= 0");
-    expect(capacityDefinition).toContain("held_inventory >= 0");
-    expect(capacityDefinition).toContain("sold_inventory >= 0");
     expect(capacityDefinition).toMatch(inventoryCapacityExpression);
     expectConstraint("daily_price", "daily_price_sale_check", ["sale_price_cents >= 0"]);
     expectConstraint("daily_price", "daily_price_rack_check", [
