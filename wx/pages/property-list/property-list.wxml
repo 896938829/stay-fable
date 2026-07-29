@@ -1,0 +1,83 @@
+<navigation-bar
+  title="选择旅店"
+  back="{{true}}"
+  color="#2f2925"
+  background="#f7f1eb"
+  loading="{{status === 'loading'}}"
+></navigation-bar>
+
+<view class="page-shell property-list-page">
+  <view wx:if="{{searchSummary}}" class="surface-card search-summary">
+    <view class="search-summary__destination">
+      <text class="search-summary__label">目的地</text>
+      <text class="search-summary__city">{{searchSummary.cityLabel}}</text>
+    </view>
+    <view class="search-summary__details">
+      <text>{{searchSummary.dateLabel}}</text>
+      <text class="search-summary__dot">·</text>
+      <text>{{searchSummary.nightsLabel}}</text>
+      <text class="search-summary__dot">·</text>
+      <text>{{searchSummary.guestsLabel}}</text>
+    </view>
+  </view>
+
+  <scroll-view class="filters" scroll-x="{{true}}" show-scrollbar="{{false}}">
+    <view class="filters__track">
+      <button
+        wx:for="{{filters}}"
+        wx:key="value"
+        class="filter {{activeType === item.value ? 'filter--active' : ''}}"
+        data-type="{{item.value}}"
+        bindtap="selectType"
+        aria-pressed="{{activeType === item.value}}"
+      >
+        {{item.label}}
+      </button>
+    </view>
+  </scroll-view>
+
+  <loading-state
+    wx:if="{{status === 'loading'}}"
+    text="正在寻找全程可售的旅店"
+  ></loading-state>
+
+  <error-state
+    wx:elif="{{status === 'error'}}"
+    title="暂时无法加载旅店"
+    message="{{errorMessage}}"
+    bind:retry="retry"
+  ></error-state>
+
+  <empty-state
+    wx:elif="{{status === 'empty'}}"
+    title="当前条件暂无可售旅店"
+    description="可以返回调整日期、人数或目的地后再试。"
+    action-text="重新加载"
+    bind:action="retry"
+  ></empty-state>
+
+  <view wx:elif="{{status === 'list'}}" class="property-results">
+    <property-card
+      wx:for="{{items}}"
+      wx:key="id"
+      property="{{item}}"
+      bind:propertytap="openProperty"
+    ></property-card>
+
+    <view class="pagination" aria-role="status">
+      <loading-state
+        wx:if="{{footerStatus === 'loading'}}"
+        text="正在加载更多旅店"
+      ></loading-state>
+      <view wx:elif="{{footerStatus === 'error'}}" class="pagination__error">
+        <text class="pagination__message">{{errorMessage}}</text>
+        <button class="secondary-button pagination__retry" bindtap="retryFooter">
+          重试加载更多
+        </button>
+      </view>
+      <text wx:elif="{{footerStatus === 'done'}}" class="pagination__done">
+        已显示全部可售旅店
+      </text>
+    </view>
+  </view>
+</view>

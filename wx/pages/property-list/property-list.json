@@ -1,0 +1,10 @@
+{
+  "navigationStyle": "custom",
+  "usingComponents": {
+    "navigation-bar": "/components/navigation-bar/navigation-bar",
+    "loading-state": "/components/loading-state/loading-state",
+    "error-state": "/components/error-state/error-state",
+    "empty-state": "/components/empty-state/empty-state",
+    "property-card": "/components/property-card/property-card"
+  }
+}
