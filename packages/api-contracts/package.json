@@ -19,6 +19,10 @@
     "./catalog": {
       "types": "./src/catalog.ts",
       "default": "./dist/src/catalog.js"
+    },
+    "./booking": {
+      "types": "./src/booking.ts",
+      "default": "./dist/src/booking.js"
     }
   },
   "scripts": {
