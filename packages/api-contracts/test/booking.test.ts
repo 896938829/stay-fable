@@ -60,6 +60,35 @@ const booking = {
   created_at: "2026-07-30T02:00:00.000Z",
 };
 
+const parseWithPrototypeField = (value: unknown) =>
+  JSON.parse(`{"__proto__":true,${JSON.stringify(value).slice(1)}`) as Record<string, unknown>;
+
+const parseJsonRecord = (value: unknown) =>
+  JSON.parse(JSON.stringify(value)) as Record<string, unknown>;
+
+const hasPrototypeFieldAtAnyDepth = (value: unknown): boolean => {
+  if (value === null || typeof value !== "object") {
+    return false;
+  }
+  return (
+    Object.hasOwn(value, "__proto__") || Object.values(value).some(hasPrototypeFieldAtAnyDepth)
+  );
+};
+
+const toNullPrototype = (value: unknown): unknown => {
+  if (Array.isArray(value)) {
+    return value.map(toNullPrototype);
+  }
+  if (value !== null && typeof value === "object") {
+    const result = Object.create(null) as Record<string, unknown>;
+    for (const [key, entry] of Object.entries(value)) {
+      result[key] = toNullPrototype(entry);
+    }
+    return result;
+  }
+  return value;
+};
+
 describe("booking contracts", () => {
   it("accepts a complete strict quote and rejects internal or unknown fields", () => {
     expect(quoteResponseDataSchema.parse(quote)).toEqual(quote);
@@ -250,42 +279,177 @@ describe("booking contracts", () => {
     }
   });
 
-  it("handles proleptic early calendar years, leap years, cross-year stays, and 30-night coverage", () => {
-    expect(
-      quoteResponseDataSchema.safeParse({
-        ...quote,
+  it("accepts table-driven proleptic Gregorian stay boundaries", () => {
+    const firstNight = quote.nightly_prices[0]!;
+    const secondNight = quote.nightly_prices[1]!;
+    const oneNight = (business_date: string) => [{ ...firstNight, business_date }];
+    const thirtyNights = Array.from({ length: 30 }, (_, index) => ({
+      ...firstNight,
+      business_date: `2026-12-${String(index + 2).padStart(2, "0")}`,
+    }));
+    const cases = [
+      {
+        checkin: "0001-01-01",
+        checkout: "0001-01-02",
+        nights: 1,
+        nightly_prices: oneNight("0001-01-01"),
+      },
+      {
         checkin: "0099-12-31",
         checkout: "0100-01-01",
         nights: 1,
-        nightly_prices: [{ ...quote.nightly_prices[0], business_date: "0099-12-31" }],
+        nightly_prices: oneNight("0099-12-31"),
+      },
+      {
+        checkin: "0100-02-28",
+        checkout: "0100-03-01",
+        nights: 1,
+        nightly_prices: oneNight("0100-02-28"),
+      },
+      {
+        checkin: "0400-02-28",
+        checkout: "0400-03-01",
+        nights: 2,
+        nightly_prices: [
+          { ...firstNight, business_date: "0400-02-28" },
+          { ...secondNight, business_date: "0400-02-29" },
+        ],
+      },
+      {
+        checkin: "2026-01-31",
+        checkout: "2026-02-01",
+        nights: 1,
+        nightly_prices: oneNight("2026-01-31"),
+      },
+      {
+        checkin: "2026-12-31",
+        checkout: "2027-01-01",
+        nights: 1,
+        nightly_prices: oneNight("2026-12-31"),
+      },
+      { checkin: "2026-12-02", checkout: "2027-01-01", nights: 30, nightly_prices: thirtyNights },
+      {
+        checkin: "9999-12-30",
+        checkout: "9999-12-31",
+        nights: 1,
+        nightly_prices: oneNight("9999-12-30"),
+      },
+    ];
+
+    for (const stay of cases) {
+      expect(
+        quoteResponseDataSchema.safeParse({
+          ...quote,
+          ...stay,
+          total_price_cents: stay.nightly_prices.reduce(
+            (total, nightlyPrice) => total + nightlyPrice.sale_price_cents,
+            0,
+          ),
+        }).success,
+      ).toBe(true);
+    }
+    expect(
+      quoteResponseDataSchema.safeParse({
+        ...quote,
+        checkin: "9999-12-31",
+        checkout: "10000-01-01",
+        nights: 1,
+        nightly_prices: oneNight("9999-12-31"),
         total_price_cents: 58800,
       }).success,
-    ).toBe(true);
-    expect(
-      quoteResponseDataSchema.safeParse({
-        ...quote,
-        checkin: "2028-02-28",
-        checkout: "2028-03-01",
-        nightly_prices: [
-          { ...quote.nightly_prices[0], business_date: "2028-02-28" },
-          { ...quote.nightly_prices[1], business_date: "2028-02-29" },
-        ],
-      }).success,
-    ).toBe(true);
-    const thirtyNights = Array.from({ length: 30 }, (_, index) => ({
-      ...quote.nightly_prices[0],
-      business_date: `2026-12-${String(index + 1).padStart(2, "0")}`,
-    }));
-    expect(
-      quoteResponseDataSchema.safeParse({
-        ...quote,
-        checkin: "2026-12-01",
-        checkout: "2026-12-31",
-        nights: 30,
-        nightly_prices: thirtyNights,
-        total_price_cents: 1_764_000,
-      }).success,
-    ).toBe(true);
+    ).toBe(false);
+  });
+
+  it("rejects JSON own __proto__ fields at every object boundary", () => {
+    const quoteRequest = {
+      room_type_id: quote.room_type.id,
+      checkin: quote.checkin,
+      checkout: quote.checkout,
+      guests: quote.guests,
+    };
+    const quoteWithPrototypeProperty = parseJsonRecord(quote);
+    quoteWithPrototypeProperty.property = parseWithPrototypeField(quote.property);
+    const quoteWithPrototypeRoomType = parseJsonRecord(quote);
+    quoteWithPrototypeRoomType.room_type = parseWithPrototypeField(quote.room_type);
+    const quoteWithPrototypeNightly = parseJsonRecord(quote);
+    const nightlyPrices = quoteWithPrototypeNightly.nightly_prices;
+    if (!Array.isArray(nightlyPrices)) {
+      throw new Error("Quote fixture must contain nightly prices");
+    }
+    nightlyPrices[0] = parseWithPrototypeField(quote.nightly_prices[0]);
+    const quoteChangedWithPrototypeReplacement = {
+      previous_total_price_cents: quote.total_price_cents,
+      replacement_quote: parseWithPrototypeField(quote),
+    };
+
+    const cases = [
+      {
+        payload: parseWithPrototypeField(quoteRequest),
+        parse: (payload: unknown) => createQuoteRequestSchema.safeParse(payload),
+      },
+      {
+        payload: parseWithPrototypeField({ quote_id: quote.quote_id }),
+        parse: (payload: unknown) => createBookingRequestSchema.safeParse(payload),
+      },
+      {
+        payload: parseWithPrototypeField(quote),
+        parse: (payload: unknown) => quoteResponseDataSchema.safeParse(payload),
+      },
+      {
+        payload: quoteWithPrototypeProperty,
+        parse: (payload: unknown) => quoteResponseDataSchema.safeParse(payload),
+      },
+      {
+        payload: quoteWithPrototypeRoomType,
+        parse: (payload: unknown) => quoteResponseDataSchema.safeParse(payload),
+      },
+      {
+        payload: quoteWithPrototypeNightly,
+        parse: (payload: unknown) => quoteResponseDataSchema.safeParse(payload),
+      },
+      {
+        payload: parseWithPrototypeField(booking),
+        parse: (payload: unknown) => bookingSummarySchema.safeParse(payload),
+      },
+      {
+        payload: parseWithPrototypeField(quoteChangedWithPrototypeReplacement),
+        parse: (payload: unknown) => quoteChangedDetailsSchema.safeParse(payload),
+      },
+      {
+        payload: quoteChangedWithPrototypeReplacement,
+        parse: (payload: unknown) => quoteChangedDetailsSchema.safeParse(payload),
+      },
+    ];
+
+    for (const { payload, parse } of cases) {
+      expect(hasPrototypeFieldAtAnyDepth(payload)).toBe(true);
+      expect(parse(payload).success).toBe(false);
+    }
+  });
+
+  it("preserves normal and null-prototype JSON-like payload behavior while strict rejects constructor and prototype", () => {
+    expect(quoteResponseDataSchema.safeParse(quote).success).toBe(true);
+    expect(quoteResponseDataSchema.safeParse(toNullPrototype(quote)).success).toBe(true);
+    for (const field of ["constructor", "prototype"]) {
+      expect(quoteResponseDataSchema.safeParse({ ...quote, [field]: true }).success).toBe(false);
+    }
+  });
+
+  it("rejects an own __proto__ getter without invoking it or throwing outside Zod", () => {
+    const payload = Object.create(null) as Record<string, unknown>;
+    Object.assign(payload, quote);
+    let getterWasInvoked = false;
+    Object.defineProperty(payload, "__proto__", {
+      enumerable: true,
+      get: () => {
+        getterWasInvoked = true;
+        throw new Error("must not execute getter");
+      },
+    });
+
+    expect(() => quoteResponseDataSchema.safeParse(payload)).not.toThrow();
+    expect(quoteResponseDataSchema.safeParse(payload).success).toBe(false);
+    expect(getterWasInvoked).toBe(false);
   });
 
   it("requires timezone-aware valid instants and valid booking numbers", () => {

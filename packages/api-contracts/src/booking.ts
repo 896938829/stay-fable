@@ -14,6 +14,20 @@ const nonblankString = (maximum: number) =>
     .max(maximum)
     .refine((value) => value.trim().length > 0);
 
+const hasOwnPrototypePseudoField = (value: unknown) => {
+  if (value === null || typeof value !== "object") {
+    return false;
+  }
+  try {
+    return Object.getOwnPropertyDescriptor(value, "__proto__") !== undefined;
+  } catch {
+    return true;
+  }
+};
+
+const rejectPrototypePseudoField = <T extends z.ZodType>(schema: T) =>
+  z.preprocess((value) => (hasOwnPrototypePseudoField(value) ? undefined : value), schema);
+
 const moneyCentsSchema = z.number().int().nonnegative().safe();
 const guestCountSchema = z.number().int().min(1).max(10);
 const nightCountSchema = z.number().int().min(1).max(30);
@@ -89,17 +103,19 @@ const addStayValidation = <T extends z.ZodObject<z.ZodRawShape>>(schema: T) =>
     }
   });
 
-const quoteNightlyPriceSchema = nightlyPriceSchema.superRefine((value, context) => {
-  if (value.rack_price_cents < value.sale_price_cents) {
-    context.addIssue({
-      code: "custom",
-      path: ["rack_price_cents"],
-      message: "Rack price must not be below sale price",
-    });
-  }
-});
+const quoteNightlyPriceSchema = rejectPrototypePseudoField(nightlyPriceSchema).superRefine(
+  (value, context) => {
+    if (value.rack_price_cents < value.sale_price_cents) {
+      context.addIssue({
+        code: "custom",
+        path: ["rack_price_cents"],
+        message: "Rack price must not be below sale price",
+      });
+    }
+  },
+);
 
-export const createQuoteRequestSchema = addStayValidation(
+const createQuoteRequestObjectSchema = addStayValidation(
   z
     .object({
       room_type_id: z.uuid(),
@@ -110,22 +126,32 @@ export const createQuoteRequestSchema = addStayValidation(
     .strict(),
 );
 
-export const quoteResponseDataSchema = z
+export const createQuoteRequestSchema = rejectPrototypePseudoField(createQuoteRequestObjectSchema);
+
+const quotePropertySchema = rejectPrototypePseudoField(
+  z
+    .object({
+      id: z.uuid(),
+      name: nonblankString(120),
+    })
+    .strict(),
+);
+
+const quoteRoomTypeSchema = rejectPrototypePseudoField(
+  z
+    .object({
+      id: z.uuid(),
+      name: nonblankString(120),
+      cover_url: catalogResourceSchema,
+    })
+    .strict(),
+);
+
+const quoteResponseDataObjectSchema = z
   .object({
     quote_id: z.uuid(),
-    property: z
-      .object({
-        id: z.uuid(),
-        name: nonblankString(120),
-      })
-      .strict(),
-    room_type: z
-      .object({
-        id: z.uuid(),
-        name: nonblankString(120),
-        cover_url: catalogResourceSchema,
-      })
-      .strict(),
+    property: quotePropertySchema,
+    room_type: quoteRoomTypeSchema,
     checkin: catalogDateSchema,
     checkout: catalogDateSchema,
     nights: nightCountSchema,
@@ -136,51 +162,56 @@ export const quoteResponseDataSchema = z
     booking_policy: nonblankString(2000),
     expires_at: instantSchema,
   })
-  .strict()
-  .superRefine((value, context) => {
-    const dateDifference = calendarDayDifference(value.checkin, value.checkout);
-    if (dateDifference !== value.nights) {
-      context.addIssue({ code: "custom", path: ["nights"], message: "Nights must match stay" });
-    }
-    if (dateDifference < 1 || dateDifference > 30) {
-      context.addIssue({ code: "custom", path: ["checkout"], message: "Invalid stay length" });
-    }
-    if (value.nightly_prices.length !== value.nights) {
-      context.addIssue({
-        code: "custom",
-        path: ["nightly_prices"],
-        message: "Nightly prices must match nights",
-      });
-    }
-    for (const [index, nightlyPrice] of value.nightly_prices.entries()) {
-      if (nightlyPrice.business_date !== dateAfterDays(value.checkin, index)) {
-        context.addIssue({
-          code: "custom",
-          path: ["nightly_prices", index, "business_date"],
-          message: "Nightly prices must cover each stay date in order",
-        });
-      }
-    }
-    const total = value.nightly_prices.reduce(
-      (sum, nightlyPrice) => sum + nightlyPrice.sale_price_cents,
-      0,
-    );
-    if (!Number.isSafeInteger(total) || total !== value.total_price_cents) {
-      context.addIssue({
-        code: "custom",
-        path: ["total_price_cents"],
-        message: "Total must equal nightly sale prices",
-      });
-    }
-  });
-
-export const createBookingRequestSchema = z
-  .object({
-    quote_id: z.uuid(),
-  })
   .strict();
 
-export const bookingSummarySchema = z
+export const quoteResponseDataSchema = rejectPrototypePseudoField(
+  quoteResponseDataObjectSchema,
+).superRefine((value, context) => {
+  const dateDifference = calendarDayDifference(value.checkin, value.checkout);
+  if (dateDifference !== value.nights) {
+    context.addIssue({ code: "custom", path: ["nights"], message: "Nights must match stay" });
+  }
+  if (dateDifference < 1 || dateDifference > 30) {
+    context.addIssue({ code: "custom", path: ["checkout"], message: "Invalid stay length" });
+  }
+  if (value.nightly_prices.length !== value.nights) {
+    context.addIssue({
+      code: "custom",
+      path: ["nightly_prices"],
+      message: "Nightly prices must match nights",
+    });
+  }
+  for (const [index, nightlyPrice] of value.nightly_prices.entries()) {
+    if (nightlyPrice.business_date !== dateAfterDays(value.checkin, index)) {
+      context.addIssue({
+        code: "custom",
+        path: ["nightly_prices", index, "business_date"],
+        message: "Nightly prices must cover each stay date in order",
+      });
+    }
+  }
+  const total = value.nightly_prices.reduce(
+    (sum, nightlyPrice) => sum + nightlyPrice.sale_price_cents,
+    0,
+  );
+  if (!Number.isSafeInteger(total) || total !== value.total_price_cents) {
+    context.addIssue({
+      code: "custom",
+      path: ["total_price_cents"],
+      message: "Total must equal nightly sale prices",
+    });
+  }
+});
+
+export const createBookingRequestSchema = rejectPrototypePseudoField(
+  z
+    .object({
+      quote_id: z.uuid(),
+    })
+    .strict(),
+);
+
+const bookingSummaryObjectSchema = z
   .object({
     booking_id: z.uuid(),
     booking_number: z.string().regex(/^SF[0-9]{8}[A-F0-9]{12}$/),
@@ -196,23 +227,28 @@ export const bookingSummarySchema = z
     expires_at: instantSchema,
     created_at: instantSchema,
   })
-  .strict()
-  .superRefine((value, context) => {
-    const dateDifference = calendarDayDifference(value.checkin, value.checkout);
-    if (dateDifference !== value.nights) {
-      context.addIssue({ code: "custom", path: ["nights"], message: "Nights must match stay" });
-    }
-    if (dateDifference < 1 || dateDifference > 30) {
-      context.addIssue({ code: "custom", path: ["checkout"], message: "Invalid stay length" });
-    }
-  });
-
-export const quoteChangedDetailsSchema = z
-  .object({
-    previous_total_price_cents: moneyCentsSchema,
-    replacement_quote: quoteResponseDataSchema,
-  })
   .strict();
+
+export const bookingSummarySchema = rejectPrototypePseudoField(
+  bookingSummaryObjectSchema,
+).superRefine((value, context) => {
+  const dateDifference = calendarDayDifference(value.checkin, value.checkout);
+  if (dateDifference !== value.nights) {
+    context.addIssue({ code: "custom", path: ["nights"], message: "Nights must match stay" });
+  }
+  if (dateDifference < 1 || dateDifference > 30) {
+    context.addIssue({ code: "custom", path: ["checkout"], message: "Invalid stay length" });
+  }
+});
+
+export const quoteChangedDetailsSchema = rejectPrototypePseudoField(
+  z
+    .object({
+      previous_total_price_cents: moneyCentsSchema,
+      replacement_quote: quoteResponseDataSchema,
+    })
+    .strict(),
+);
 
 export const idempotencyKeySchema = z.string().regex(/^[A-Za-z0-9._~-]{32,80}$/);
 
