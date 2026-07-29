@@ -62,6 +62,9 @@ describe("catalog display components", () => {
     expect(priceWxml).toContain("每晚");
     expect(priceWxml).toContain("起");
     expect(priceWxml).not.toContain("rich-text");
+    expect(priceWxml).toMatch(
+      /<block wx:if="{{available}}">[\s\S]*{{prefix}}[\s\S]*{{formatted}}[\s\S]*{{suffix}}[\s\S]*<\/block>\s*<text wx:else[^>]*>{{formatted}}<\/text>/,
+    );
     expect(priceWxss).toContain("var(--color-brand-dark)");
 
     const definition = await loadDefinition("price");

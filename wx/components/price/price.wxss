@@ -24,3 +24,9 @@
   font-weight: 700;
   letter-spacing: -1rpx;
 }
+
+.price__unavailable {
+  color: var(--color-muted);
+  font-size: 24rpx;
+  font-weight: 600;
+}
