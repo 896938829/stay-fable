@@ -159,6 +159,12 @@ describe("catalog response contracts", () => {
           nightly_prices: [{ ...nightlyPrice, sale_price_cents: cents }],
         }),
       );
+      expectInvalid(() =>
+        assertRoomTypeDetail({
+          ...roomTypeDetail,
+          nightly_prices: [{ ...nightlyPrice, rack_price_cents: cents }],
+        }),
+      );
     },
   );
 
@@ -181,6 +187,7 @@ describe("catalog response contracts", () => {
         nightly_prices: [{ ...nightlyPrice, currency: "USD" }],
       }),
     );
+    expectInvalid(() => assertRoomTypeDetail({ ...roomTypeDetail, currency: "USD" }));
   });
 
   it.each([
@@ -189,6 +196,12 @@ describe("catalog response contracts", () => {
     "/images/",
     "/images/../secret.jpg",
     "https://user:secret@cdn.example.com/photo.jpg",
+    "https://%",
+    "https://example.com:bad/photo.jpg",
+    "https://[invalid]/x",
+    "https://example..com/photo.jpg",
+    "https://-example.com/photo.jpg",
+    "https://example.com:65536/photo.jpg",
   ])("rejects unsafe catalog resource %j", (resource) => {
     expectInvalid(() =>
       assertPropertyListResponse({

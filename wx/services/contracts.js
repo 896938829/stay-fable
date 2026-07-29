@@ -146,6 +146,63 @@ function isCatalogDate(value) {
   );
 }
 
+function isValidIpv4(hostname) {
+  const parts = hostname.split(".");
+  return (
+    parts.length === 4 &&
+    parts.every(
+      (part) =>
+        /^(?:0|[1-9]\d{0,2})$/.test(part) &&
+        Number(part) >= 0 &&
+        Number(part) <= 255,
+    )
+  );
+}
+
+function isValidHttpsHostname(hostname) {
+  if (hostname.length < 1 || hostname.length > 253) {
+    return false;
+  }
+  if (/^\d+(?:\.\d+)*$/.test(hostname)) {
+    return isValidIpv4(hostname);
+  }
+  return hostname.split(".").every(
+    (label) =>
+      label.length >= 1 &&
+      label.length <= 63 &&
+      /^[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?$/.test(label),
+  );
+}
+
+function isValidHttpsResource(value) {
+  const remainder = value.slice("https://".length);
+  const delimiterIndex = remainder.search(/[/?#]/);
+  const authority =
+    delimiterIndex === -1 ? remainder : remainder.slice(0, delimiterIndex);
+  if (
+    authority === "" ||
+    authority.includes("@") ||
+    authority.includes("[") ||
+    authority.includes("]")
+  ) {
+    return false;
+  }
+
+  const colonIndex = authority.lastIndexOf(":");
+  let hostname = authority;
+  if (colonIndex !== -1) {
+    if (authority.indexOf(":") !== colonIndex) {
+      return false;
+    }
+    hostname = authority.slice(0, colonIndex);
+    const port = authority.slice(colonIndex + 1);
+    if (!/^\d{1,5}$/.test(port) || Number(port) > 65535) {
+      return false;
+    }
+  }
+  return isValidHttpsHostname(hostname);
+}
+
 function isCatalogResource(value) {
   if (typeof value !== "string" || value.length > 500) {
     return false;
@@ -159,7 +216,11 @@ function isCatalogResource(value) {
         .every((segment) => segment !== "." && segment !== "..")
     );
   }
-  return /^https:\/\/[^/?#@\s\\]+(?:[/?#][^\s\\]*)?$/.test(value);
+  return (
+    value.startsWith("https://") &&
+    !/[\s\\]/.test(value) &&
+    isValidHttpsResource(value)
+  );
 }
 
 function assertExactCity(value) {

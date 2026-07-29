@@ -174,6 +174,24 @@ describe("catalog service", () => {
     expect(requestClient.get).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ["not-a-uuid", availability],
+    [IDS.roomType, { ...availability, checkout: "2026-02-30" }],
+    [IDS.roomType, { ...availability, checkout: availability.checkin }],
+    [IDS.roomType, { ...availability, checkout: "2026-08-30" }],
+    [IDS.roomType, { ...availability, guests: 0 }],
+    [IDS.roomType, { ...availability, guests: 1.5 }],
+    [IDS.roomType, { ...availability, access_token: "must-not-enter-url" }],
+  ])("rejects invalid room detail input before requesting", async (roomTypeId, query) => {
+    const { requestClient, service } = createService(roomDetail);
+
+    await expect(service.getRoomType(roomTypeId, query)).rejects.toMatchObject({
+      code: "INVALID_CATALOG_INPUT",
+      message: "Invalid catalog input",
+    });
+    expect(requestClient.get).not.toHaveBeenCalled();
+  });
+
   it("validates each API response after the request", async () => {
     const malformedList = createService({
       ...listResponse,
