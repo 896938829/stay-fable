@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 
-import { createQuoteRequestSchema } from "@stay-fable/api-contracts/booking";
-import { catalogDateSchema, catalogResourceSchema } from "@stay-fable/api-contracts/catalog";
+import { quoteResponseDataSchema } from "@stay-fable/api-contracts/booking";
+import { catalogDateSchema } from "@stay-fable/api-contracts/catalog";
 
 export interface QuoteFingerprintInput {
   property: { id: string; name: string };
@@ -17,25 +17,56 @@ export interface QuoteFingerprintInput {
   }>;
 }
 
+const rootKeys = [
+  "property",
+  "roomType",
+  "checkin",
+  "checkout",
+  "guests",
+  "bookingPolicy",
+  "nightlyPrices",
+] as const;
+const propertyKeys = ["id", "name"] as const;
+const roomTypeKeys = ["id", "name", "coverUrl"] as const;
+const nightlyPriceKeys = ["businessDate", "salePriceCents", "rackPriceCents"] as const;
+const validationQuoteId = "30000000-0000-4000-8000-000000000003";
+const validationExpiration = "2030-01-01T00:00:00Z";
+
 const invalidInput = (): never => {
   throw new Error("Invalid quote fingerprint input");
 };
 
-const snapshotRecord = (value: unknown): Record<string, unknown> => {
-  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+const reflectOrInvalid = <T>(operation: () => T): T => {
+  try {
+    return operation();
+  } catch {
     return invalidInput();
   }
-  const prototype = Reflect.getPrototypeOf(value);
+};
+
+const snapshotRecord = (
+  value: unknown,
+  expectedKeys: readonly string[],
+): Record<string, unknown> => {
+  if (value === null || typeof value !== "object" || reflectOrInvalid(() => Array.isArray(value))) {
+    return invalidInput();
+  }
+  const prototype = reflectOrInvalid(() => Reflect.getPrototypeOf(value));
   if (prototype !== Object.prototype && prototype !== null) {
     return invalidInput();
   }
 
+  const ownKeys = reflectOrInvalid(() => Reflect.ownKeys(value));
+  if (
+    ownKeys.length !== expectedKeys.length ||
+    ownKeys.some((key) => typeof key !== "string" || !expectedKeys.includes(key))
+  ) {
+    return invalidInput();
+  }
+
   const result = Object.create(null) as Record<string, unknown>;
-  for (const key of Reflect.ownKeys(value)) {
-    if (typeof key !== "string") {
-      return invalidInput();
-    }
-    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+  for (const key of expectedKeys) {
+    const descriptor = reflectOrInvalid(() => Object.getOwnPropertyDescriptor(value, key));
     if (descriptor === undefined || !Object.hasOwn(descriptor, "value")) {
       return invalidInput();
     }
@@ -45,24 +76,40 @@ const snapshotRecord = (value: unknown): Record<string, unknown> => {
 };
 
 const snapshotArray = (value: unknown): unknown[] => {
-  if (!Array.isArray(value)) {
+  if (!reflectOrInvalid(() => Array.isArray(value))) {
     return invalidInput();
   }
-  const lengthDescriptor = Object.getOwnPropertyDescriptor(value, "length");
+  const arrayValue = value as object;
+
+  const ownKeys = reflectOrInvalid(() => Reflect.ownKeys(arrayValue));
+  if (ownKeys.length < 2 || ownKeys.length > 31 || ownKeys.some((key) => typeof key !== "string")) {
+    return invalidInput();
+  }
+  const lengthDescriptor = reflectOrInvalid(() =>
+    Object.getOwnPropertyDescriptor(arrayValue, "length"),
+  );
   if (
     lengthDescriptor === undefined ||
     !Object.hasOwn(lengthDescriptor, "value") ||
     !Number.isSafeInteger(lengthDescriptor.value) ||
-    lengthDescriptor.value < 0 ||
+    lengthDescriptor.value < 1 ||
     lengthDescriptor.value > 30 ||
-    Reflect.ownKeys(value).length !== lengthDescriptor.value + 1
+    ownKeys.length !== lengthDescriptor.value + 1 ||
+    !ownKeys.includes("length")
   ) {
     return invalidInput();
+  }
+  for (let index = 0; index < lengthDescriptor.value; index += 1) {
+    if (!ownKeys.includes(String(index))) {
+      return invalidInput();
+    }
   }
 
   const result: unknown[] = [];
   for (let index = 0; index < lengthDescriptor.value; index += 1) {
-    const descriptor = Object.getOwnPropertyDescriptor(value, String(index));
+    const descriptor = reflectOrInvalid(() =>
+      Object.getOwnPropertyDescriptor(arrayValue, String(index)),
+    );
     if (descriptor === undefined || !Object.hasOwn(descriptor, "value")) {
       return invalidInput();
     }
@@ -71,146 +118,98 @@ const snapshotArray = (value: unknown): unknown[] => {
   return result;
 };
 
-const requireExactKeys = (value: Record<string, unknown>, keys: readonly string[]) => {
-  const actualKeys = Object.keys(value);
-  if (actualKeys.length !== keys.length || actualKeys.some((key) => !keys.includes(key))) {
-    return invalidInput();
-  }
-  return value;
-};
-
-const requireNonblankString = (value: unknown, maximum: number): string => {
-  if (typeof value !== "string" || value.length === 0 || value.length > maximum || !value.trim()) {
-    return invalidInput();
-  }
-  return value;
-};
-
-const requireMoney = (value: unknown): number => {
-  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) {
-    return invalidInput();
-  }
-  return value;
-};
-
-const requireDate = (value: unknown): string => {
+const requireBusinessDate = (value: unknown): string => {
   if (typeof value !== "string" || !catalogDateSchema.safeParse(value).success) {
     return invalidInput();
   }
   return value;
 };
 
-const requireUuid = (value: unknown): string => {
-  if (
-    typeof value !== "string" ||
-    !createQuoteRequestSchema.safeParse({
-      room_type_id: value,
-      checkin: "2000-01-01",
-      checkout: "2000-01-02",
-      guests: 1,
-    }).success
-  ) {
-    return invalidInput();
-  }
-  return value;
+interface SnapshotNightlyPrice {
+  businessDate: string;
+  salePriceCents: unknown;
+  rackPriceCents: unknown;
+}
+
+const snapshotNightlyPrice = (value: unknown): SnapshotNightlyPrice => {
+  const nightlyPrice = snapshotRecord(value, nightlyPriceKeys);
+  return {
+    businessDate: requireBusinessDate(nightlyPrice.businessDate),
+    salePriceCents: nightlyPrice.salePriceCents,
+    rackPriceCents: nightlyPrice.rackPriceCents,
+  };
 };
 
-const requireResource = (value: unknown): string => {
-  if (typeof value !== "string" || !catalogResourceSchema.safeParse(value).success) {
-    return invalidInput();
+const deriveSafeTotal = (nightlyPrices: readonly SnapshotNightlyPrice[]): number => {
+  let total = 0;
+  for (const nightlyPrice of nightlyPrices) {
+    const salePriceCents = nightlyPrice.salePriceCents;
+    if (typeof salePriceCents !== "number") {
+      return Number.NaN;
+    }
+    total += salePriceCents;
+    if (!Number.isSafeInteger(total)) {
+      return Number.NaN;
+    }
   }
-  return value;
-};
-
-const calendarDay = (date: string) => {
-  const [yearPart, monthPart, dayPart] = date.split("-");
-  const year = Number(yearPart);
-  const month = Number(monthPart);
-  const day = Number(dayPart);
-  const adjustedYear = year - (month <= 2 ? 1 : 0);
-  const era = Math.floor(adjustedYear / 400);
-  const yearOfEra = adjustedYear - era * 400;
-  const dayOfYear = Math.floor((153 * (month + (month > 2 ? -3 : 9)) + 2) / 5) + day - 1;
-  return (
-    era * 146_097 +
-    yearOfEra * 365 +
-    Math.floor(yearOfEra / 4) -
-    Math.floor(yearOfEra / 100) +
-    dayOfYear
-  );
+  return total;
 };
 
 export const createQuoteFingerprint = (input: QuoteFingerprintInput): string => {
-  try {
-    const root = requireExactKeys(snapshotRecord(input), [
-      "property",
-      "roomType",
-      "checkin",
-      "checkout",
-      "guests",
-      "bookingPolicy",
-      "nightlyPrices",
-    ]);
-    const property = requireExactKeys(snapshotRecord(root.property), ["id", "name"]);
-    const roomType = requireExactKeys(snapshotRecord(root.roomType), ["id", "name", "coverUrl"]);
-    const nightlyPrices = snapshotArray(root.nightlyPrices).map((nightlyPrice) =>
-      requireExactKeys(snapshotRecord(nightlyPrice), [
-        "businessDate",
-        "salePriceCents",
-        "rackPriceCents",
-      ]),
+  const root = snapshotRecord(input, rootKeys);
+  const property = snapshotRecord(root.property, propertyKeys);
+  const roomType = snapshotRecord(root.roomType, roomTypeKeys);
+  const nightlyPrices = snapshotArray(root.nightlyPrices)
+    .map(snapshotNightlyPrice)
+    .sort(({ businessDate: leftDate }, { businessDate: rightDate }) =>
+      leftDate < rightDate ? -1 : leftDate > rightDate ? 1 : 0,
     );
 
-    const propertyId = requireUuid(property.id);
-    const propertyName = requireNonblankString(property.name, 120);
-    const roomTypeId = requireUuid(roomType.id);
-    const roomTypeName = requireNonblankString(roomType.name, 120);
-    const coverUrl = requireResource(roomType.coverUrl);
-    const checkin = requireDate(root.checkin);
-    const checkout = requireDate(root.checkout);
-    const guests = root.guests;
-    if (typeof guests !== "number" || !Number.isInteger(guests) || guests < 1 || guests > 10) {
-      return invalidInput();
-    }
-    const bookingPolicy = requireNonblankString(root.bookingPolicy, 2000);
-    const nights = calendarDay(checkout) - calendarDay(checkin);
-    if (nights < 1 || nights > 30 || nightlyPrices.length !== nights) {
-      return invalidInput();
-    }
-
-    const canonicalNightlyPrices = nightlyPrices
-      .map((nightlyPrice) => {
-        const businessDate = requireDate(nightlyPrice.businessDate);
-        const salePriceCents = requireMoney(nightlyPrice.salePriceCents);
-        const rackPriceCents = requireMoney(nightlyPrice.rackPriceCents);
-        if (rackPriceCents < salePriceCents) {
-          return invalidInput();
-        }
-        return [businessDate, salePriceCents, rackPriceCents] as const;
-      })
-      .sort(([leftDate], [rightDate]) =>
-        leftDate < rightDate ? -1 : leftDate > rightDate ? 1 : 0,
-      );
-
-    for (const [index, nightlyPrice] of canonicalNightlyPrices.entries()) {
-      if (calendarDay(nightlyPrice[0]) !== calendarDay(checkin) + index) {
-        return invalidInput();
-      }
-    }
-
-    const canonicalPayload = [
-      roomTypeId,
-      propertyId,
-      checkin,
-      checkout,
-      guests,
-      [propertyId, propertyName],
-      [roomTypeId, roomTypeName, coverUrl],
-      bookingPolicy,
-      canonicalNightlyPrices,
-    ];
-    return createHash("sha256").update(JSON.stringify(canonicalPayload), "utf8").digest("hex");
-  } catch {
+  const validationResult = quoteResponseDataSchema.safeParse({
+    quote_id: validationQuoteId,
+    property: {
+      id: property.id,
+      name: property.name,
+    },
+    room_type: {
+      id: roomType.id,
+      name: roomType.name,
+      cover_url: roomType.coverUrl,
+    },
+    checkin: root.checkin,
+    checkout: root.checkout,
+    nights: nightlyPrices.length,
+    guests: root.guests,
+    nightly_prices: nightlyPrices.map((nightlyPrice) => ({
+      business_date: nightlyPrice.businessDate,
+      sale_price_cents: nightlyPrice.salePriceCents,
+      rack_price_cents: nightlyPrice.rackPriceCents,
+      currency: "CNY",
+    })),
+    total_price_cents: deriveSafeTotal(nightlyPrices),
+    currency: "CNY",
+    booking_policy: root.bookingPolicy,
+    expires_at: validationExpiration,
+  });
+  if (!validationResult.success) {
     return invalidInput();
   }
+
+  const quote = validationResult.data;
+  const canonicalPayload = [
+    quote.room_type.id,
+    quote.property.id,
+    quote.checkin,
+    quote.checkout,
+    quote.guests,
+    [quote.property.id, quote.property.name],
+    [quote.room_type.id, quote.room_type.name, quote.room_type.cover_url],
+    quote.booking_policy,
+    quote.nightly_prices.map((nightlyPrice) => [
+      nightlyPrice.business_date,
+      nightlyPrice.sale_price_cents,
+      nightlyPrice.rack_price_cents,
+    ]),
+  ];
+  return createHash("sha256").update(JSON.stringify(canonicalPayload), "utf8").digest("hex");
 };

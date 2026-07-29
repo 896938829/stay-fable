@@ -1,6 +1,22 @@
-import { createHash } from "node:crypto";
+import { createHash, type HashOptions } from "node:crypto";
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+
+const cryptoFault = vi.hoisted(() => ({ enabled: false }));
+type CreateHash = (algorithm: string, options?: HashOptions) => ReturnType<typeof createHash>;
+
+vi.mock("node:crypto", async (importOriginal) => {
+  const actual = await importOriginal<{ createHash: CreateHash }>();
+  return {
+    ...actual,
+    createHash: (algorithm: string, options?: HashOptions) => {
+      if (cryptoFault.enabled) {
+        throw new Error("crypto unavailable");
+      }
+      return actual.createHash(algorithm, options);
+    },
+  };
+});
 
 import {
   createQuoteFingerprint,
@@ -149,29 +165,39 @@ describe("createQuoteFingerprint", () => {
       },
       { ...makeInput(), guests: 0 },
       { ...makeInput(), bookingPolicy: " ".repeat(2001) },
-      {
-        ...makeInput(),
-        nightlyPrices: [{ businessDate: "2026-07-29", salePriceCents: -1, rackPriceCents: 1 }],
-      },
-      {
-        ...makeInput(),
-        nightlyPrices: [{ businessDate: "2026-07-29", salePriceCents: 2, rackPriceCents: 1 }],
-      },
-      {
-        ...makeInput(),
-        nightlyPrices: [
-          {
-            businessDate: "2026-07-29",
-            salePriceCents: Number.MAX_SAFE_INTEGER + 1,
-            rackPriceCents: Number.MAX_SAFE_INTEGER + 1,
-          },
-        ],
-      },
     ];
 
     for (const input of invalidInputs) {
       expectInvalid(input);
     }
+  });
+
+  it.each([
+    ["negative sale price", { salePriceCents: -1 }],
+    ["rack price below sale price", { salePriceCents: 2, rackPriceCents: 1 }],
+    [
+      "unsafe integer price",
+      {
+        salePriceCents: Number.MAX_SAFE_INTEGER + 1,
+        rackPriceCents: Number.MAX_SAFE_INTEGER + 1,
+      },
+    ],
+  ])("rejects a %s after validating a complete two-night stay", (_label, priceChange) => {
+    const input = makeInput();
+    input.nightlyPrices[0] = { ...input.nightlyPrices[0]!, ...priceChange };
+
+    expectInvalid(input);
+  });
+
+  it("rejects an unsafe aggregate sale total even when each nightly price is safe", () => {
+    const input = makeInput();
+    input.nightlyPrices = input.nightlyPrices.map((nightlyPrice) => ({
+      ...nightlyPrice,
+      salePriceCents: Number.MAX_SAFE_INTEGER,
+      rackPriceCents: Number.MAX_SAFE_INTEGER,
+    }));
+
+    expectInvalid(input);
   });
 
   it("requires a contiguous half-open Gregorian nightly range including edge years and leap years", () => {
@@ -245,6 +271,47 @@ describe("createQuoteFingerprint", () => {
       }
       expect(thrown).toEqual(new Error("Invalid quote fingerprint input"));
       expect(String((thrown as Error).message)).not.toContain(secret);
+    }
+  });
+
+  it("rejects unknown keys before reading any property descriptors", () => {
+    let descriptorReads = 0;
+    const input = new Proxy(makeInput(), {
+      ownKeys: (target) => [...Reflect.ownKeys(target), "inventoryVersion"],
+      getOwnPropertyDescriptor: (target, key) => {
+        descriptorReads += 1;
+        return Reflect.getOwnPropertyDescriptor(target, key);
+      },
+    });
+
+    expectInvalid(input);
+    expect(descriptorReads).toBe(0);
+  });
+
+  it("contains hostile reflection failures without leaking their details", () => {
+    const secret = "reflection-do-not-disclose";
+    const input = new Proxy(makeInput(), {
+      ownKeys: () => {
+        throw new Error(secret);
+      },
+    });
+
+    let thrown: unknown;
+    try {
+      createQuoteFingerprint(input);
+    } catch (error) {
+      thrown = error;
+    }
+    expect(thrown).toEqual(new Error("Invalid quote fingerprint input"));
+    expect(String((thrown as Error).message)).not.toContain(secret);
+  });
+
+  it("does not misclassify crypto failures as invalid input", () => {
+    cryptoFault.enabled = true;
+    try {
+      expect(() => createQuoteFingerprint(makeInput())).toThrow("crypto unavailable");
+    } finally {
+      cryptoFault.enabled = false;
     }
   });
 });
