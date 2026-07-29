@@ -646,26 +646,29 @@ describe("BookingRepository", () => {
   });
 
   it.each([
-    ["missing quote", [], undefined, "QUOTE_EXPIRED", 3],
+    ["missing quote", [], undefined, [], "QUOTE_EXPIRED", 3],
     [
       "expired quote",
       [{ ...quoteRow, expiresAt: new Date("2026-07-30T02:00:00.000Z") }],
       [],
+      [[currentBase], currentNightly],
       "QUOTE_EXPIRED",
-      4,
+      6,
     ],
     [
       "used quote",
       [quoteRow],
       [{ ...bookingRecord, idempotencyKey: `${IDEMPOTENCY_KEY}x` }],
+      [],
       "QUOTE_ALREADY_USED",
       4,
     ],
-  ])("maps %s before inventory access", async (_name, quoteRows, usedRows, kind, calls) => {
+  ])("maps %s before inventory access", async (_name, quoteRows, usedRows, extra, kind, calls) => {
     const responses: unknown[] = [[{ locked: null }], [], quoteRows];
     if (usedRows !== undefined) {
       responses.push(usedRows);
     }
+    responses.push(...extra);
     const { database, transaction } = createBookingDatabase(responses);
     const repository = repositoryFor(database as unknown as BookingDatabase);
     await expect(repository.createFromQuote(repositoryInput)).resolves.toEqual({ kind });
@@ -690,22 +693,50 @@ describe("BookingRepository", () => {
     expect(database.committed).toEqual([]);
   });
 
-  it("uses one post-lock clock snapshot and expires a quote crossed while waiting", async () => {
-    const postLockNow = new Date("2026-07-30T02:05:00.000Z");
-    const clock: Clock = { now: vi.fn(() => postLockNow) };
+  it("expires a quote crossed while waiting for catalog and price locks", async () => {
+    const catalogNow = new Date("2026-07-30T02:05:00.000Z");
+    const clock: Clock = { now: vi.fn(() => catalogNow) };
     const { database, transaction } = createBookingDatabase([
       [{ locked: null }],
       [],
       [quoteRow],
       [],
+      [currentBase],
+      currentNightly,
     ]);
     const repository = repositoryFor(database as unknown as BookingDatabase, clock);
     await expect(repository.createFromQuote(repositoryInput)).resolves.toEqual({
       kind: "QUOTE_EXPIRED",
     });
     expect(clock.now).toHaveBeenCalledTimes(1);
-    expect(transaction.$queryRaw).toHaveBeenCalledTimes(4);
+    expect(transaction.$queryRaw).toHaveBeenCalledTimes(6);
     expect(database.staged).toEqual([]);
+  });
+
+  it("expires a quote crossed while waiting for inventory locks without writes", async () => {
+    const transactionClock: Clock = {
+      now: vi
+        .fn<() => Date>()
+        .mockReturnValueOnce(new Date("2026-07-30T02:04:59.999Z"))
+        .mockReturnValueOnce(new Date("2026-07-30T02:05:00.000Z")),
+    };
+    const { database, transaction } = createBookingDatabase([
+      [{ locked: null }],
+      [],
+      [quoteRow],
+      [],
+      [currentBase],
+      currentNightly,
+      inventoryRows,
+    ]);
+    const repository = repositoryFor(database as unknown as BookingDatabase, transactionClock);
+    await expect(repository.createFromQuote(repositoryInput)).resolves.toEqual({
+      kind: "QUOTE_EXPIRED",
+    });
+    expect(transactionClock.now).toHaveBeenCalledTimes(2);
+    expect(transaction.$queryRaw).toHaveBeenCalledTimes(7);
+    expect(database.staged).toEqual([]);
+    expect(database.committed).toEqual([]);
   });
 
   it("derives replacement expiry from the post-lock clock snapshot", async () => {
@@ -727,10 +758,8 @@ describe("BookingRepository", () => {
       changedNightly,
       [replacementRecord],
     ]);
-    const repository = repositoryFor(
-      database as unknown as BookingDatabase,
-      new FixedClock(postLockNow),
-    );
+    const clock: Clock = { now: vi.fn(() => postLockNow) };
+    const repository = repositoryFor(database as unknown as BookingDatabase, clock);
     const result = await repository.createFromQuote(repositoryInput);
     expect(result.kind).toBe("QUOTE_CHANGED");
     if (result.kind === "QUOTE_CHANGED") {
@@ -740,22 +769,29 @@ describe("BookingRepository", () => {
       .map((call) => call[0] as { sql: string; values: unknown[] })
       .find((query) => query.sql.includes("INSERT INTO quote"));
     expect(insert?.values).toContainEqual(new Date("2026-07-30T02:06:00.000Z"));
+    expect(clock.now).toHaveBeenCalledTimes(1);
   });
 
-  it("uses the post-lock time for inventory, booking and hold timestamps", async () => {
-    const postLockNow = new Date("2026-07-30T02:01:00.000Z");
-    const postLockExpiry = new Date("2026-07-30T02:16:00.000Z");
-    const hostileClockNow = new Date("2026-07-30T02:01:00.000Z");
-    Object.defineProperty(hostileClockNow, "getTime", {
+  it("uses separate catalog and booking snapshots for all write timestamps", async () => {
+    const catalogNow = new Date("2026-07-30T02:01:00.000Z");
+    const bookingNow = new Date("2026-07-30T02:02:00.000Z");
+    const bookingExpiry = new Date("2026-07-30T02:17:00.000Z");
+    const hostileBookingNow = new Date("2026-07-30T02:02:00.000Z");
+    Object.defineProperty(hostileBookingNow, "getTime", {
       value: () => {
         throw new Error("clock-get-time-secret");
       },
     });
-    const transactionClock: Clock = { now: vi.fn(() => hostileClockNow) };
+    const transactionClock: Clock = {
+      now: vi
+        .fn<() => Date>()
+        .mockReturnValueOnce(catalogNow)
+        .mockReturnValueOnce(hostileBookingNow),
+    };
     const record = {
       ...bookingRecord,
-      expiresAt: postLockExpiry,
-      createdAt: postLockNow,
+      expiresAt: bookingExpiry,
+      createdAt: bookingNow,
     };
     const { database, transaction } = createBookingDatabase([
       [{ locked: null }],
@@ -775,36 +811,44 @@ describe("BookingRepository", () => {
     const result = await repository.createFromQuote(repositoryInput);
     expect(result.kind).toBe("CREATED");
     if (result.kind === "CREATED") {
-      expect(result.booking.expires_at).toBe("2026-07-30T02:16:00.000Z");
+      expect(result.booking.expires_at).toBe("2026-07-30T02:17:00.000Z");
     }
     const writeValues = transaction.$queryRaw.mock.calls
       .map((call) => call[0] as { sql: string; values: unknown[] })
       .filter((query) => /^\s*(?:UPDATE|INSERT)\b/.test(query.sql))
       .flatMap((query) => query.values);
     expect(writeValues.filter((value) => value instanceof Date)).not.toContainEqual(NOW);
-    expect(writeValues).toContainEqual(postLockNow);
-    expect(writeValues).toContainEqual(postLockExpiry);
-    expect(transactionClock.now).toHaveBeenCalledTimes(1);
-    expect(writeValues).not.toContain(hostileClockNow);
+    expect(writeValues).not.toContainEqual(catalogNow);
+    expect(writeValues).toContainEqual(bookingNow);
+    expect(writeValues).toContainEqual(bookingExpiry);
+    expect(transactionClock.now).toHaveBeenCalledTimes(2);
+    expect(writeValues).not.toContain(hostileBookingNow);
   });
 
   it.each([
-    [
-      "invalid",
-      {
-        now: () => new Date(Number.NaN),
-      },
-    ],
+    ["invalid", () => new Date(Number.NaN)],
     [
       "throwing",
-      {
-        now: () => {
-          throw new Error("clock-secret");
-        },
+      () => {
+        throw new Error("clock-secret");
       },
     ],
-  ])("rolls back an %s post-lock clock and surfaces safe 503", async (_name, repositoryClock) => {
-    const { database } = createBookingDatabase([[{ locked: null }], [], [quoteRow], []]);
+  ])("rolls back an %s second clock and surfaces safe 503", async (_name, secondNow) => {
+    const repositoryClock: Clock = {
+      now: vi
+        .fn<() => Date>()
+        .mockReturnValueOnce(new Date("2026-07-30T02:04:00.000Z"))
+        .mockImplementationOnce(secondNow),
+    };
+    const { database } = createBookingDatabase([
+      [{ locked: null }],
+      [],
+      [quoteRow],
+      [],
+      [currentBase],
+      currentNightly,
+      inventoryRows,
+    ]);
     const repository = repositoryFor(database as unknown as BookingDatabase, repositoryClock);
     const service = new BookingsService(
       repository,
@@ -820,6 +864,7 @@ describe("BookingRepository", () => {
     expect(database.rollbackCount).toBe(1);
     expect(database.staged).toEqual([]);
     expect(database.committed).toEqual([]);
+    expect(repositoryClock.now).toHaveBeenCalledTimes(2);
   });
 
   it("commits a replacement quote on fingerprint change without locking inventory", async () => {
@@ -1112,7 +1157,9 @@ describe("BookingRepository", () => {
     const transactionClock: Clock = {
       now: vi
         .fn<() => Date>()
+        .mockReturnValueOnce(NOW)
         .mockReturnValueOnce(firstPostLockNow)
+        .mockReturnValueOnce(new Date("2026-07-30T02:01:30.000Z"))
         .mockReturnValueOnce(secondPostLockNow),
     };
     const repository = repositoryFor(database as unknown as BookingDatabase, transactionClock);
@@ -1138,7 +1185,7 @@ describe("BookingRepository", () => {
     expect(database.$transaction).toHaveBeenCalledTimes(2);
     expect(database.$queryRaw).toHaveBeenCalledTimes(1);
     expect(generator.next).toHaveBeenCalledTimes(2);
-    expect(transactionClock.now).toHaveBeenCalledTimes(2);
+    expect(transactionClock.now).toHaveBeenCalledTimes(4);
   });
 
   it.each([

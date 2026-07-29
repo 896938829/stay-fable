@@ -753,11 +753,6 @@ export class BookingRepository {
         ? { kind: "REPLAYED", booking: used.booking }
         : { kind: "QUOTE_ALREADY_USED" };
     }
-    const now = this.captureNow();
-    if (dateEpoch(now) >= dateEpoch(quote.expiresAt)) {
-      return { kind: "QUOTE_EXPIRED" };
-    }
-
     const baseRows = snapshotRows(
       await transaction.$queryRaw<unknown[]>(Prisma.sql`
         SELECT
@@ -797,7 +792,11 @@ export class BookingRepository {
         FOR UPDATE OF price
       `),
     );
-    const replacementExpiresAt = new Date(dateEpoch(now) + 5 * 60_000);
+    const catalogNow = this.captureNow();
+    if (dateEpoch(catalogNow) >= dateEpoch(quote.expiresAt)) {
+      return { kind: "QUOTE_EXPIRED" };
+    }
+    const replacementExpiresAt = new Date(dateEpoch(catalogNow) + 5 * 60_000);
     let current: ReturnType<typeof materializeCurrentQuote>;
     try {
       current = materializeCurrentQuote(quote, baseRows[0], priceRows, replacementExpiresAt);
@@ -904,6 +903,10 @@ export class BookingRepository {
         return { kind: "INVENTORY_UNAVAILABLE" };
       }
     }
+    const bookingNow = this.captureNow();
+    if (dateEpoch(bookingNow) >= dateEpoch(quote.expiresAt)) {
+      return { kind: "QUOTE_EXPIRED" };
+    }
 
     for (const night of quote.response.nightly_prices) {
       const updatedRows = snapshotRows(
@@ -912,7 +915,7 @@ export class BookingRepository {
           SET
             held_inventory = held_inventory + 1,
             version = version + 1,
-            updated_at = ${now}
+            updated_at = ${bookingNow}
           WHERE room_type_id = ${quote.roomTypeId}::uuid
             AND business_date = ${night.business_date}::date
             AND held_inventory + sold_inventory < total_inventory
@@ -928,7 +931,7 @@ export class BookingRepository {
       }
     }
 
-    const bookingExpiresAt = new Date(dateEpoch(now) + 15 * 60_000);
+    const bookingExpiresAt = new Date(dateEpoch(bookingNow) + 15 * 60_000);
     const bookingRows = snapshotRows(
       await transaction.$queryRaw<unknown[]>(Prisma.sql`
         INSERT INTO booking (
@@ -955,7 +958,7 @@ export class BookingRepository {
           ${quote.response.currency},
           ${input.idempotencyKey},
           ${bookingExpiresAt},
-          ${now}
+          ${bookingNow}
         )
         RETURNING
           "id"::text AS "id",
@@ -990,7 +993,7 @@ export class BookingRepository {
               ${night.business_date}::date,
               'HELD',
               ${bookingExpiresAt},
-              ${now}
+              ${bookingNow}
             )`,
           ),
         )}
