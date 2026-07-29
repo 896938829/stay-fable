@@ -15,9 +15,9 @@
 `88fccdae363ae13e177eef30a63acf7518ad798d`，对应 `/wx` tree 为
 `175a7ecd2fc90d784d48b1b17044c11379580223`。
 
-初始 `launch` 失败已由后续兼容修复越过，不能再作为当前失败点。RC 开发者工具的后续真实探针
-仍显示 Automator 交互/导航分发不可靠，且当前代码基线未重新执行完整原始 Catalog Automator
-命令。因此 Slice 2 的自动化物理交互状态仍为
+初始 `launch` 失败已由后续兼容修复越过，不能再作为当前失败点。后续探针留下的脱敏观察与
+RC 开发者工具下 Automator 交互/导航分发不可靠相符，但原始日志已清理，且当前代码基线未重新
+执行完整原始 Catalog Automator 命令。因此 Slice 2 的自动化物理交互状态仍为
 **NOT_COMPLETE/BLOCKED_BY_RC_AUTOMATOR**（未完成）；单元测试、API/页面数据探针或诊断截图
 不能代替这项用户闭环。
 
@@ -95,16 +95,25 @@ node wx/automator/slice-2-catalog.js $wxPath $evidenceParent --cli-path '<DEVTOO
 ## 兼容修复与后续探针
 
 代码基线 `247fc9c` 的完整微信测试为 439/439 通过；`wx:check`、Prettier、lint、diff check 和
-全仓 `check` 均有后续新鲜通过记录。独立 cleanup review 结果为 `Ready: Yes`、`remaining: 0`。
-这些结果验证代码与清理边界，但不等价于当前基线上的完整原始 Automator 用户闭环。
+全仓 `check` 均有后续新鲜通过记录。仓库内可复跑的 cleanup 审计入口是
+`247fc9c92c7fc6dccc363445852a230b72d0420f` 及以下命令：
 
-两项兼容问题已有单元测试和真实链路探针共同验证：
+```powershell
+corepack pnpm exec vitest run wx/tests/catalog-automator.test.js
+git show --stat --oneline 247fc9c92c7fc6dccc363445852a230b72d0420f
+git diff --check 663532e9412b73879307258c22746211a6393cb5 247fc9c92c7fc6dccc363445852a230b72d0420f -- wx/automator/slice-2-catalog.js wx/tests/catalog-automator.test.js
+```
+
+这些仓库结果支持代码与清理边界审计，但不等价于当前基线上的完整原始 Automator 用户闭环。
+
+仓库代码与单元测试支持以下兼容修复事实：
 
 - Windows cold-start 适配器绕过 Node 24 直接 spawn CLI batch 文件的 `EINVAL`；
 - fixture 与 restore 跨协议返回值通过 Automator runtime 内的 JSON 重建为 plain object，避免
   协议对象原型差异破坏深比较与恢复。
 
-在微信开发者工具 RC `2.02.2607271` 和 `miniprogram-automator@0.12.1` 的真实探针中：
+后续探针的保留观察单独记录在
+[Automator 探针台账](evidence/slice-2-catalog/automator-probe-ledger.md)。观察包括：
 
 - 正式 `property-list` 的页面 API、data 和旅店 UUID 可达；
 - shadow `Element.tap()` 返回，但未触发 property card 导航；
@@ -112,8 +121,9 @@ node wx/automator/slice-2-catalog.js $wxPath $evidenceParent --cli-path '<DEVTOO
   `openProperty()` 均未产生导航；
 - 官方 `miniprogram.navigateTo()` 使用编码后的详情页 URL 时，等待 Automator 响应超时。
 
-这些现象构成“RC legacy Automator 交互/导航分发不可靠”的可复现实证，但不足以确认完整根因，
-也不能据此宣称业务页面本身的物理点击已失败。
+由这些观察可归纳出“RC legacy Automator 交互/导航分发不可靠”的阻断分类；由于精确运行起止、
+原始日志和临时产物未保留，该归纳不是原始不可变证据，不足以确认完整根因，也不能据此宣称业务
+页面本身的物理点击已失败。
 
 WechatIDE MCP `fullMode` 的另一次探针为 **INCONCLUSIVE**：实际登录请求的 network status 为 0，
 API 无入站；即使临时将 `urlCheck` 设为 `false` 并重新打开项目，现象仍相同。该探针尚未到达
@@ -125,18 +135,24 @@ property tap，因此不能写成 MCP tap 失败。临时配置已按原文件 S
 
 ## 待执行人工或手机 UAT
 
-当 RC Automator 仍无法稳定完成物理交互时，以下流程可作为可重复的人工/手机证据补充，但在
-release 验收决定明确更新前不自动关闭 Automator 门禁：
+完整 Automator 主流程仍是 Slice 5 的主要门禁；人工开发者工具或手机上的真实物理 tap 是必须
+补充的用户证据，不自动替代 Automator。若 Slice 5 时 RC 工具仍阻断，只有包含批准人、到期日、
+缓解措施和修复跟踪的正式例外才能替代 Automator 结果；当前不存在该例外。允许开发 Slice 3
+不是发布豁免。
 
-1. 在提交 `247fc9c`、`/wx` tree `175a7ecd2fc90d784d48b1b17044c11379580223` 上固定搜索条件为
-   杭州、2026-07-30 入住、2026-08-01 离店、3 位住客。
-2. 点击搜索，进入旅店列表后点击第一家旅店。
-3. 在旅店详情点击第一个房型，再点击“选择此房型”。
-4. 核对 modal 标题为“预订功能即将开放”、正文为“报价与预订将在下一开发切片开放”，且只提供
+人工/手机补充证据按以下流程执行：
+
+1. Slice 5 执行前提供仅用于非生产环境的测试时钟/seed 基准对齐。以 Asia/Shanghai 的实际执行日
+   为 `D`，确保至少 60 天库存窗口覆盖 `D`，并包含 `D+1` 至 `D+3`；当前固定 seed 不保证在未来
+   执行日仍有效。
+2. 在待验收候选提交上固定搜索条件为杭州、`D+1` 入住、`D+3` 离店、3 位住客。
+3. 点击搜索，进入旅店列表后点击第一家旅店。
+4. 在旅店详情点击第一个房型，再点击“选择此房型”。
+5. 核对 modal 标题为“预订功能即将开放”、正文为“报价与预订将在下一开发切片开放”，且只提供
    确认操作。
-5. 关闭 modal，按房型详情 → 旅店详情 → 旅店列表 → 首页的顺序验证返回链。
-6. 记录实际 commit、`/wx` tree 和每个关键节点的脱敏截图；证据不得包含账号、令牌、精确坐标或
-   私有 AppID。
+6. 关闭 modal，按房型详情 → 旅店详情 → 旅店列表 → 首页的顺序验证返回链。
+7. 记录实际 `D`、入住日、离店日、commit、`/wx` tree 和每个关键节点的脱敏截图；证据不得包含
+   账号、令牌、精确坐标或私有 AppID。
 
 Slice 1 的真实定位拒绝仍是独立人工面板验收项：需在微信开发者工具授权设置中明确拒绝位置权限，
 再按 [Slice 1 记录](2026-07-29-slice-1-identity-search.md) 的步骤留存实际截图。本次不把它
@@ -147,4 +163,5 @@ Slice 1 的真实定位拒绝仍是独立人工面板验收项：需在微信开
 输入提交 `65af251` 的完整 WSL2 验证以退出码 0 完成，包含 10/10 Worker 观察和清理标志；仓库、
 官方编译与 WSL2 运行时基础证据均为通过。后续 `247fc9c` 代码基线的微信测试和质量门禁也有新鲜
 通过记录，但未重新执行完整原始 Automator 命令。Task 12 基础证据已完成；Slice 2 自动化物理
-交互仍为 **NOT_COMPLETE/BLOCKED_BY_RC_AUTOMATOR**（未完成），该用户闭环继续作为退出阻断。
+交互仍为 **NOT_COMPLETE/BLOCKED_BY_RC_AUTOMATOR**（未完成），该用户闭环继续作为 Slice 5
+主要门禁；当前没有替代它的正式例外。
