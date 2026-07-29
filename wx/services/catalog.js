@@ -10,10 +10,17 @@ const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 const PROPERTY_TYPES = ["HOTEL", "HOMESTAY", "FARM_STAY"];
+const CATALOG_CURSOR_PATTERN = /^[A-Za-z0-9_-]+$/;
 
 function catalogInputError() {
   const error = new Error("Invalid catalog input");
   error.code = "INVALID_CATALOG_INPUT";
+  return error;
+}
+
+function invalidResponse() {
+  const error = new Error("Invalid API response");
+  error.code = "INVALID_API_RESPONSE";
   return error;
 }
 
@@ -134,7 +141,8 @@ function createCatalogService(requestClient) {
         (Object.prototype.hasOwnProperty.call(query, "cursor") &&
           (typeof query.cursor !== "string" ||
             query.cursor.length < 1 ||
-            query.cursor.length > 256))
+            query.cursor.length > 256 ||
+            !CATALOG_CURSOR_PATTERN.test(query.cursor)))
       ) {
         throw catalogInputError();
       }
@@ -155,7 +163,17 @@ function createCatalogService(requestClient) {
       }
 
       const data = await requestClient.get(`/properties?${parts.join("&")}`);
-      return assertPropertyListResponse(data);
+      const response = assertPropertyListResponse(data);
+      const requestedPageSize = Object.prototype.hasOwnProperty.call(
+        query,
+        "page_size",
+      )
+        ? query.page_size
+        : 10;
+      if (response.items.length > requestedPageSize) {
+        throw invalidResponse();
+      }
+      return response;
     },
 
     async getProperty(propertyId, availability) {

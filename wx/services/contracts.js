@@ -9,6 +9,7 @@ const LOCAL_IMAGE_PATH_PATTERN =
 const SAFE_HTTPS_SUFFIX_PATTERN = /^[A-Za-z0-9._~!$&'()*+,;=:@/?#%-]*$/;
 const STANDARD_HOSTNAME_LABEL_PATTERN =
   /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$/;
+const CATALOG_CURSOR_PATTERN = /^[A-Za-z0-9_-]+$/;
 const PROPERTY_TYPES = ["HOTEL", "HOMESTAY", "FARM_STAY"];
 
 function invalidResponse() {
@@ -297,7 +298,8 @@ function assertPropertyListItem(value) {
     !Array.isArray(value.facility_highlights) ||
     value.facility_highlights.length > 4 ||
     !value.facility_highlights.every((item) => isBoundedString(item, 80)) ||
-    !isPositiveInteger(value.available_room_type_count)
+    !Number.isSafeInteger(value.available_room_type_count) ||
+    value.available_room_type_count <= 0
   ) {
     throw invalidResponse();
   }
@@ -322,11 +324,13 @@ function assertPropertyListResponse(value) {
     !isObject(value) ||
     !hasExactKeys(value, ["items", "next_cursor"]) ||
     !Array.isArray(value.items) ||
+    value.items.length > 20 ||
     !(
       value.next_cursor === null ||
       (typeof value.next_cursor === "string" &&
         value.next_cursor.length >= 1 &&
-        value.next_cursor.length <= 256)
+        value.next_cursor.length <= 256 &&
+        CATALOG_CURSOR_PATTERN.test(value.next_cursor))
     )
   ) {
     throw invalidResponse();

@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 
-import { catalogResourceSchema } from "../../packages/api-contracts/src/catalog.ts";
+import {
+  catalogResourceSchema,
+  propertyDetailSchema,
+  propertyListResponseSchema,
+  roomTypeDetailSchema,
+} from "../../packages/api-contracts/src/catalog.ts";
 import contracts from "../services/contracts.js";
 
 const {
@@ -296,10 +301,99 @@ describe("catalog response contracts", () => {
         next_cursor: "x".repeat(257),
       }),
     );
+    for (const cursor of ["a/b", "a\\b", "//", "\ud800"]) {
+      expect(
+        propertyListResponseSchema.safeParse({
+          items: [propertyListItem],
+          next_cursor: cursor,
+        }).success,
+      ).toBe(false);
+      expectInvalid(() =>
+        assertPropertyListResponse({
+          items: [propertyListItem],
+          next_cursor: cursor,
+        }),
+      );
+    }
+    expectInvalid(() =>
+      assertPropertyListResponse({
+        items: Array.from({ length: 21 }, () => propertyListItem),
+        next_cursor: null,
+      }),
+    );
+    expectInvalid(() =>
+      assertPropertyListResponse({
+        items: [
+          {
+            ...propertyListItem,
+            available_room_type_count: Number.MAX_SAFE_INTEGER + 1,
+          },
+        ],
+        next_cursor: null,
+      }),
+    );
     for (const missing of ["media", "facilities", "room_types"]) {
       const malformed = { ...propertyDetail };
       delete malformed[missing];
       expectInvalid(() => assertPropertyDetail(malformed));
+    }
+  });
+
+  it("matches the shared nonblank policy for every catalog display string", () => {
+    const blankListItems = [
+      { ...propertyListItem, name: " \t " },
+      { ...propertyListItem, city: { ...city, code: "\n" } },
+      { ...propertyListItem, city: { ...city, name: " " } },
+      { ...propertyListItem, short_description: "\t" },
+      { ...propertyListItem, facility_highlights: [" "] },
+    ];
+    for (const item of blankListItems) {
+      const response = { items: [item], next_cursor: null };
+      expect(propertyListResponseSchema.safeParse(response).success).toBe(false);
+      expectInvalid(() => assertPropertyListResponse(response));
+    }
+
+    const blankPropertyDetails = [
+      { ...propertyDetail, name: " " },
+      { ...propertyDetail, address: "\t" },
+      { ...propertyDetail, description: "\n" },
+      { ...propertyDetail, policies: " " },
+      { ...propertyDetail, media: [{ ...propertyDetail.media[0], alt: " " }] },
+      { ...propertyDetail, facilities: [{ ...propertyDetail.facilities[0], code: "\t" }] },
+      { ...propertyDetail, facilities: [{ ...propertyDetail.facilities[0], name: "\n" }] },
+      { ...propertyDetail, room_types: [{ ...roomTypeSummary, name: " " }] },
+      { ...propertyDetail, room_types: [{ ...roomTypeSummary, bed_type: "\t" }] },
+      { ...propertyDetail, room_types: [{ ...roomTypeSummary, policy_summary: "\n" }] },
+    ];
+    for (const detail of blankPropertyDetails) {
+      expect(propertyDetailSchema.safeParse(detail).success).toBe(false);
+      expectInvalid(() => assertPropertyDetail(detail));
+    }
+
+    const blankRoomDetails = [
+      { ...roomTypeDetail, name: " " },
+      { ...roomTypeDetail, bed_type: "\t" },
+      { ...roomTypeDetail, property: { ...roomTypeDetail.property, name: "\n" } },
+      {
+        ...roomTypeDetail,
+        property: {
+          ...roomTypeDetail.property,
+          city: { ...city, code: " " },
+        },
+      },
+      {
+        ...roomTypeDetail,
+        property: {
+          ...roomTypeDetail.property,
+          city: { ...city, name: "\t" },
+        },
+      },
+      { ...roomTypeDetail, description: "\n" },
+      { ...roomTypeDetail, booking_policy: " " },
+    ];
+    for (const detail of blankRoomDetails) {
+      expect(roomTypeDetailSchema.safeParse(detail).success).toBe(false);
+      expectInvalid(() => assertRoomTypeDetail(detail));
     }
   });
 

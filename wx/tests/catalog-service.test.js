@@ -1,8 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
 
 import catalogModule from "../services/catalog.js";
+import requestModule from "../services/request.js";
 
 const { createCatalogService } = catalogModule;
+const { createRequestClient } = requestModule;
 
 const IDS = {
   city: "10000000-0000-4000-8000-000000000001",
@@ -100,12 +102,12 @@ describe("catalog service", () => {
         ...availability,
         property_type: "HOTEL",
         page_size: 10,
-        cursor: "cursor 1/+",
+        cursor: "cursor_1-abc",
       }),
     ).resolves.toEqual(listResponse);
 
     expect(requestClient.get).toHaveBeenCalledWith(
-      "/properties?city_id=10000000-0000-4000-8000-000000000001&checkin=2026-07-30&checkout=2026-08-01&guests=2&property_type=HOTEL&page_size=10&cursor=cursor%201%2F%2B",
+      "/properties?city_id=10000000-0000-4000-8000-000000000001&checkin=2026-07-30&checkout=2026-08-01&guests=2&property_type=HOTEL&page_size=10&cursor=cursor_1-abc",
     );
   });
 
@@ -149,6 +151,10 @@ describe("catalog service", () => {
     [{ ...availability, city_id: IDS.city, page_size: 21 }],
     [{ ...availability, city_id: IDS.city, cursor: "" }],
     [{ ...availability, city_id: IDS.city, cursor: "x".repeat(257) }],
+    [{ ...availability, city_id: IDS.city, cursor: "a/b" }],
+    [{ ...availability, city_id: IDS.city, cursor: "a\\b" }],
+    [{ ...availability, city_id: IDS.city, cursor: "//" }],
+    [{ ...availability, city_id: IDS.city, cursor: "\ud800" }],
     [{ ...availability, city_id: IDS.city, token: "must-not-enter-url" }],
   ])("rejects invalid list input before requesting: %j", async (query) => {
     const { requestClient, service } = createService(listResponse);
@@ -158,6 +164,75 @@ describe("catalog service", () => {
       message: "Invalid catalog input",
     });
     expect(requestClient.get).not.toHaveBeenCalled();
+  });
+
+  it("rejects a response larger than the requested page before returning data", async () => {
+    const { requestClient, service } = createService({
+      items: [listResponse.items[0], { ...listResponse.items[0] }],
+      next_cursor: null,
+    });
+
+    await expect(
+      service.listProperties({
+        city_id: IDS.city,
+        ...availability,
+        page_size: 1,
+      }),
+    ).rejects.toMatchObject({
+      code: "INVALID_API_RESPONSE",
+      message: "Invalid API response",
+    });
+    expect(requestClient.get).toHaveBeenCalledOnce();
+  });
+
+  it("reuses a server cursor through the real request client and safe path validation", async () => {
+    const cursor = "eyJ2IjoxLCJkIjoxMCwiaWQiOiJwcm9wZXJ0eSJ9";
+    const urls = [];
+    const wxRequest = vi.fn((options) => {
+      urls.push(options.url);
+      options.success({
+        statusCode: 200,
+        data: {
+          data:
+            urls.length === 1
+              ? { ...listResponse, next_cursor: cursor }
+              : { items: [], next_cursor: null },
+          request_id: `req_server_${urls.length}`,
+        },
+      });
+    });
+    let requestId = 0;
+    const requestClient = createRequestClient({
+      wxApi: { request: wxRequest },
+      getRuntimeConfig: () => ({
+        apiBaseUrl: "https://api.example.com/api/v1",
+        envVersion: "trial",
+      }),
+      getSession: () => null,
+      refreshSession: async () => undefined,
+      reauthenticate: async () => undefined,
+      createRequestId: () => `req_client_${++requestId}`,
+    });
+    const service = createCatalogService(requestClient);
+    const firstPage = await service.listProperties({
+      city_id: IDS.city,
+      ...availability,
+      page_size: 1,
+    });
+    await expect(
+      service.listProperties({
+        city_id: IDS.city,
+        ...availability,
+        page_size: 1,
+        cursor: firstPage.next_cursor,
+      }),
+    ).resolves.toEqual({ items: [], next_cursor: null });
+
+    expect(urls).toEqual([
+      "https://api.example.com/api/v1/properties?city_id=10000000-0000-4000-8000-000000000001&checkin=2026-07-30&checkout=2026-08-01&guests=2&page_size=1",
+      `https://api.example.com/api/v1/properties?city_id=10000000-0000-4000-8000-000000000001&checkin=2026-07-30&checkout=2026-08-01&guests=2&page_size=1&cursor=${cursor}`,
+    ]);
+    expect(wxRequest).toHaveBeenCalledTimes(2);
   });
 
   it.each([
