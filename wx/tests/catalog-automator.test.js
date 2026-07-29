@@ -677,6 +677,106 @@ describe("catalog automator launch configuration", () => {
     expect(spawnProcess).toHaveBeenCalledOnce();
   });
 
+  it("does not treat repeated kill errors as child termination", async () => {
+    const child = createChildProcess({ exitOnKill: false });
+    child.kill.mockImplementation(() => {
+      child.emit(
+        "error",
+        Object.assign(new Error("C:\\private\\kill denied"), {
+          code: "EPERM",
+        }),
+      );
+      return false;
+    });
+    const allocatePort = vi.fn(async () => 45123);
+    const spawnProcess = vi.fn(() => child);
+    const launched = catalogAutomator.launchWindowsBatchMiniProgram(
+      {
+        connect: vi.fn(async () => {
+          throw new Error("endpoint unavailable");
+        }),
+      },
+      {
+        cliPath: "C:\\tools\\wechat\\cli.bat",
+        projectPath: "C:\\workspace\\wx",
+      },
+      {
+        allocatePort,
+        cleanupTimeoutMs: 5,
+        connectTimeoutMs: 5,
+        forceCleanupTimeoutMs: 5,
+        pollIntervalMs: 0,
+        resolveWindowsCliRuntime: vi.fn(async () => ({
+          cliEntryPath:
+            "C:\\tools\\wechat\\resources\\app.asar.unpacked\\js\\common\\cli\\index.js",
+          electronPath: "C:\\tools\\wechat\\微信开发者工具.exe",
+          installRoot: "C:\\tools\\wechat",
+        })),
+        sleep: vi.fn(async () => {}),
+        spawnProcess,
+      },
+    );
+
+    await expect(launched).rejects.toThrow(
+      "WeChat DevTools CLI cleanup failed",
+    );
+    await expect(launched).rejects.not.toThrow("private");
+    expect(child.kill.mock.calls).toEqual([[], ["SIGKILL"]]);
+    expect(allocatePort).toHaveBeenCalledOnce();
+    expect(spawnProcess).toHaveBeenCalledOnce();
+  });
+
+  it("bounds cleanup when spawn emits an error without exit or close", async () => {
+    const child = createChildProcess({ exitOnKill: false });
+    const spawnProcess = vi.fn(() => {
+      queueMicrotask(() => {
+        child.emit(
+          "error",
+          Object.assign(new Error("C:\\private\\spawn denied"), {
+            code: "EPERM",
+          }),
+        );
+      });
+      return child;
+    });
+    const startedAt = Date.now();
+    const launched = catalogAutomator.launchWindowsBatchMiniProgram(
+      {
+        connect: vi.fn(
+          () =>
+            new Promise(() => {
+              // The child error must wake this pending connection.
+            }),
+        ),
+      },
+      {
+        cliPath: "C:\\tools\\wechat\\cli.bat",
+        projectPath: "C:\\workspace\\wx",
+      },
+      {
+        allocatePort: vi.fn(async () => 45123),
+        cleanupTimeoutMs: 5,
+        connectTimeoutMs: 50,
+        forceCleanupTimeoutMs: 5,
+        resolveWindowsCliRuntime: vi.fn(async () => ({
+          cliEntryPath:
+            "C:\\tools\\wechat\\resources\\app.asar.unpacked\\js\\common\\cli\\index.js",
+          electronPath: "C:\\tools\\wechat\\微信开发者工具.exe",
+          installRoot: "C:\\tools\\wechat",
+        })),
+        spawnProcess,
+      },
+    );
+
+    await expect(launched).rejects.toThrow(
+      "WeChat DevTools CLI cleanup failed",
+    );
+    await expect(launched).rejects.not.toThrow("private");
+    expect(Date.now() - startedAt).toBeLessThan(100);
+    expect(child.kill.mock.calls).toEqual([[], ["SIGKILL"]]);
+    expect(spawnProcess).toHaveBeenCalledOnce();
+  });
+
   it("retries one early nonzero CLI exit only after the first child is terminal", async () => {
     const events = [];
     const firstChild = createChildProcess();

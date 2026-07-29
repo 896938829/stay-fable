@@ -396,6 +396,10 @@ async function launchWindowsBatchMiniProgram(
         launchError = new Error("catalog automation launch cancelled");
         break;
       }
+      if (outcome.kind === "child-error") {
+        launchError = childLaunchError(state);
+        break;
+      }
       if (outcome.kind === "child-exit") {
         if (state.exitCode === 0 && state.errorCode === undefined) {
           launchError = new Error(
@@ -440,11 +444,15 @@ async function launchWindowsBatchMiniProgram(
 }
 
 function observeChildProcess(child) {
+  let settleFailure;
   let settleTerminal;
   const state = {
     errorCode: undefined,
     exitCode: undefined,
     exited: false,
+    failure: new Promise((resolve) => {
+      settleFailure = resolve;
+    }),
     terminal: new Promise((resolve) => {
       settleTerminal = resolve;
     }),
@@ -455,10 +463,14 @@ function observeChildProcess(child) {
       settleTerminal();
     }
   };
-  child.once("error", (error) => {
+  let failureObserved = false;
+  child.on("error", (error) => {
     state.errorCode =
       typeof error?.code === "string" ? error.code : "UNKNOWN";
-    settle();
+    if (!failureObserved) {
+      failureObserved = true;
+      settleFailure();
+    }
   });
   child.once("exit", (code) => {
     state.exitCode = code;
@@ -521,6 +533,7 @@ async function connectWithinDeadline(
     observedConnection,
     timeout,
     aborted,
+    state.failure.then(() => ({ kind: "child-error" })),
     state.terminal.then(() => ({ kind: "child-exit" })),
   ]);
   if (
@@ -573,6 +586,7 @@ async function waitAfterConnect(wait, milliseconds, signal, state) {
   const outcome = await Promise.race([
     Promise.resolve().then(() => wait(milliseconds)).then(() => "ready"),
     aborted,
+    state.failure.then(() => "child-error"),
     state.terminal.then(() =>
       state.exitCode === 0 && state.errorCode === undefined
         ? new Promise(() => {})
