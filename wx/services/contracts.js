@@ -3,6 +3,10 @@
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const REQUEST_ID_PATTERN = /^[A-Za-z0-9._:-]{1,128}$/;
+const CATALOG_DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
+const LOCAL_IMAGE_PATH_PATTERN =
+  /^\/images\/[A-Za-z0-9._-]+(?:\/[A-Za-z0-9._-]+)*$/;
+const PROPERTY_TYPES = ["HOTEL", "HOMESTAY", "FARM_STAY"];
 
 function invalidResponse() {
   const error = new Error("Invalid API response");
@@ -102,6 +106,391 @@ function hasOnlyKeys(value, allowed) {
   return Object.keys(value).every((key) => allowed.includes(key));
 }
 
+function hasExactKeys(value, allowed) {
+  return Object.keys(value).length === allowed.length && hasOnlyKeys(value, allowed);
+}
+
+function isBoundedString(value, maximum) {
+  return isNonemptyString(value) && value.length <= maximum;
+}
+
+function isCatalogDate(value) {
+  if (typeof value !== "string" || !CATALOG_DATE_PATTERN.test(value)) {
+    return false;
+  }
+  const parts = value.split("-");
+  const year = Number(parts[0]);
+  const month = Number(parts[1]);
+  const day = Number(parts[2]);
+  const isLeapYear = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+  const daysInMonth = [
+    31,
+    isLeapYear ? 29 : 28,
+    31,
+    30,
+    31,
+    30,
+    31,
+    31,
+    30,
+    31,
+    30,
+    31,
+  ];
+  return (
+    year > 0 &&
+    month >= 1 &&
+    month <= 12 &&
+    day >= 1 &&
+    day <= daysInMonth[month - 1]
+  );
+}
+
+function isCatalogResource(value) {
+  if (typeof value !== "string" || value.length > 500) {
+    return false;
+  }
+  if (value.startsWith("/images/")) {
+    return (
+      LOCAL_IMAGE_PATH_PATTERN.test(value) &&
+      value
+        .split("/")
+        .slice(2)
+        .every((segment) => segment !== "." && segment !== "..")
+    );
+  }
+  return /^https:\/\/[^/?#@\s\\]+(?:[/?#][^\s\\]*)?$/.test(value);
+}
+
+function assertExactCity(value) {
+  if (
+    !isObject(value) ||
+    !hasExactKeys(value, ["id", "code", "name"]) ||
+    typeof value.id !== "string" ||
+    !UUID_PATTERN.test(value.id) ||
+    !isNonemptyString(value.code) ||
+    !isNonemptyString(value.name)
+  ) {
+    throw invalidResponse();
+  }
+  return {
+    id: value.id,
+    code: value.code,
+    name: value.name,
+  };
+}
+
+function assertPropertyType(value) {
+  if (!PROPERTY_TYPES.includes(value)) {
+    throw invalidResponse();
+  }
+  return value;
+}
+
+function assertCurrency(value) {
+  if (value !== "CNY") {
+    throw invalidResponse();
+  }
+  return value;
+}
+
+function assertMoneyCents(value) {
+  if (!Number.isSafeInteger(value) || value < 0) {
+    throw invalidResponse();
+  }
+  return value;
+}
+
+function assertResource(value) {
+  if (!isCatalogResource(value)) {
+    throw invalidResponse();
+  }
+  return value;
+}
+
+function assertPropertyListItem(value) {
+  const keys = [
+    "id",
+    "type",
+    "name",
+    "city",
+    "cover_url",
+    "short_description",
+    "facility_highlights",
+    "from_nightly_price_cents",
+    "currency",
+    "available_room_type_count",
+  ];
+  if (
+    !isObject(value) ||
+    !hasExactKeys(value, keys) ||
+    typeof value.id !== "string" ||
+    !UUID_PATTERN.test(value.id) ||
+    !isBoundedString(value.name, 120) ||
+    !isBoundedString(value.short_description, 240) ||
+    !Array.isArray(value.facility_highlights) ||
+    value.facility_highlights.length > 4 ||
+    !value.facility_highlights.every((item) => isBoundedString(item, 80)) ||
+    !isPositiveInteger(value.available_room_type_count)
+  ) {
+    throw invalidResponse();
+  }
+  return {
+    id: value.id,
+    type: assertPropertyType(value.type),
+    name: value.name,
+    city: assertExactCity(value.city),
+    cover_url: assertResource(value.cover_url),
+    short_description: value.short_description,
+    facility_highlights: value.facility_highlights.slice(),
+    from_nightly_price_cents: assertMoneyCents(
+      value.from_nightly_price_cents,
+    ),
+    currency: assertCurrency(value.currency),
+    available_room_type_count: value.available_room_type_count,
+  };
+}
+
+function assertPropertyListResponse(value) {
+  if (
+    !isObject(value) ||
+    !hasExactKeys(value, ["items", "next_cursor"]) ||
+    !Array.isArray(value.items) ||
+    !(
+      value.next_cursor === null ||
+      (typeof value.next_cursor === "string" &&
+        value.next_cursor.length >= 1 &&
+        value.next_cursor.length <= 256)
+    )
+  ) {
+    throw invalidResponse();
+  }
+  return {
+    items: value.items.map(assertPropertyListItem),
+    next_cursor: value.next_cursor,
+  };
+}
+
+function assertRoomTypeSummary(value) {
+  const keys = [
+    "id",
+    "name",
+    "bed_type",
+    "area_sqm",
+    "max_guests",
+    "cover_url",
+    "policy_summary",
+    "from_nightly_price_cents",
+    "currency",
+  ];
+  if (
+    !isObject(value) ||
+    !hasExactKeys(value, keys) ||
+    typeof value.id !== "string" ||
+    !UUID_PATTERN.test(value.id) ||
+    !isBoundedString(value.name, 120) ||
+    !isBoundedString(value.bed_type, 120) ||
+    typeof value.area_sqm !== "number" ||
+    !Number.isFinite(value.area_sqm) ||
+    value.area_sqm <= 0 ||
+    !Number.isInteger(value.max_guests) ||
+    value.max_guests < 1 ||
+    value.max_guests > 10 ||
+    !isBoundedString(value.policy_summary, 500)
+  ) {
+    throw invalidResponse();
+  }
+  return {
+    id: value.id,
+    name: value.name,
+    bed_type: value.bed_type,
+    area_sqm: value.area_sqm,
+    max_guests: value.max_guests,
+    cover_url: assertResource(value.cover_url),
+    policy_summary: value.policy_summary,
+    from_nightly_price_cents: assertMoneyCents(
+      value.from_nightly_price_cents,
+    ),
+    currency: assertCurrency(value.currency),
+  };
+}
+
+function assertMedia(value) {
+  if (
+    !isObject(value) ||
+    !hasExactKeys(value, ["type", "url", "alt"]) ||
+    value.type !== "IMAGE" ||
+    !isBoundedString(value.alt, 120)
+  ) {
+    throw invalidResponse();
+  }
+  return {
+    type: value.type,
+    url: assertResource(value.url),
+    alt: value.alt,
+  };
+}
+
+function assertFacility(value) {
+  if (
+    !isObject(value) ||
+    !hasExactKeys(value, ["code", "name"]) ||
+    !isNonemptyString(value.code) ||
+    !isNonemptyString(value.name)
+  ) {
+    throw invalidResponse();
+  }
+  return {
+    code: value.code,
+    name: value.name,
+  };
+}
+
+function assertPropertyDetail(value) {
+  const keys = [
+    "id",
+    "type",
+    "name",
+    "city",
+    "address",
+    "description",
+    "policies",
+    "cover_url",
+    "media",
+    "facilities",
+    "room_types",
+  ];
+  if (
+    !isObject(value) ||
+    !hasExactKeys(value, keys) ||
+    typeof value.id !== "string" ||
+    !UUID_PATTERN.test(value.id) ||
+    !isBoundedString(value.name, 120) ||
+    !isBoundedString(value.address, 240) ||
+    !isBoundedString(value.description, 2000) ||
+    !isBoundedString(value.policies, 2000) ||
+    !Array.isArray(value.media) ||
+    value.media.length > 20 ||
+    !Array.isArray(value.facilities) ||
+    value.facilities.length > 50 ||
+    !Array.isArray(value.room_types) ||
+    value.room_types.length < 1
+  ) {
+    throw invalidResponse();
+  }
+  return {
+    id: value.id,
+    type: assertPropertyType(value.type),
+    name: value.name,
+    city: assertExactCity(value.city),
+    address: value.address,
+    description: value.description,
+    policies: value.policies,
+    cover_url: assertResource(value.cover_url),
+    media: value.media.map(assertMedia),
+    facilities: value.facilities.map(assertFacility),
+    room_types: value.room_types.map(assertRoomTypeSummary),
+  };
+}
+
+function assertNightlyPrice(value) {
+  if (
+    !isObject(value) ||
+    !hasExactKeys(value, [
+      "business_date",
+      "sale_price_cents",
+      "rack_price_cents",
+      "currency",
+    ]) ||
+    !isCatalogDate(value.business_date)
+  ) {
+    throw invalidResponse();
+  }
+  return {
+    business_date: value.business_date,
+    sale_price_cents: assertMoneyCents(value.sale_price_cents),
+    rack_price_cents: assertMoneyCents(value.rack_price_cents),
+    currency: assertCurrency(value.currency),
+  };
+}
+
+function assertRoomTypeProperty(value) {
+  if (
+    !isObject(value) ||
+    !hasExactKeys(value, ["id", "type", "name", "city"]) ||
+    typeof value.id !== "string" ||
+    !UUID_PATTERN.test(value.id) ||
+    !isBoundedString(value.name, 120)
+  ) {
+    throw invalidResponse();
+  }
+  return {
+    id: value.id,
+    type: assertPropertyType(value.type),
+    name: value.name,
+    city: assertExactCity(value.city),
+  };
+}
+
+function assertRoomTypeDetail(value) {
+  const keys = [
+    "id",
+    "name",
+    "bed_type",
+    "area_sqm",
+    "max_guests",
+    "cover_url",
+    "currency",
+    "property",
+    "description",
+    "booking_policy",
+    "nightly_prices",
+  ];
+  if (
+    !isObject(value) ||
+    !hasExactKeys(value, keys) ||
+    typeof value.id !== "string" ||
+    !UUID_PATTERN.test(value.id) ||
+    !isBoundedString(value.name, 120) ||
+    !isBoundedString(value.bed_type, 120) ||
+    typeof value.area_sqm !== "number" ||
+    !Number.isFinite(value.area_sqm) ||
+    value.area_sqm <= 0 ||
+    !Number.isInteger(value.max_guests) ||
+    value.max_guests < 1 ||
+    value.max_guests > 10 ||
+    !isBoundedString(value.description, 2000) ||
+    !isBoundedString(value.booking_policy, 2000) ||
+    !Array.isArray(value.nightly_prices) ||
+    value.nightly_prices.length < 1 ||
+    value.nightly_prices.length > 30
+  ) {
+    throw invalidResponse();
+  }
+  const nightlyPrices = value.nightly_prices.map(assertNightlyPrice);
+  for (let index = 1; index < nightlyPrices.length; index += 1) {
+    if (
+      nightlyPrices[index - 1].business_date >=
+      nightlyPrices[index].business_date
+    ) {
+      throw invalidResponse();
+    }
+  }
+  return {
+    id: value.id,
+    name: value.name,
+    bed_type: value.bed_type,
+    area_sqm: value.area_sqm,
+    max_guests: value.max_guests,
+    cover_url: assertResource(value.cover_url),
+    currency: assertCurrency(value.currency),
+    property: assertRoomTypeProperty(value.property),
+    description: value.description,
+    booking_policy: value.booking_policy,
+    nightly_prices: nightlyPrices,
+  };
+}
+
 function assertApiErrorResponse(value) {
   if (
     !isObject(value) ||
@@ -122,5 +511,8 @@ module.exports = {
   assertAuthSession,
   assertCity,
   assertEnvelope,
+  assertPropertyDetail,
+  assertPropertyListResponse,
   assertResolvedLocation,
+  assertRoomTypeDetail,
 };
