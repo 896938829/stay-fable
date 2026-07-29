@@ -225,7 +225,9 @@ describe("catalog automator deterministic search fixture", () => {
 
     expect(events).toEqual([
       "evaluate",
+      "evaluate",
       "reLaunch:/pages/home/home",
+      "evaluate",
       "evaluate",
       "reLaunch:/pages/home/home",
     ]);
@@ -252,7 +254,7 @@ describe("catalog automator deterministic search fixture", () => {
       catalogAutomator.prepareCatalogHome(miniprogram, context, {
         timeoutMs: 1,
       }),
-    ).rejects.toThrow("establish catalog fixture timed out");
+    ).rejects.toThrow("capture catalog search timed out");
     evaluation.resolve(catalogAutomator.CATALOG_SEARCH_FIXTURE);
     await new Promise((resolve) => setTimeout(resolve, 10));
 
@@ -353,6 +355,21 @@ describe("catalog automator page polling", () => {
 });
 
 describe("catalog automator runtime UI evidence", () => {
+  const expectedBookingNotice = {
+    title: "预订功能即将开放",
+    content: "报价与预订将在下一开发切片开放",
+    showCancel: false,
+  };
+
+  function createModalMiniProgram(confirmModal = vi.fn(async () => ({}))) {
+    return {
+      evaluate: vi.fn(async (callback, ...arguments_) =>
+        callback(...arguments_),
+      ),
+      native: vi.fn(() => ({ confirmModal })),
+    };
+  }
+
   it("polls until the nightly DOM count exactly matches page data", async () => {
     const row = {};
     const page = {
@@ -376,22 +393,108 @@ describe("catalog automator runtime UI evidence", () => {
   });
 
   it("retries the native modal capability until confirm succeeds", async () => {
+    const originalShowModal = vi.fn(() => Promise.resolve({}));
+    vi.stubGlobal("wx", { showModal: originalShowModal });
     const confirmModal = vi
       .fn()
       .mockRejectedValueOnce(new Error("modal not ready"))
       .mockRejectedValueOnce(new Error("modal not ready"))
       .mockResolvedValue({ confirmed: true });
-    const native = vi.fn(() => ({ confirmModal }));
+    const miniprogram = createModalMiniProgram(confirmModal);
+    const originalReference = globalThis.wx.showModal;
+    await catalogAutomator.installBookingModalProbe(miniprogram);
+    globalThis.wx.showModal(expectedBookingNotice);
 
     await expect(
       catalogAutomator.confirmBookingModal(
-        { native },
+        miniprogram,
         catalogAutomator.createCancellationContext(),
         { pollIntervalMs: 0, timeoutMs: 100 },
       ),
     ).resolves.toEqual({ confirmed: true });
-    expect(native).toHaveBeenCalledTimes(3);
+    expect(miniprogram.native).toHaveBeenCalledTimes(3);
     expect(confirmModal).toHaveBeenCalledTimes(3);
+    expect(originalShowModal).toHaveBeenCalledWith(expectedBookingNotice);
+
+    await catalogAutomator.restoreBookingModalProbe(miniprogram);
+    expect(globalThis.wx.showModal).toBe(originalReference);
+  });
+
+  it.each([
+    {
+      title: "任意弹窗",
+      content: expectedBookingNotice.content,
+      showCancel: false,
+    },
+    {
+      title: expectedBookingNotice.title,
+      content: "静态提示不能替代真实预订弹窗",
+      showCancel: false,
+    },
+  ])("rejects a modal with the wrong safe fields: %#", async (notice) => {
+    const originalShowModal = vi.fn(() => Promise.resolve({}));
+    vi.stubGlobal("wx", { showModal: originalShowModal });
+    const confirmModal = vi.fn(async () => ({}));
+    const miniprogram = createModalMiniProgram(confirmModal);
+    await catalogAutomator.installBookingModalProbe(miniprogram);
+    globalThis.wx.showModal(notice);
+
+    await expect(
+      catalogAutomator.confirmBookingModal(
+        miniprogram,
+        catalogAutomator.createCancellationContext(),
+        { pollIntervalMs: 0, timeoutMs: 5 },
+      ),
+    ).rejects.toThrow("booking modal probe timed out");
+    expect(confirmModal).not.toHaveBeenCalled();
+
+    await catalogAutomator.restoreBookingModalProbe(miniprogram);
+  });
+
+  it("rejects native confirmation when no real modal probe was observed", async () => {
+    const originalShowModal = vi.fn(() => Promise.resolve({}));
+    vi.stubGlobal("wx", { showModal: originalShowModal });
+    const confirmModal = vi.fn(async () => ({}));
+    const miniprogram = createModalMiniProgram(confirmModal);
+    await catalogAutomator.installBookingModalProbe(miniprogram);
+
+    await expect(
+      catalogAutomator.confirmBookingModal(
+        miniprogram,
+        catalogAutomator.createCancellationContext(),
+        { pollIntervalMs: 0, timeoutMs: 5 },
+      ),
+    ).rejects.toThrow("booking modal probe timed out");
+    expect(confirmModal).not.toHaveBeenCalled();
+
+    await catalogAutomator.restoreBookingModalProbe(miniprogram);
+  });
+
+  it("restores showModal when probe installation completes remotely but its response is late", async () => {
+    const originalShowModal = vi.fn(() => Promise.resolve({}));
+    vi.stubGlobal("wx", { showModal: originalShowModal });
+    const installResponse = deferred();
+    let evaluateCalls = 0;
+    const miniprogram = {
+      evaluate: vi.fn((callback, ...arguments_) => {
+        evaluateCalls += 1;
+        const result = callback(...arguments_);
+        return evaluateCalls === 1 ? installResponse.promise : result;
+      }),
+    };
+    const operation = vi.fn(async () => {});
+
+    await expect(
+      catalogAutomator.withBookingModalProbe(
+        miniprogram,
+        catalogAutomator.createCancellationContext(),
+        operation,
+        { timeoutMs: 1 },
+      ),
+    ).rejects.toThrow("install booking modal probe timed out");
+    expect(operation).not.toHaveBeenCalled();
+    expect(globalThis.wx.showModal).toBe(originalShowModal);
+    installResponse.resolve(true);
   });
 });
 
@@ -516,6 +619,49 @@ describe("catalog automator bounded and safe failures", () => {
     expect(await readdir(root)).toEqual(["01-home.tree.wxml"]);
   });
 
+  it("preserves screenshot timeout while retrying busy late-temp cleanup", async () => {
+    const root = await mkdtemp(
+      path.join(tmpdir(), "stay-fable-catalog-busy-evidence-"),
+    );
+    temporaryDirectories.push(root);
+    const screenshot = deferred();
+    const removeFile = vi
+      .fn()
+      .mockRejectedValueOnce(
+        Object.assign(new Error("busy private temp"), { code: "EBUSY" }),
+      )
+      .mockResolvedValue(undefined);
+    const miniprogram = {
+      screenshot: vi.fn(() => screenshot.promise),
+    };
+    const page = {
+      $: vi.fn(async () => ({
+        outerWxml: vi.fn(async () => '<view class="home">安全页面</view>'),
+      })),
+    };
+    const context = catalogAutomator.createCancellationContext();
+
+    const capture = catalogAutomator.capturePage(
+      miniprogram,
+      page,
+      ".home",
+      root,
+      "01-home",
+      [],
+      context,
+      {
+        evidenceParent: root,
+        removeFile,
+        timeoutMs: 1,
+      },
+    );
+    await expect(capture).rejects.toThrow("01-home screenshot timed out");
+    screenshot.resolve();
+    await vi.waitFor(() =>
+      expect(removeFile.mock.calls.length).toBeGreaterThanOrEqual(2),
+    );
+  });
+
   it("converts malicious preflight paths to fixed safe CLI output", async () => {
     const root = await mkdtemp(
       path.join(tmpdir(), "stay-fable-catalog-preflight-"),
@@ -544,6 +690,60 @@ describe("catalog automator bounded and safe failures", () => {
     expect(result.stderr).not.toMatch(
       /access_token|Bearer|private|private-project|private-evidence/i,
     );
+  });
+
+  it("validates launch options before creating a run directory", async () => {
+    const root = await mkdtemp(
+      path.join(tmpdir(), "stay-fable-catalog-options-"),
+    );
+    temporaryDirectories.push(root);
+    const projectPath = path.join(root, "wx");
+    const evidencePath = path.join(root, "evidence");
+    await mkdir(projectPath);
+    await mkdir(evidencePath);
+
+    await expect(
+      catalogAutomator.run(
+        projectPath,
+        evidencePath,
+        "relative/private-cli",
+        { environment: {} },
+      ),
+    ).rejects.toMatchObject({
+      message: "catalog automation failed",
+      step: "arguments",
+      evidencePaths: [],
+    });
+    expect(await readdir(evidencePath)).toEqual([]);
+  });
+
+  it("removes an empty unique run directory when launch fails", async () => {
+    const root = await mkdtemp(
+      path.join(tmpdir(), "stay-fable-catalog-launch-"),
+    );
+    temporaryDirectories.push(root);
+    const projectPath = path.join(root, "wx");
+    const evidencePath = path.join(root, "evidence");
+    await mkdir(projectPath);
+    const automatorApi = {
+      launch: vi.fn(async () => {
+        throw new Error("private launch failure");
+      }),
+    };
+
+    await expect(
+      catalogAutomator.run(
+        projectPath,
+        evidencePath,
+        path.join(root, "wechat-cli.bat"),
+        { automatorApi, environment: {} },
+      ),
+    ).rejects.toMatchObject({
+      message: "catalog automation failed",
+      step: "launch",
+      evidencePaths: [],
+    });
+    expect(await readdir(evidencePath)).toEqual([]);
   });
 
   it("sanitizes unexpected CLI failure fields before serialization", () => {
@@ -804,4 +1004,99 @@ describe("catalog automator isolated runs and search restoration", () => {
     expect(miniprogram.store.clear).toHaveBeenCalledOnce();
     expect(miniprogram.readSearch()).toBeUndefined();
   });
+
+  for (const mode of ["set-before-response", "set-after-first-restore"]) {
+    it(`restores the original search when fixture apply is late: ${mode}`, async () => {
+      const { evidencePath, projectPath, root } = await createRunPaths();
+      const original = {
+        city: null,
+        checkin: "2026-08-06",
+        checkout: "2026-08-07",
+        guests: 5,
+      };
+      let search = structuredClone(original);
+      const events = [];
+      const store = {
+        clear: vi.fn(() => {
+          search = undefined;
+        }),
+        get: vi.fn(() => structuredClone(search)),
+        set: vi.fn((value) => {
+          search = structuredClone(value);
+          return structuredClone(search);
+        }),
+      };
+      vi.stubGlobal("getApp", () => ({ globalData: { searchStore: store } }));
+      const miniProgram = {
+        close: vi.fn(async () => {
+          events.push("close");
+        }),
+        currentPage: vi.fn(async () => null),
+        evaluate: vi.fn((callback, ...arguments_) => {
+          const source = callback.toString();
+          if (source.includes("store.set(value)")) {
+            return new Promise((resolve) => {
+              const apply = () => {
+                events.push("apply-set");
+                const result = callback(...arguments_);
+                setTimeout(() => {
+                  events.push("apply-response");
+                  resolve(result);
+                }, mode === "set-before-response" ? 15 : 0);
+              };
+              if (mode === "set-before-response") {
+                apply();
+              } else {
+                setTimeout(apply, 15);
+              }
+            });
+          }
+          if (source.includes("snapshot.hasValue")) {
+            events.push("restore");
+          } else {
+            events.push("snapshot");
+          }
+          return Promise.resolve(callback(...arguments_));
+        }),
+        reLaunch: vi.fn(async () => {}),
+        readSearch: () => structuredClone(search),
+      };
+      const automatorApi = { launch: vi.fn(async () => miniProgram) };
+
+      await expect(
+        catalogAutomator.run(
+          projectPath,
+          evidencePath,
+          path.join(root, "wechat-cli.bat"),
+          {
+            automatorApi,
+            environment: {},
+            timeouts: {
+              actionMs: 2,
+              lateSettleMs: 100,
+            },
+            workflow: vi.fn(async () => {
+              throw new Error("workflow must not start");
+            }),
+          },
+        ),
+      ).rejects.toMatchObject({
+        message: "catalog automation failed",
+        step: "fixture",
+      });
+
+      expect(miniProgram.readSearch()).toEqual(original);
+      expect(events.filter((event) => event === "snapshot")).toHaveLength(1);
+      expect(events.filter((event) => event === "restore").length).toBeGreaterThanOrEqual(
+        2,
+      );
+      expect(events.indexOf("restore")).toBeLessThan(
+        events.indexOf("apply-response"),
+      );
+      expect(events.lastIndexOf("restore")).toBeGreaterThan(
+        events.indexOf("apply-response"),
+      );
+      expect(events.at(-1)).toBe("close");
+    });
+  }
 });

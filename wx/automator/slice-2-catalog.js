@@ -8,6 +8,7 @@ const {
   mkdtemp,
   realpath,
   rm,
+  rmdir,
   writeFile,
 } = require("node:fs/promises");
 const path = require("node:path");
@@ -27,6 +28,12 @@ const NIGHTLY_PRICE_SELECTOR = ".nightly-list__item";
 const BOOKING_HINT_SELECTOR = ".detail-section__hint";
 const ROOM_SELECTION_SELECTOR = ".selection-bar__action";
 const HOMESTAY_TYPE = "HOMESTAY";
+const BOOKING_NOTICE = Object.freeze({
+  title: "预订功能即将开放",
+  content: "报价与预订将在下一开发切片开放",
+  showCancel: false,
+});
+const BOOKING_MODAL_PROBE_KEY = "__stayFableCatalogBookingModalProbe";
 const ACTION_TIMEOUT_MS = 10_000;
 const WORKFLOW_TIMEOUT_MS = 120_000;
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
@@ -285,46 +292,94 @@ function formatCatalogFailure(error) {
 async function prepareCatalogHome(miniprogram, context, options = {}) {
   const cancellation = context || createCancellationContext();
   const timeoutMs = options.timeoutMs ?? ACTION_TIMEOUT_MS;
-  cancellation.throwIfAborted();
-  const prepared = await withTimeout(
-    "establish catalog fixture",
-    () =>
-      miniprogram.evaluate((value) => {
-        const store = getApp().globalData.searchStore;
-        const original =
-          typeof store.get === "function" ? store.get() : undefined;
-        const stored = store.set(value);
-        return {
-          fixture: {
-            city: {
-              id: stored.city.id,
-              code: stored.city.code,
-              name: stored.city.name,
-            },
-            checkin: stored.checkin,
-            checkout: stored.checkout,
-            guests: stored.guests,
-          },
-          original: {
-            hasValue: original !== undefined && original !== null,
-            value: original,
-          },
-        };
-      }, CATALOG_SEARCH_FIXTURE),
-    timeoutMs,
+  const original = await captureCatalogSearch(
+    miniprogram,
     cancellation,
+    timeoutMs,
   );
-  cancellation.throwIfAborted();
-  assert.deepEqual(prepared.fixture, CATALOG_SEARCH_FIXTURE);
-  options.onOriginal?.(prepared.original);
-  await withTimeout(
+  options.onOriginal?.(original);
+  const apply = startCatalogFixtureApply(miniprogram);
+  options.onApply?.(apply);
+  await waitForCatalogFixtureApply(apply, cancellation, timeoutMs);
+  await runInteraction(
+    cancellation,
     "open home",
     () => miniprogram.reLaunch("/pages/home/home"),
     timeoutMs,
-    cancellation,
   );
-  cancellation.throwIfAborted();
-  return prepared.original;
+  return original;
+}
+
+async function captureCatalogSearch(
+  miniprogram,
+  context,
+  timeoutMs = ACTION_TIMEOUT_MS,
+) {
+  const cancellation = context || createCancellationContext();
+  return runInteraction(
+    cancellation,
+    "capture catalog search",
+    () =>
+      miniprogram.evaluate(() => {
+        const store = getApp().globalData.searchStore;
+        const original =
+          typeof store.get === "function" ? store.get() : undefined;
+        return {
+          hasValue: original !== undefined && original !== null,
+          value: original,
+        };
+      }),
+    timeoutMs,
+  );
+}
+
+function startCatalogFixtureApply(miniprogram) {
+  let isSettled = false;
+  const settled = Promise.resolve()
+    .then(() =>
+      miniprogram.evaluate((value) => {
+        const store = getApp().globalData.searchStore;
+        const stored = store.set(value);
+        return {
+          city: {
+            id: stored.city.id,
+            code: stored.city.code,
+            name: stored.city.name,
+          },
+          checkin: stored.checkin,
+          checkout: stored.checkout,
+          guests: stored.guests,
+        };
+      }, CATALOG_SEARCH_FIXTURE),
+    )
+    .then((fixture) => {
+      assert.deepEqual(fixture, CATALOG_SEARCH_FIXTURE);
+      return fixture;
+    })
+    .finally(() => {
+      isSettled = true;
+    });
+  settled.catch(() => undefined);
+  return {
+    get isSettled() {
+      return isSettled;
+    },
+    settled,
+  };
+}
+
+async function waitForCatalogFixtureApply(
+  apply,
+  context,
+  timeoutMs = ACTION_TIMEOUT_MS,
+) {
+  const cancellation = context || createCancellationContext();
+  return runInteraction(
+    cancellation,
+    "apply catalog fixture",
+    () => apply.settled,
+    timeoutMs,
+  );
 }
 
 async function restoreCatalogSearch(
@@ -464,8 +519,161 @@ function waitForElementCount(
   );
 }
 
+async function installBookingModalProbe(
+  miniprogram,
+  context,
+  timeoutMs = ACTION_TIMEOUT_MS,
+) {
+  const cancellation = context || createCancellationContext();
+  const installed = await runInteraction(
+    cancellation,
+    "install booking modal probe",
+    () =>
+      miniprogram.evaluate((probeKey) => {
+        const runtime = globalThis;
+        const wxApi = runtime.wx;
+        if (!wxApi || typeof wxApi.showModal !== "function") {
+          return false;
+        }
+        const prior = runtime[probeKey];
+        if (
+          prior &&
+          typeof prior.original === "function" &&
+          wxApi.showModal === prior.wrapped
+        ) {
+          wxApi.showModal = prior.original;
+        }
+        const original = wxApi.showModal;
+        const probe = {
+          latest: null,
+          original,
+          wrapped: null,
+        };
+        const wrapped = function (options) {
+          const candidate =
+            options && typeof options === "object" ? options : {};
+          probe.latest = {
+            title:
+              typeof candidate.title === "string" ? candidate.title : "",
+            content:
+              typeof candidate.content === "string"
+                ? candidate.content
+                : "",
+            showCancel: candidate.showCancel === true,
+          };
+          return Reflect.apply(original, this, arguments);
+        };
+        probe.wrapped = wrapped;
+        runtime[probeKey] = probe;
+        wxApi.showModal = wrapped;
+        return true;
+      }, BOOKING_MODAL_PROBE_KEY),
+    timeoutMs,
+  );
+  if (installed !== true) {
+    throw new Error("booking modal probe unavailable");
+  }
+}
+
+function readBookingModalProbe(
+  miniprogram,
+  context,
+  timeoutMs = ACTION_TIMEOUT_MS,
+) {
+  const cancellation = context || createCancellationContext();
+  return runInteraction(
+    cancellation,
+    "read booking modal probe",
+    () =>
+      miniprogram.evaluate((probeKey) => {
+        const probe = globalThis[probeKey];
+        return probe && probe.latest ? probe.latest : null;
+      }, BOOKING_MODAL_PROBE_KEY),
+    timeoutMs,
+  );
+}
+
+async function restoreBookingModalProbe(
+  miniprogram,
+  context,
+  timeoutMs = ACTION_TIMEOUT_MS,
+) {
+  const cancellation = context || createCancellationContext();
+  await runInteraction(
+    cancellation,
+    "restore booking modal probe",
+    () =>
+      miniprogram.evaluate((probeKey) => {
+        const runtime = globalThis;
+        const probe = runtime[probeKey];
+        if (!probe) {
+          return true;
+        }
+        if (
+          runtime.wx &&
+          runtime.wx.showModal === probe.wrapped &&
+          typeof probe.original === "function"
+        ) {
+          runtime.wx.showModal = probe.original;
+        }
+        delete runtime[probeKey];
+        return true;
+      }, BOOKING_MODAL_PROBE_KEY),
+    timeoutMs,
+  );
+}
+
+async function withBookingModalProbe(
+  miniprogram,
+  context,
+  operation,
+  options = {},
+) {
+  let primaryFailure = null;
+  try {
+    await installBookingModalProbe(
+      miniprogram,
+      context,
+      options.timeoutMs ?? ACTION_TIMEOUT_MS,
+    );
+    return await operation();
+  } catch (error) {
+    primaryFailure = error;
+    throw error;
+  } finally {
+    try {
+      await restoreBookingModalProbe(
+        miniprogram,
+        createCancellationContext(),
+        options.timeoutMs ?? ACTION_TIMEOUT_MS,
+      );
+    } catch (error) {
+      if (primaryFailure === null) {
+        throw error;
+      }
+    }
+  }
+}
+
 function confirmBookingModal(miniprogram, context, options = {}) {
+  const cancellation = context || createCancellationContext();
   return pollUntil(
+    "booking modal probe",
+    () =>
+      readBookingModalProbe(
+        miniprogram,
+        cancellation,
+        options.timeoutMs ?? ACTION_TIMEOUT_MS,
+      ),
+    (probe) =>
+      probe !== null &&
+      probe.title === BOOKING_NOTICE.title &&
+      probe.content === BOOKING_NOTICE.content &&
+      probe.showCancel === BOOKING_NOTICE.showCancel,
+    cancellation,
+    options,
+  ).then(() =>
+    pollUntil(
     "confirm booking notice",
     async () => {
       try {
@@ -478,9 +686,10 @@ function confirmBookingModal(miniprogram, context, options = {}) {
       }
     },
     (result) => result.confirmed,
-    context,
+      cancellation,
     options,
-  ).then((result) => result.value);
+    ).then((result) => result.value),
+  );
 }
 
 function assertSafeEvidence(source) {
@@ -516,6 +725,27 @@ async function publishTempFile(
       await rm(filePath, { force: true });
     }
     throw error;
+  }
+}
+
+async function bestEffortRemove(
+  filePath,
+  removeFile = rm,
+  attempts = 3,
+) {
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    try {
+      await removeFile(filePath, { force: true });
+      return;
+    } catch (error) {
+      if (
+        !["EBUSY", "EPERM"].includes(error?.code) ||
+        attempt === attempts - 1
+      ) {
+        return;
+      }
+      await sleep(10);
+    }
   }
 }
 
@@ -559,6 +789,7 @@ async function capturePage(
 ) {
   const cancellation = context || createCancellationContext();
   const evidenceParent = options.evidenceParent || evidenceRoot;
+  const removeFile = options.removeFile || rm;
   const timeoutMs = options.timeoutMs ?? ACTION_TIMEOUT_MS;
   cancellation.throwIfAborted();
   const root = await requireElement(page, rootSelector, cancellation);
@@ -603,16 +834,16 @@ async function capturePage(
       relativeEvidencePath(evidenceParent, screenshotPath),
     );
   } catch (error) {
-    await rm(temporaryPath, { force: true });
     if (!screenshotCompleted) {
       screenshot
-        .finally(() => rm(temporaryPath, { force: true }))
+        .finally(() => bestEffortRemove(temporaryPath, removeFile))
         .catch(() => undefined);
     }
+    await bestEffortRemove(temporaryPath, removeFile);
     throw error;
   } finally {
     if (screenshotCompleted) {
-      await rm(temporaryPath, { force: true });
+      await bestEffortRemove(temporaryPath, removeFile);
     }
   }
 }
@@ -910,13 +1141,12 @@ async function catalogWorkflow(
     context,
   );
   stepTracker.enter("booking-notice");
-  await runInteraction(context, "show booking notice", () =>
-    roomSelection.tap(),
-  );
-  await confirmBookingModal(
-    miniprogram,
-    context,
-  );
+  await withBookingModalProbe(miniprogram, context, async () => {
+    await runInteraction(context, "show booking notice", () =>
+      roomSelection.tap(),
+    );
+    await confirmBookingModal(miniprogram, context);
+  });
 
   stepTracker.enter("return-to-list");
   await runInteraction(context, "return to property", () =>
@@ -995,6 +1225,8 @@ async function run(
     closeMs: dependencies.timeouts?.closeMs ?? ACTION_TIMEOUT_MS,
     evidenceMs:
       dependencies.timeouts?.evidenceMs ?? ACTION_TIMEOUT_MS,
+    lateSettleMs:
+      dependencies.timeouts?.lateSettleMs ?? ACTION_TIMEOUT_MS,
     workflowMs:
       dependencies.timeouts?.workflowMs ?? WORKFLOW_TIMEOUT_MS,
   };
@@ -1009,6 +1241,11 @@ async function run(
     );
     assert.ok(evidenceDirectory, "evidenceDirectory is required");
     projectRoot = await realpath(projectPath);
+    launchOptions = buildLaunchOptions(
+      projectRoot,
+      cliPath,
+      dependencies.environment || process.env,
+    );
     const requestedEvidenceRoot = path.resolve(evidenceDirectory);
     assert.equal(
       isWithin(projectRoot, requestedEvidenceRoot),
@@ -1026,11 +1263,6 @@ async function run(
       path.join(evidenceParent, "catalog-"),
     );
     evidenceRoot = await realpath(evidenceRoot);
-    launchOptions = buildLaunchOptions(
-      projectRoot,
-      cliPath,
-      dependencies.environment || process.env,
-    );
   } catch {
     throw catalogFailure("arguments", "unknown", evidencePaths);
   }
@@ -1042,12 +1274,20 @@ async function run(
       launchOptions,
     );
   } catch {
+    if (evidencePaths.length === 0) {
+      try {
+        await rmdir(evidenceRoot);
+      } catch {
+        // Launch failure remains the safe public result.
+      }
+    }
     throw catalogFailure("launch", "unknown", evidencePaths);
   }
   let result;
   let failure = null;
   let currentPage = "unknown";
   let originalSearch;
+  let fixtureApply;
   const workflowContext = createCancellationContext();
   try {
     stepTracker.enter("fixture");
@@ -1057,6 +1297,9 @@ async function run(
       {
         onOriginal(original) {
           originalSearch = original;
+        },
+        onApply(apply) {
+          fixtureApply = apply;
         },
         timeoutMs: timeouts.actionMs,
       },
@@ -1134,6 +1377,7 @@ async function run(
       evidencePaths,
     );
   }
+  let searchRestored = originalSearch === undefined;
   if (originalSearch !== undefined) {
     try {
       await restoreCatalogSearch(
@@ -1142,14 +1386,38 @@ async function run(
         createCancellationContext(),
         timeouts.actionMs,
       );
+      searchRestored = true;
     } catch {
-      if (failure === null) {
-        failure = catalogFailure(
-          "cleanup",
-          currentPage,
-          evidencePaths,
+      searchRestored = false;
+    }
+    if (fixtureApply && !fixtureApply.isSettled) {
+      try {
+        await withTimeout(
+          "late fixture apply",
+          () => fixtureApply.settled,
+          timeouts.lateSettleMs,
         );
+      } catch {
+        // Closing the connection below bounds an apply that never settles.
       }
+      try {
+        await restoreCatalogSearch(
+          miniprogram,
+          originalSearch,
+          createCancellationContext(),
+          timeouts.actionMs,
+        );
+        searchRestored = true;
+      } catch {
+        searchRestored = false;
+      }
+    }
+    if (!searchRestored && failure === null) {
+      failure = catalogFailure(
+        "cleanup",
+        currentPage,
+        evidencePaths,
+      );
     }
   }
   try {
@@ -1215,6 +1483,9 @@ module.exports = {
   waitForPage,
   capturePage,
   confirmBookingModal,
+  installBookingModalProbe,
+  restoreBookingModalProbe,
+  withBookingModalProbe,
   formatCatalogFailure,
   publishTempFile,
   waitForElementCount,
