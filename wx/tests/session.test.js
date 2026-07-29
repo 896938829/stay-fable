@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import sessionModule from "../stores/session.js";
 
-const { createSessionStore } = sessionModule;
+const { createLoginCodeProvider, createSessionStore } = sessionModule;
 
 function makeSession(marker = "a") {
   return {
@@ -44,6 +44,24 @@ function expectNoTokenStorage(wxApi) {
 }
 
 describe("session store", () => {
+  it("uses a deterministic mock code only for the explicit develop adapter", async () => {
+    const wxApi = createStorageWx();
+    const mockProvider = createLoginCodeProvider({
+      wxApi,
+      getRuntimeConfig: () => ({ envVersion: "develop", identityProvider: "mock" }),
+    });
+    const wechatProvider = createLoginCodeProvider({
+      wxApi,
+      getRuntimeConfig: () => ({ envVersion: "develop", identityProvider: "wechat" }),
+    });
+    wxApi.login.mockImplementation(({ success }) => success({ code: "real-wechat-code" }));
+
+    await expect(mockProvider()).resolves.toBe("mock:wechatide-local-user");
+    expect(wxApi.login).not.toHaveBeenCalled();
+    await expect(wechatProvider()).resolves.toBe("real-wechat-code");
+    expect(wxApi.login).toHaveBeenCalledOnce();
+  });
+
   it("deletes a legacy stored session and performs a fresh login on cold start", async () => {
     const legacy = makeSession("a");
     const next = makeSession("b");

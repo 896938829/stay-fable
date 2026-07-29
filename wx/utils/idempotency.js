@@ -3,8 +3,15 @@
 const KEY_PATTERN = /^[A-Za-z0-9._~-]{32,80}$/;
 
 function bytesFrom(value) {
-  if (value instanceof ArrayBuffer) {
-    return new Uint8Array(value);
+  if (
+    value instanceof ArrayBuffer ||
+    Object.prototype.toString.call(value) === "[object ArrayBuffer]"
+  ) {
+    try {
+      return new Uint8Array(value);
+    } catch {
+      return undefined;
+    }
   }
   if (ArrayBuffer.isView(value)) {
     return new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
@@ -20,23 +27,37 @@ function cryptographicKey(wxApi) {
   const api = wxApi || globalThis.wx;
   if (api && typeof api.getRandomValues === "function") {
     return new Promise((resolve, reject) => {
+      let settled = false;
+      const fail = () => {
+        if (!settled) {
+          settled = true;
+          reject(new Error("Cryptographic randomness is unavailable"));
+        }
+      };
+      const succeed = (result) => {
+        if (settled) {
+          return;
+        }
+        const bytes = result && bytesFrom(result.randomValues);
+        if (!bytes || bytes.length !== 32) {
+          fail();
+          return;
+        }
+        settled = true;
+        resolve(hex(bytes));
+      };
+
       try {
-        api.getRandomValues({
+        const returned = api.getRandomValues({
           length: 32,
-          success(result) {
-            const bytes = result && bytesFrom(result.randomValues);
-            if (!bytes || bytes.length !== 32) {
-              reject(new Error("Cryptographic randomness is unavailable"));
-              return;
-            }
-            resolve(hex(bytes));
-          },
-          fail() {
-            reject(new Error("Cryptographic randomness is unavailable"));
-          },
+          success: succeed,
+          fail,
         });
+        if (returned && typeof returned.then === "function") {
+          returned.then(succeed, fail);
+        }
       } catch {
-        reject(new Error("Cryptographic randomness is unavailable"));
+        fail();
       }
     });
   }

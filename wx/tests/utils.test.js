@@ -1,3 +1,5 @@
+import vm from "node:vm";
+
 import { afterEach, describe, expect, it } from "vitest";
 
 import dateUtils from "../utils/date.js";
@@ -79,5 +81,36 @@ describe("idempotency manager", () => {
     expect(() =>
       createIdempotencyManager({ generator: () => "short" }).get("pay"),
     ).toThrow();
+  });
+
+  it(
+    "uses the Promise-based WeChat cryptographic API exposed by current base libraries",
+    async () => {
+      const manager = createIdempotencyManager({
+        wxApi: {
+          getRandomValues(options) {
+            const bytes = new Uint8Array(options.length);
+            bytes.fill(9);
+            return Promise.resolve({ randomValues: bytes.buffer });
+          },
+        },
+      });
+
+      await expect(manager.get("request")).resolves.toMatch(/^[A-Za-z0-9._~-]{32,80}$/);
+    },
+    500,
+  );
+
+  it("accepts a genuine cross-realm ArrayBuffer returned by the WeChat runtime", async () => {
+    const randomValues = vm.runInNewContext("new Uint8Array(32).buffer");
+    const manager = createIdempotencyManager({
+      wxApi: {
+        getRandomValues() {
+          return Promise.resolve({ randomValues });
+        },
+      },
+    });
+
+    await expect(manager.get("cross-realm")).resolves.toMatch(/^[A-Za-z0-9._~-]{32,80}$/);
   });
 });

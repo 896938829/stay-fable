@@ -181,6 +181,22 @@ function normalizeApiBaseUrl(value, envVersion, explicit) {
   return `${parsed.protocol}//${parsed.authority}${basePath}`;
 }
 
+function normalizeIdentityProvider(value, envVersion) {
+  if (value === undefined || value === null || value === "") {
+    return envVersion === "develop" ? "mock" : "wechat";
+  }
+  if (value === "wechat") {
+    return "wechat";
+  }
+  if (value === "mock") {
+    if (envVersion !== "develop") {
+      throw new Error("mock identity is only available in develop");
+    }
+    return "mock";
+  }
+  throw new Error("identityProvider must be wechat or mock");
+}
+
 function getRuntimeConfig(wxApi) {
   const api = wxApi || globalThis.wx;
   const accountInfo = api.getAccountInfoSync();
@@ -201,6 +217,7 @@ function getRuntimeConfig(wxApi) {
   return {
     apiBaseUrl: normalizeApiBaseUrl(extConfig.apiBaseUrl, envVersion, explicit),
     envVersion,
+    identityProvider: normalizeIdentityProvider(extConfig.identityProvider, envVersion),
   };
 }
 

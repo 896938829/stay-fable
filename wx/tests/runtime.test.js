@@ -14,10 +14,10 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-function wxApi(envVersion, extConfig) {
+function wxApi(envVersion, extConfig, appId) {
   return {
     getAccountInfoSync() {
-      return { miniProgram: { envVersion } };
+      return { miniProgram: { appId, envVersion } };
     },
     getExtConfigSync() {
       return extConfig;
@@ -30,13 +30,56 @@ describe("runtime config", () => {
     expect(getRuntimeConfig(wxApi("develop", {}))).toEqual({
       apiBaseUrl: "http://127.0.0.1:3000/api/v1",
       envVersion: "develop",
+      identityProvider: "mock",
     });
+  });
+
+  it("allows the mock identity adapter only when explicitly selected in develop", () => {
+    expect(getRuntimeConfig(wxApi("develop", { identityProvider: "mock" }))).toEqual({
+      apiBaseUrl: "http://127.0.0.1:3000/api/v1",
+      envVersion: "develop",
+      identityProvider: "mock",
+    });
+    for (const envVersion of ["trial", "release"]) {
+      expect(() =>
+        getRuntimeConfig(
+          wxApi(envVersion, {
+            apiBaseUrl: "https://api.example.com",
+            identityProvider: "mock",
+          }),
+        ),
+      ).toThrow("mock identity is only available in develop");
+    }
+  });
+
+  it("uses the mock adapter by default for every develop AppID", () => {
+    expect(getRuntimeConfig(wxApi("develop", {}, ""))).toEqual({
+      apiBaseUrl: "http://127.0.0.1:3000/api/v1",
+      envVersion: "develop",
+      identityProvider: "mock",
+    });
+    expect(getRuntimeConfig(wxApi("develop", {}, "wx-real-app"))).toEqual({
+      apiBaseUrl: "http://127.0.0.1:3000/api/v1",
+      envVersion: "develop",
+      identityProvider: "mock",
+    });
+  });
+
+  it("allows develop to explicitly exercise the real WeChat adapter", () => {
+    expect(getRuntimeConfig(wxApi("develop", { identityProvider: "wechat" }, "wx-real-app"))).toEqual(
+      {
+        apiBaseUrl: "http://127.0.0.1:3000/api/v1",
+        envVersion: "develop",
+        identityProvider: "wechat",
+      },
+    );
   });
 
   it.each([undefined, ""])("treats a missing envVersion as develop: %s", (envVersion) => {
     expect(getRuntimeConfig(wxApi(envVersion, {}))).toEqual({
       apiBaseUrl: "http://127.0.0.1:3000/api/v1",
       envVersion: "develop",
+      identityProvider: "mock",
     });
   });
 
@@ -54,6 +97,7 @@ describe("runtime config", () => {
       expect(getRuntimeConfig(wxApi("trial", { apiBaseUrl }))).toEqual({
         apiBaseUrl: expected,
         envVersion: "trial",
+        identityProvider: "wechat",
       });
     }
   });
@@ -94,7 +138,11 @@ describe("runtime config", () => {
   it("allows explicit HTTP only for loopback during develop", () => {
     expect(
       getRuntimeConfig(wxApi("develop", { apiBaseUrl: "http://localhost:4000/" })),
-    ).toEqual({ apiBaseUrl: "http://localhost:4000/api/v1", envVersion: "develop" });
+    ).toEqual({
+      apiBaseUrl: "http://localhost:4000/api/v1",
+      envVersion: "develop",
+      identityProvider: "mock",
+    });
     expect(() =>
       getRuntimeConfig(wxApi("develop", { apiBaseUrl: "http://192.168.1.8:4000" })),
     ).toThrow();
@@ -107,6 +155,7 @@ describe("runtime config", () => {
     ).toEqual({
       apiBaseUrl: "https://api.example.com/v1/api/v1",
       envVersion: "release",
+      identityProvider: "wechat",
     });
   });
 

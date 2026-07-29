@@ -49,8 +49,21 @@ function wechatLogin(wxApi) {
   });
 }
 
+function createLoginCodeProvider(options) {
+  const { wxApi, getRuntimeConfig } = options;
+
+  return function loginCode() {
+    const runtime = getRuntimeConfig();
+    if (runtime.envVersion === "develop" && runtime.identityProvider === "mock") {
+      return Promise.resolve("mock:wechatide-local-user");
+    }
+    return wechatLogin(wxApi);
+  };
+}
+
 function createSessionStore(options) {
   const { wxApi, authService } = options;
+  const loginCodeProvider = options.loginCodeProvider || (() => wechatLogin(wxApi));
   const storageKey = options.storageKey || DEFAULT_STORAGE_KEY;
   let memory = null;
   let initialized = false;
@@ -113,7 +126,7 @@ function createSessionStore(options) {
       const operationGeneration = generation;
       ensurePromise = (async () => {
         try {
-          const code = await wechatLogin(wxApi);
+          const code = await loginCodeProvider();
           if (generation !== operationGeneration) {
             throw operationCancelledError();
           }
@@ -188,6 +201,10 @@ function getDefaultStore() {
     defaultStore = createSessionStore({
       wxApi,
       authService: require("../services/auth"),
+      loginCodeProvider: createLoginCodeProvider({
+        wxApi,
+        getRuntimeConfig: () => require("../config/runtime").getRuntimeConfig(globalThis.wx),
+      }),
       storageKey: DEFAULT_STORAGE_KEY,
     });
   }
@@ -198,6 +215,7 @@ module.exports = {
   clear() {
     return getDefaultStore().clear();
   },
+  createLoginCodeProvider,
   createSessionStore,
   ensureSession() {
     return getDefaultStore().ensureSession();

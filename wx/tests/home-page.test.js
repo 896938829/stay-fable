@@ -329,6 +329,25 @@ describe("home page interactions", () => {
     expect(JSON.stringify(searchStore.set.mock.calls)).not.toContain("120.1");
   });
 
+  it(
+    "supports Promise-based modal and location APIs when location is denied",
+    async () => {
+      wxApi.showModal.mockResolvedValue({ confirm: true });
+      wxApi.getLocation.mockRejectedValue({ errMsg: "getLocation:fail auth deny" });
+      const page = pageContext(
+        createHomePage({ getApp: () => app, locationService, wxApi }),
+      );
+
+      await page.useCurrentLocation.call(page);
+
+      expect(wxApi.navigateTo).toHaveBeenCalledWith({
+        url: "/pages/city-select/city-select?reason=location_denied",
+      });
+      expect(page.data.locating).toBe(false);
+    },
+    500,
+  );
+
   it("maps a session read failure after location success without misrouting it", async () => {
     wxApi.showModal.mockImplementation(({ success }) => success({ confirm: true }));
     wxApi.getLocation.mockImplementation(({ success }) =>

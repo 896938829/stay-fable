@@ -6,17 +6,27 @@ const CANCELLED_LOCATION_OPERATION = Symbol("cancelled-location-operation");
 
 function modalResult(wxApi) {
   return new Promise((resolve) => {
+    let settled = false;
+    const settle = (value) => {
+      if (!settled) {
+        settled = true;
+        resolve(value);
+      }
+    };
     try {
-      wxApi.showModal({
+      const returned = wxApi.showModal({
         title: "使用当前位置",
         content: "位置信息仅用于匹配附近已开通城市，不会保存您的坐标。",
         confirmText: "继续定位",
         cancelText: "手动选择",
-        success: resolve,
-        fail: () => resolve({ confirm: false }),
+        success: settle,
+        fail: () => settle({ confirm: false }),
       });
+      if (returned && typeof returned.then === "function") {
+        returned.then(settle, () => settle({ confirm: false }));
+      }
     } catch {
-      resolve({ confirm: false });
+      settle({ confirm: false });
     }
   });
 }
@@ -33,11 +43,17 @@ function currentLocation(wxApi) {
     };
 
     try {
-      wxApi.getLocation({
+      const returned = wxApi.getLocation({
         type: "gcj02",
         success: (value) => settle(resolve, value),
         fail: (error) => settle(reject, error),
       });
+      if (returned && typeof returned.then === "function") {
+        returned.then(
+          (value) => settle(resolve, value),
+          (error) => settle(reject, error),
+        );
+      }
     } catch (error) {
       settle(reject, error);
     }
