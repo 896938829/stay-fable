@@ -320,6 +320,7 @@ describe("catalog automator launch configuration", () => {
     const spawnProcess = vi.fn(() => child);
     const launchOptions = {
       cliPath: "C:\\tools\\wechat\\cli.bat",
+      cwd: "C:\\controlled\\catalog-cwd",
       projectPath: "C:\\workspace\\wx",
     };
     const runtime = {
@@ -335,6 +336,9 @@ describe("catalog automator launch configuration", () => {
       {
         allocatePort: vi.fn(async () => 45123),
         environment: {
+          CWD: "unsafe",
+          cWd: "also unsafe",
+          cwd: "still unsafe",
           eLeCtRoN: "unsafe",
           Electron_Run_As_Node: "unsafe",
           node_CHANNEL_fd: "unsafe",
@@ -396,6 +400,14 @@ describe("catalog automator launch configuration", () => {
         (key) => key.toUpperCase() === "ELECTRON_RUN_AS_NODE",
       ),
     ).toEqual(["ELECTRON_RUN_AS_NODE"]);
+    expect(
+      Object.keys(spawnProcess.mock.calls[0][2].env).filter(
+        (key) => key.toUpperCase() === "CWD",
+      ),
+    ).toEqual(["cwd"]);
+    expect(spawnProcess.mock.calls[0][2].env.cwd).toBe(
+      launchOptions.cwd,
+    );
     expect(child.kill).not.toHaveBeenCalled();
     expect(child.unref).toHaveBeenCalledOnce();
   });
@@ -616,69 +628,69 @@ describe("catalog automator launch configuration", () => {
     expect(spawnProcess).not.toHaveBeenCalled();
   });
 
-  it("returns within a cleanup bound when a killed child never exits", async () => {
+  it("force-kills once and returns a fixed cleanup failure when the child never exits", async () => {
     const child = createChildProcess({ exitOnKill: false });
+    child.kill.mockReturnValue(true);
+    const allocatePort = vi.fn(async () => 45123);
+    const spawnProcess = vi.fn(() => child);
     const automatorApi = {
-      connect: vi.fn(
-        () =>
-          new Promise(() => {
-            // The adapter must bound a connection attempt itself.
-          }),
-      ),
+      connect: vi.fn(async () => {
+        throw new Error("C:\\private\\user\\endpoint failure");
+      }),
     };
     const startedAt = Date.now();
+    const launched = Promise.race([
+      catalogAutomator.launchWindowsBatchMiniProgram(
+        automatorApi,
+        {
+          cliPath: "C:\\tools\\wechat\\cli.bat",
+          projectPath: "C:\\workspace\\wx",
+        },
+        {
+          allocatePort,
+          cleanupTimeoutMs: 5,
+          connectTimeoutMs: 5,
+          forceCleanupTimeoutMs: 5,
+          pollIntervalMs: 0,
+          resolveWindowsCliRuntime: vi.fn(async () => ({
+            cliEntryPath:
+              "C:\\tools\\wechat\\resources\\app.asar.unpacked\\js\\common\\cli\\index.js",
+            electronPath: "C:\\tools\\wechat\\微信开发者工具.exe",
+            installRoot: "C:\\tools\\wechat",
+          })),
+          sleep: vi.fn(async () => {}),
+          spawnProcess,
+        },
+      ),
+      new Promise((_, reject) =>
+        setTimeout(() => reject(new Error("test safety deadline")), 100),
+      ),
+    ]);
 
-    await expect(
-      Promise.race([
-        catalogAutomator.launchWindowsBatchMiniProgram(
-          automatorApi,
-          {
-            cliPath: "C:\\tools\\wechat\\cli.bat",
-            projectPath: "C:\\workspace\\wx",
-          },
-          {
-            allocatePort: vi.fn(async () => 45123),
-            cleanupTimeoutMs: 10,
-            connectTimeoutMs: 5,
-            resolveWindowsCliRuntime: vi.fn(async () => ({
-              cliEntryPath:
-                "C:\\tools\\wechat\\resources\\app.asar.unpacked\\js\\common\\cli\\index.js",
-              electronPath: "C:\\tools\\wechat\\微信开发者工具.exe",
-              installRoot: "C:\\tools\\wechat",
-            })),
-            spawnProcess: vi.fn(() => child),
-          },
-        ),
-        new Promise((_, reject) =>
-          setTimeout(() => reject(new Error("test safety deadline")), 100),
-        ),
-      ]),
-    ).rejects.toThrow("WeChat DevTools automation endpoint is unavailable");
+    await expect(launched).rejects.toThrow(
+      "WeChat DevTools CLI cleanup failed",
+    );
+    await expect(launched).rejects.not.toThrow("private");
     expect(Date.now() - startedAt).toBeLessThan(100);
-    expect(child.kill).toHaveBeenCalledOnce();
+    expect(child.kill.mock.calls).toEqual([[], ["SIGKILL"]]);
+    expect(allocatePort).toHaveBeenCalledOnce();
+    expect(spawnProcess).toHaveBeenCalledOnce();
   });
 
-  it("retries one occupied auto-port only after the first child exits", async () => {
+  it("retries one early nonzero CLI exit only after the first child is terminal", async () => {
     const events = [];
     const firstChild = createChildProcess();
-    firstChild.kill.mockImplementation(() => {
-      events.push("first:kill");
-      queueMicrotask(() => {
-        events.push("first:exit");
-        firstChild.emit("exit", null);
-      });
-      return true;
-    });
     const secondChild = createChildProcess();
     const ports = [45123, 45124];
     const miniProgram = { disconnect: vi.fn() };
-    const portError = Object.assign(new Error("port unavailable"), {
-      code: "EADDRINUSE",
-    });
     const automatorApi = {
       connect: vi
         .fn()
-        .mockRejectedValueOnce(portError)
+        .mockImplementationOnce(async () => {
+          events.push("first:exit");
+          firstChild.emit("exit", 1);
+          throw new Error("endpoint unavailable");
+        })
         .mockResolvedValueOnce(miniProgram),
     };
     const allocatePort = vi.fn(async () => {
@@ -727,11 +739,86 @@ describe("catalog automator launch configuration", () => {
     expect(events).toEqual([
       "allocate:45123",
       "first:spawn",
-      "first:kill",
       "first:exit",
       "allocate:45124",
       "second:spawn",
     ]);
+    expect(firstChild.kill).not.toHaveBeenCalled();
+  });
+
+  it("does not change ports for ordinary connection errors while the child is running", async () => {
+    const child = createChildProcess();
+    const allocatePort = vi.fn(async () => 45123);
+    const spawnProcess = vi.fn(() => child);
+
+    await expect(
+      catalogAutomator.launchWindowsBatchMiniProgram(
+        {
+          connect: vi.fn(async () => {
+            throw new Error("endpoint unavailable");
+          }),
+        },
+        {
+          cliPath: "C:\\tools\\wechat\\cli.bat",
+          projectPath: "C:\\workspace\\wx",
+        },
+        {
+          allocatePort,
+          cleanupTimeoutMs: 20,
+          connectTimeoutMs: 5,
+          pollIntervalMs: 0,
+          resolveWindowsCliRuntime: vi.fn(async () => ({
+            cliEntryPath:
+              "C:\\tools\\wechat\\resources\\app.asar.unpacked\\js\\common\\cli\\index.js",
+            electronPath: "C:\\tools\\wechat\\微信开发者工具.exe",
+            installRoot: "C:\\tools\\wechat",
+          })),
+          sleep: vi.fn(async () => {}),
+          spawnProcess,
+        },
+      ),
+    ).rejects.toThrow("WeChat DevTools automation endpoint is unavailable");
+    expect(allocatePort).toHaveBeenCalledOnce();
+    expect(spawnProcess).toHaveBeenCalledOnce();
+  });
+
+  it("does not retry a nonzero child exit after a connection was established", async () => {
+    const child = createChildProcess();
+    const miniProgram = { disconnect: vi.fn() };
+    const allocatePort = vi.fn(async () => 45123);
+    const spawnProcess = vi.fn(() => child);
+
+    await expect(
+      catalogAutomator.launchWindowsBatchMiniProgram(
+        {
+          connect: vi.fn(async () => miniProgram),
+        },
+        {
+          cliPath: "C:\\tools\\wechat\\cli.bat",
+          projectPath: "C:\\workspace\\wx",
+        },
+        {
+          allocatePort,
+          postConnectMs: 20,
+          resolveWindowsCliRuntime: vi.fn(async () => ({
+            cliEntryPath:
+              "C:\\tools\\wechat\\resources\\app.asar.unpacked\\js\\common\\cli\\index.js",
+            electronPath: "C:\\tools\\wechat\\微信开发者工具.exe",
+            installRoot: "C:\\tools\\wechat",
+          })),
+          sleep: vi.fn(() => {
+            child.emit("exit", 1);
+            return new Promise(() => {
+              // The child terminal event must win the post-connect wait.
+            });
+          }),
+          spawnProcess,
+        },
+      ),
+    ).rejects.toThrow("WeChat DevTools CLI exited unexpectedly");
+    expect(miniProgram.disconnect).toHaveBeenCalledOnce();
+    expect(allocatePort).toHaveBeenCalledOnce();
+    expect(spawnProcess).toHaveBeenCalledOnce();
   });
 
   it("does not retry a clean CLI exit that indicates an already-open target window", async () => {

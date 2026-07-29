@@ -41,6 +41,7 @@ const ACTION_TIMEOUT_MS = 10_000;
 const WORKFLOW_TIMEOUT_MS = 120_000;
 const WINDOWS_CLI_CONNECT_TIMEOUT_MS = 20_000;
 const WINDOWS_CLI_CLEANUP_TIMEOUT_MS = 2_000;
+const WINDOWS_CLI_FORCE_CLEANUP_TIMEOUT_MS = 250;
 const WINDOWS_CLI_EXIT_GRACE_MS = 1_000;
 const WINDOWS_CLI_POST_CONNECT_MS = 5_000;
 const WINDOWS_CLI_BOOTSTRAP =
@@ -54,7 +55,8 @@ const WINDOWS_CLI_ENTRY_PARTS = [
   "index.js",
 ];
 const WINDOWS_ELECTRON_RUNTIME = "微信开发者工具.exe";
-const WINDOWS_LOADER_ENVIRONMENT_KEYS = new Set([
+const WINDOWS_CONTROLLED_ENVIRONMENT_KEYS = new Set([
+  "CWD",
   "ELECTRON",
   "ELECTRON_RUN_AS_NODE",
   "NODE_OPTIONS",
@@ -313,7 +315,7 @@ async function launchWindowsBatchMiniProgram(
   const runtime = await resolveRuntime(options.cliPath);
   const cliEnvironment = {};
   for (const [key, value] of Object.entries(environment)) {
-    if (!WINDOWS_LOADER_ENVIRONMENT_KEYS.has(key.toUpperCase())) {
+    if (!WINDOWS_CONTROLLED_ENVIRONMENT_KEYS.has(key.toUpperCase())) {
       cliEnvironment[key] = value;
     }
   }
@@ -324,6 +326,9 @@ async function launchWindowsBatchMiniProgram(
     dependencies.connectTimeoutMs ?? WINDOWS_CLI_CONNECT_TIMEOUT_MS;
   const cleanupTimeoutMs =
     dependencies.cleanupTimeoutMs ?? WINDOWS_CLI_CLEANUP_TIMEOUT_MS;
+  const forceCleanupTimeoutMs =
+    dependencies.forceCleanupTimeoutMs ??
+    WINDOWS_CLI_FORCE_CLEANUP_TIMEOUT_MS;
   const signal = dependencies.signal;
 
   for (let attempt = 0; attempt < 2; attempt += 1) {
@@ -358,7 +363,7 @@ async function launchWindowsBatchMiniProgram(
     const state = observeChildProcess(child);
     child.unref();
     const deadline = Date.now() + connectTimeoutMs;
-    let retryOccupiedPort = false;
+    let retryEarlyCliFailure = false;
     let launchError;
 
     while (!launchError && Date.now() < deadline) {
@@ -396,20 +401,11 @@ async function launchWindowsBatchMiniProgram(
           launchError = new Error(
             "WeChat DevTools project window must be closed before automation launch",
           );
-        } else if (state.errorCode === "EADDRINUSE") {
-          retryOccupiedPort = true;
-          launchError = new Error("automation port became unavailable");
         } else {
+          retryEarlyCliFailure =
+            typeof state.exitCode === "number" && state.exitCode !== 0;
           launchError = childLaunchError(state);
         }
-        break;
-      }
-      if (
-        outcome.kind === "connection-error" &&
-        outcome.error?.code === "EADDRINUSE"
-      ) {
-        retryOccupiedPort = true;
-        launchError = new Error("automation port became unavailable");
         break;
       }
       if (outcome.kind === "timeout") {
@@ -433,8 +429,9 @@ async function launchWindowsBatchMiniProgram(
       child,
       state,
       cleanupTimeoutMs,
+      forceCleanupTimeoutMs,
     );
-    if (retryOccupiedPort && attempt === 0 && childStopped) {
+    if (retryEarlyCliFailure && attempt === 0 && childStopped) {
       continue;
     }
     throw launchError;
@@ -588,16 +585,40 @@ async function waitAfterConnect(wait, milliseconds, signal, state) {
   return outcome;
 }
 
-async function stopChildProcess(child, state, timeoutMs) {
+async function stopChildProcess(
+  child,
+  state,
+  timeoutMs,
+  forceTimeoutMs,
+) {
   if (state.exited) {
     return true;
   }
-  let killAccepted = false;
-  try {
-    killAccepted = child.kill() !== false;
-  } catch {
-    // The bounded exit wait below determines whether cleanup completed.
+  const softKillAccepted = requestChildTermination(child);
+  if (await waitForChildTerminal(state, timeoutMs)) {
+    return true;
   }
+  const forceKillAccepted = requestChildTermination(child, "SIGKILL");
+  if (await waitForChildTerminal(state, forceTimeoutMs)) {
+    return true;
+  }
+  if (!softKillAccepted || !forceKillAccepted || !state.exited) {
+    throw new Error("WeChat DevTools CLI cleanup failed");
+  }
+  return true;
+}
+
+function requestChildTermination(child, signal) {
+  try {
+    return signal === undefined
+      ? child.kill() !== false
+      : child.kill(signal) !== false;
+  } catch {
+    return false;
+  }
+}
+
+async function waitForChildTerminal(state, timeoutMs) {
   if (state.exited) {
     return true;
   }
@@ -610,13 +631,11 @@ async function stopChildProcess(child, state, timeoutMs) {
     timedOut,
   ]);
   clearTimeout(timer);
-  return stopped && (killAccepted || state.exited);
+  return stopped;
 }
 
-function childLaunchError(state) {
-  return state.errorCode === "EADDRINUSE"
-    ? new Error("automation port became unavailable")
-    : new Error("WeChat DevTools CLI exited unexpectedly");
+function childLaunchError() {
+  return new Error("WeChat DevTools CLI exited unexpectedly");
 }
 
 function selectDefaultAutomatorApi(
