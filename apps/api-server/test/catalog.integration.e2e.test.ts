@@ -458,6 +458,12 @@ describeDatabase(suiteName, () => {
     expectNoOperationalInventory(property);
   });
 
+  test("findProperty hides a property when its city is disabled", async () => {
+    await pool.query("UPDATE city SET enabled = false WHERE id = $1::uuid", [HANGZHOU_CITY_ID]);
+
+    expect(await repository.findProperty(HOTEL_ID, availability)).toBeNull();
+  });
+
   test("findRoomType returns ordered display-only nightly prices when fully available", async () => {
     const lookup = await repository.findRoomType(HOTEL_DOUBLE_ROOM_ID, availability);
 
