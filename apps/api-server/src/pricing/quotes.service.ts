@@ -14,6 +14,7 @@ import { QuoteRepository } from "./quote.repository.js";
 
 const UUID_PATTERN =
   /^(?:[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/i;
+const POSTGRES_INTEGER_MAX = 2_147_483_647;
 
 const invalidRequest = (): BusinessException =>
   new BusinessException(400, "QUOTE_REQUEST_INVALID", "报价请求无效，请检查入住信息");
@@ -94,7 +95,7 @@ export class QuotesService {
       let totalPriceCents = 0;
       for (const nightlyPrice of lookup.nightlyPrices) {
         totalPriceCents += nightlyPrice.salePriceCents;
-        if (!Number.isSafeInteger(totalPriceCents)) {
+        if (!Number.isSafeInteger(totalPriceCents) || totalPriceCents > POSTGRES_INTEGER_MAX) {
           throw unavailable();
         }
       }

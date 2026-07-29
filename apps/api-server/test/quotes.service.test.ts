@@ -282,6 +282,26 @@ describe("QuotesService", () => {
     expect(repository.createQuote).not.toHaveBeenCalled();
   });
 
+  it("maps a PostgreSQL int4 total overflow to BOOKING_SERVICE_UNAVAILABLE", async () => {
+    const repository = createRepository();
+    repository.findQuoteInput.mockResolvedValue({
+      ...availableLookup(),
+      nightlyPrices: availableLookup().nightlyPrices.map((night) => ({
+        ...night,
+        salePriceCents: 1_500_000_000,
+        rackPriceCents: 1_500_000_000,
+      })),
+    });
+    const service = new QuotesService(
+      repository as unknown as QuoteRepository,
+      createRateLimit() as unknown as WriteRateLimitService,
+      { now: () => CAPTURED_AT },
+    );
+
+    await expectBusinessError(service.create(USER_ID, request), 503, "BOOKING_SERVICE_UNAVAILABLE");
+    expect(repository.createQuote).not.toHaveBeenCalled();
+  });
+
   it.each([
     ["invalid", { now: vi.fn(() => new Date(Number.NaN)) }],
     [
@@ -558,6 +578,9 @@ const persistInput = (): PersistQuoteInput => ({
   expiresAt: EXPIRES_AT,
 });
 
+const copyWithNullPrototype = <T extends object>(source: T): T =>
+  Object.assign(Object.create(null) as Record<PropertyKey, unknown>, source);
+
 describe("QuoteRepository", () => {
   it("uses parameterized status-gated SQL and maps availability without exposing inventory", async () => {
     const database = createQuoteDatabase();
@@ -675,6 +698,36 @@ describe("QuoteRepository", () => {
     }
   });
 
+  it("accepts the PostgreSQL int4 maximum for a database nightly price", async () => {
+    const database = createQuoteDatabase([
+      [databaseBaseRow],
+      [
+        {
+          ...databaseNightlyRows[0],
+          salePriceCents: 2_147_483_647,
+          rackPriceCents: 2_147_483_647,
+        },
+        databaseNightlyRows[1],
+      ],
+    ]);
+    const repository = new QuoteRepository(database as unknown as QuoteDatabase);
+
+    const result = await repository.findQuoteInput(ROOM_TYPE_ID, {
+      checkin: "2026-07-31",
+      checkout: "2026-08-02",
+      nights: 2,
+      guests: 2,
+    });
+    expect(result.status).toBe("AVAILABLE");
+    if (result.status === "AVAILABLE") {
+      expect(result.nightlyPrices[0]).toMatchObject({
+        businessDate: "2026-07-31",
+        salePriceCents: 2_147_483_647,
+        rackPriceCents: 2_147_483_647,
+      });
+    }
+  });
+
   it("maps proleptic Gregorian nightly rows for years before 0100", async () => {
     const database = createQuoteDatabase([
       [databaseBaseRow],
@@ -700,6 +753,16 @@ describe("QuoteRepository", () => {
 
   it.each([
     ["unsafe price", [{ ...databaseNightlyRows[0], salePriceCents: Number.MAX_SAFE_INTEGER + 1 }]],
+    [
+      "price above int4",
+      [
+        {
+          ...databaseNightlyRows[0],
+          salePriceCents: 2_147_483_648,
+          rackPriceCents: 2_147_483_648,
+        },
+      ],
+    ],
     ["negative price", [{ ...databaseNightlyRows[0], salePriceCents: -1 }]],
     ["rack below sale", [{ ...databaseNightlyRows[0], rackPriceCents: 1 }]],
     [
@@ -732,6 +795,29 @@ describe("QuoteRepository", () => {
     const repository = new QuoteRepository(database as unknown as QuoteDatabase);
 
     await expect(repository.findQuoteInput(roomTypeId, range)).rejects.toThrow(
+      "Invalid quote repository input",
+    );
+    expect(database.$queryRaw).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["null range", null],
+    [
+      "throwing range proxy",
+      new Proxy(
+        {},
+        {
+          ownKeys() {
+            throw new Error("range-proxy-secret");
+          },
+        },
+      ),
+    ],
+  ])("normalizes invalid lookup input: %s", async (_name, range) => {
+    const database = createQuoteDatabase();
+    const repository = new QuoteRepository(database as unknown as QuoteDatabase);
+
+    await expect(repository.findQuoteInput(ROOM_TYPE_ID, range as never)).rejects.toThrowError(
       "Invalid quote repository input",
     );
     expect(database.$queryRaw).not.toHaveBeenCalled();
@@ -814,6 +900,214 @@ describe("QuoteRepository", () => {
       expiresAt: EXPIRES_AT,
     });
   });
+
+  it("accepts the PostgreSQL int4 maximum for one nightly price and total", async () => {
+    const input: PersistQuoteInput = {
+      ...persistInput(),
+      checkout: "2026-08-01",
+      nightlyPrices: [
+        {
+          business_date: "2026-07-31",
+          sale_price_cents: 2_147_483_647,
+          rack_price_cents: 2_147_483_647,
+          currency: "CNY",
+        },
+      ],
+      totalPriceCents: 2_147_483_647,
+    };
+    const database = createQuoteDatabase([
+      [{ id: QUOTE_ID, createdAt: CAPTURED_AT, expiresAt: EXPIRES_AT }],
+    ]);
+    const repository = new QuoteRepository(database as unknown as QuoteDatabase);
+
+    await expect(repository.createQuote(input)).resolves.toMatchObject({ id: QUOTE_ID });
+    expect(database.$queryRaw).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    [
+      "nightly amount above int4",
+      {
+        ...persistInput(),
+        checkout: "2026-08-01",
+        nightlyPrices: [
+          {
+            business_date: "2026-07-31",
+            sale_price_cents: 2_147_483_648,
+            rack_price_cents: 2_147_483_648,
+            currency: "CNY",
+          },
+        ],
+        totalPriceCents: 2_147_483_648,
+      },
+    ],
+    [
+      "multi-night total above int4",
+      {
+        ...persistInput(),
+        nightlyPrices: persistInput().nightlyPrices.map((nightlyPrice) => ({
+          ...nightlyPrice,
+          sale_price_cents: 1_500_000_000,
+          rack_price_cents: 1_500_000_000,
+        })),
+        totalPriceCents: 3_000_000_000,
+      },
+    ],
+  ])("rejects PostgreSQL int4 persistence overflow: %s", async (_name, input) => {
+    const database = createQuoteDatabase();
+    const repository = new QuoteRepository(database as unknown as QuoteDatabase);
+
+    await expect(repository.createQuote(input as PersistQuoteInput)).rejects.toThrowError(
+      "Invalid quote repository input",
+    );
+    expect(database.$queryRaw).not.toHaveBeenCalled();
+  });
+
+  it("rejects a non-enumerable snapshot field without reading it", async () => {
+    const input = persistInput();
+    Object.defineProperty(input.propertySnapshot, "name", {
+      value: "西湖云栖酒店",
+      enumerable: false,
+    });
+    const database = createQuoteDatabase();
+    const repository = new QuoteRepository(database as unknown as QuoteDatabase);
+
+    await expect(repository.createQuote(input)).rejects.toThrowError(
+      "Invalid quote repository input",
+    );
+    expect(database.$queryRaw).not.toHaveBeenCalled();
+  });
+
+  it("rejects snapshot accessors without invoking stateful getters", async () => {
+    const input = persistInput();
+    let reads = 0;
+    Object.defineProperty(input.propertySnapshot, "name", {
+      enumerable: true,
+      get() {
+        reads += 1;
+        return reads === 1 ? "西湖云栖酒店" : "stateful-secret";
+      },
+    });
+    const database = createQuoteDatabase();
+    const repository = new QuoteRepository(database as unknown as QuoteDatabase);
+
+    await expect(repository.createQuote(input)).rejects.toThrowError(
+      "Invalid quote repository input",
+    );
+    expect(reads).toBe(0);
+    expect(database.$queryRaw).not.toHaveBeenCalled();
+  });
+
+  it("normalizes throwing input Proxy traps without leaking attacker errors", async () => {
+    const input = new Proxy(persistInput(), {
+      ownKeys() {
+        throw new Error("input-proxy-secret");
+      },
+    });
+    const database = createQuoteDatabase();
+    const repository = new QuoteRepository(database as unknown as QuoteDatabase);
+
+    await expect(repository.createQuote(input)).rejects.toThrowError(
+      "Invalid quote repository input",
+    );
+    expect(database.$queryRaw).not.toHaveBeenCalled();
+  });
+
+  it("rejects circular and augmented nightly arrays before serialization", async () => {
+    const input = persistInput();
+    const nightlyPrices = input.nightlyPrices as typeof input.nightlyPrices & {
+      circular?: unknown;
+    };
+    nightlyPrices.circular = nightlyPrices;
+    const database = createQuoteDatabase();
+    const repository = new QuoteRepository(database as unknown as QuoteDatabase);
+
+    await expect(repository.createQuote(input)).rejects.toThrowError(
+      "Invalid quote repository input",
+    );
+    expect(database.$queryRaw).not.toHaveBeenCalled();
+  });
+
+  it("rejects holes and array accessors without invoking them", async () => {
+    const sparseInput = persistInput();
+    Reflect.deleteProperty(sparseInput.nightlyPrices, "1");
+    const accessorInput = persistInput();
+    const firstNight = accessorInput.nightlyPrices[0]!;
+    let reads = 0;
+    Object.defineProperty(accessorInput.nightlyPrices, "0", {
+      enumerable: true,
+      get() {
+        reads += 1;
+        return firstNight;
+      },
+    });
+    const database = createQuoteDatabase();
+    const repository = new QuoteRepository(database as unknown as QuoteDatabase);
+
+    await expect(repository.createQuote(sparseInput)).rejects.toThrowError(
+      "Invalid quote repository input",
+    );
+    await expect(repository.createQuote(accessorInput)).rejects.toThrowError(
+      "Invalid quote repository input",
+    );
+    expect(reads).toBe(0);
+    expect(database.$queryRaw).not.toHaveBeenCalled();
+  });
+
+  it("accepts null-prototype input records after materializing trusted JSON", async () => {
+    const source = persistInput();
+    const input: PersistQuoteInput = copyWithNullPrototype({
+      ...source,
+      propertySnapshot: copyWithNullPrototype(source.propertySnapshot),
+      roomTypeSnapshot: copyWithNullPrototype(source.roomTypeSnapshot),
+      nightlyPrices: source.nightlyPrices.map((nightlyPrice) =>
+        copyWithNullPrototype(nightlyPrice),
+      ),
+    });
+    const database = createQuoteDatabase([
+      [{ id: QUOTE_ID, createdAt: CAPTURED_AT, expiresAt: EXPIRES_AT }],
+    ]);
+    const repository = new QuoteRepository(database as unknown as QuoteDatabase);
+
+    await expect(repository.createQuote(input)).resolves.toMatchObject({ id: QUOTE_ID });
+  });
+
+  it.each([
+    ["null input", null],
+    ["null property snapshot", { ...persistInput(), propertySnapshot: null }],
+    ["null room snapshot", { ...persistInput(), roomTypeSnapshot: null }],
+    ["non-array nightly prices", { ...persistInput(), nightlyPrices: { length: 2 } }],
+  ])("normalizes structurally invalid persistence input: %s", async (_name, input) => {
+    const database = createQuoteDatabase();
+    const repository = new QuoteRepository(database as unknown as QuoteDatabase);
+
+    await expect(repository.createQuote(input as never)).rejects.toThrowError(
+      "Invalid quote repository input",
+    );
+    expect(database.$queryRaw).not.toHaveBeenCalled();
+  });
+
+  it.each(["lookup", "create"] as const)(
+    "does not normalize a database-stage %s failure as invalid input",
+    async (operation) => {
+      const databaseFailure = new Error("database-stage-failure");
+      const database = {
+        $queryRaw: vi.fn(() => Promise.reject(databaseFailure)),
+      };
+      const repository = new QuoteRepository(database);
+
+      const result =
+        operation === "lookup"
+          ? repository.findQuoteInput(ROOM_TYPE_ID, {
+              checkin: "2026-07-31",
+              checkout: "2026-08-02",
+              nights: 2,
+              guests: 2,
+            })
+          : repository.createQuote(persistInput());
+      await expect(result).rejects.toBe(databaseFailure);
+    },
+  );
 
   it.each([
     { ...persistInput(), userId: "not-a-uuid" },

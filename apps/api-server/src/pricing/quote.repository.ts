@@ -1,3 +1,5 @@
+import { types as nodeTypes } from "node:util";
+
 import { Inject, Injectable } from "@nestjs/common";
 import { catalogDateSchema } from "@stay-fable/api-contracts/catalog";
 
@@ -90,6 +92,32 @@ const UUID_PATTERN =
 const FINGERPRINT_PATTERN = /^[0-9a-f]{64}$/;
 const INVALID_INPUT = "Invalid quote repository input";
 const INVALID_DATA = "Unexpected quote repository data";
+const POSTGRES_INTEGER_MAX = 2_147_483_647;
+const rangeKeys = ["checkin", "checkout", "nights", "guests"] as const;
+const persistInputKeys = [
+  "userId",
+  "propertyId",
+  "roomTypeId",
+  "checkin",
+  "checkout",
+  "guests",
+  "propertySnapshot",
+  "roomTypeSnapshot",
+  "nightlyPrices",
+  "bookingPolicySnapshot",
+  "totalPriceCents",
+  "currency",
+  "fingerprint",
+  "expiresAt",
+] as const;
+const propertySnapshotKeys = ["id", "name"] as const;
+const roomTypeSnapshotKeys = ["id", "name", "cover_url"] as const;
+const nightlyPriceKeys = [
+  "business_date",
+  "sale_price_cents",
+  "rack_price_cents",
+  "currency",
+] as const;
 
 const invalidInput = (): never => {
   throw new Error(INVALID_INPUT);
@@ -108,6 +136,103 @@ const isNonblank = (value: unknown, maximum: number): value is string =>
   value.trim().length > 0;
 const isInteger = (value: unknown, minimum: number, maximum: number): value is number =>
   typeof value === "number" && Number.isSafeInteger(value) && value >= minimum && value <= maximum;
+
+const normalizeInputFailure = <T>(operation: () => T): T => {
+  try {
+    return operation();
+  } catch {
+    return invalidInput();
+  }
+};
+
+const materializeRecord = (
+  value: unknown,
+  expectedKeys: readonly string[],
+): Record<string, unknown> =>
+  normalizeInputFailure(() => {
+    if (
+      value === null ||
+      typeof value !== "object" ||
+      Array.isArray(value) ||
+      nodeTypes.isProxy(value)
+    ) {
+      return invalidInput();
+    }
+    const prototype = Reflect.getPrototypeOf(value);
+    if (prototype !== Object.prototype && prototype !== null) {
+      return invalidInput();
+    }
+    const ownKeys = Reflect.ownKeys(value);
+    if (
+      ownKeys.length !== expectedKeys.length ||
+      ownKeys.some((key) => typeof key !== "string" || !expectedKeys.includes(key))
+    ) {
+      return invalidInput();
+    }
+
+    const snapshot = Object.create(null) as Record<string, unknown>;
+    for (const key of expectedKeys) {
+      const descriptor = Reflect.getOwnPropertyDescriptor(value, key);
+      if (
+        descriptor === undefined ||
+        descriptor.enumerable !== true ||
+        !Object.hasOwn(descriptor, "value")
+      ) {
+        return invalidInput();
+      }
+      snapshot[key] = descriptor.value;
+    }
+    return snapshot;
+  });
+
+const materializeNightlyPrices = (value: unknown): Array<Record<string, unknown>> =>
+  normalizeInputFailure(() => {
+    if (!Array.isArray(value) || nodeTypes.isProxy(value)) {
+      return invalidInput();
+    }
+    const prototype = Reflect.getPrototypeOf(value);
+    if (prototype !== Array.prototype) {
+      return invalidInput();
+    }
+    const ownKeys = Reflect.ownKeys(value);
+    const lengthDescriptor = Reflect.getOwnPropertyDescriptor(value, "length");
+    if (
+      lengthDescriptor === undefined ||
+      !Object.hasOwn(lengthDescriptor, "value") ||
+      lengthDescriptor.enumerable !== false ||
+      !isInteger(lengthDescriptor.value, 1, 30)
+    ) {
+      return invalidInput();
+    }
+    const length = lengthDescriptor.value;
+    if (
+      ownKeys.length !== length + 1 ||
+      ownKeys.some(
+        (key) =>
+          typeof key !== "string" ||
+          (key !== "length" && (!/^(?:0|[1-9]\d*)$/.test(key) || Number(key) >= length)),
+      )
+    ) {
+      return invalidInput();
+    }
+
+    const snapshot: Array<Record<string, unknown>> = [];
+    for (let index = 0; index < length; index += 1) {
+      const descriptor = Reflect.getOwnPropertyDescriptor(value, String(index));
+      if (
+        descriptor === undefined ||
+        descriptor.enumerable !== true ||
+        !Object.hasOwn(descriptor, "value")
+      ) {
+        return invalidInput();
+      }
+      snapshot.push(materializeRecord(descriptor.value, nightlyPriceKeys));
+    }
+    return snapshot;
+  });
+
+const trustedRecord = <T extends object>(value: T): T =>
+  Object.assign(Object.create(null) as Record<PropertyKey, unknown>, value);
 
 const dayOrdinal = (value: string): number => {
   const [yearPart, monthPart, dayPart] = value.split("-");
@@ -128,18 +253,30 @@ const dayOrdinal = (value: string): number => {
   );
 };
 
-const validateRange = (roomTypeId: string, range: QuoteRange): void => {
-  if (
-    !isUuid(roomTypeId) ||
-    !catalogDateSchema.safeParse(range.checkin).success ||
-    !catalogDateSchema.safeParse(range.checkout).success ||
-    !isInteger(range.nights, 1, 30) ||
-    !isInteger(range.guests, 1, 10) ||
-    dayOrdinal(range.checkout) - dayOrdinal(range.checkin) !== range.nights
-  ) {
-    invalidInput();
-  }
-};
+const validateRange = (
+  roomTypeId: unknown,
+  range: unknown,
+): { roomTypeId: string; range: QuoteRange } =>
+  normalizeInputFailure(() => {
+    const snapshot = materializeRecord(range, rangeKeys);
+    const { checkin, checkout, nights, guests } = snapshot;
+    if (
+      !isUuid(roomTypeId) ||
+      typeof checkin !== "string" ||
+      !catalogDateSchema.safeParse(checkin).success ||
+      typeof checkout !== "string" ||
+      !catalogDateSchema.safeParse(checkout).success ||
+      !isInteger(nights, 1, 30) ||
+      !isInteger(guests, 1, 10) ||
+      dayOrdinal(checkout) - dayOrdinal(checkin) !== nights
+    ) {
+      return invalidInput();
+    }
+    return {
+      roomTypeId,
+      range: { checkin, checkout, nights, guests },
+    };
+  });
 
 const normalizeRows = (value: unknown): unknown[] => {
   if (!Array.isArray(value)) {
@@ -177,7 +314,12 @@ const readInteger = (value: unknown, minimum: number): number | null => {
       : value instanceof Prisma.Decimal
         ? Number(value)
         : value;
-  if (typeof converted !== "number" || !Number.isSafeInteger(converted) || converted < minimum) {
+  if (
+    typeof converted !== "number" ||
+    !Number.isSafeInteger(converted) ||
+    converted < minimum ||
+    converted > POSTGRES_INTEGER_MAX
+  ) {
     return invalidData();
   }
   if (value instanceof Prisma.Decimal && !new Prisma.Decimal(converted).equals(value)) {
@@ -199,62 +341,128 @@ const readBusinessDate = (value: unknown): string | null => {
   return invalidData();
 };
 
-const validatePersistInput = (input: PersistQuoteInput): void => {
-  if (
-    !isUuid(input.userId) ||
-    !isUuid(input.propertyId) ||
-    !isUuid(input.roomTypeId) ||
-    !catalogDateSchema.safeParse(input.checkin).success ||
-    !catalogDateSchema.safeParse(input.checkout).success ||
-    !isInteger(input.guests, 1, 10) ||
-    input.currency !== "CNY" ||
-    !FINGERPRINT_PATTERN.test(input.fingerprint) ||
-    !(input.expiresAt instanceof Date) ||
-    !Number.isFinite(input.expiresAt.getTime()) ||
-    !isNonblank(input.bookingPolicySnapshot, 2_000)
-  ) {
-    invalidInput();
-  }
+const materializePersistInput = (value: unknown): PersistQuoteInput =>
+  normalizeInputFailure(() => {
+    const input = materializeRecord(value, persistInputKeys);
+    const propertySnapshot = materializeRecord(input.propertySnapshot, propertySnapshotKeys);
+    const roomTypeSnapshot = materializeRecord(input.roomTypeSnapshot, roomTypeSnapshotKeys);
+    const nightlyPriceSnapshots = materializeNightlyPrices(input.nightlyPrices);
+    const {
+      userId,
+      propertyId,
+      roomTypeId,
+      checkin,
+      checkout,
+      guests,
+      bookingPolicySnapshot,
+      totalPriceCents,
+      currency,
+      fingerprint,
+      expiresAt,
+    } = input;
 
-  const nights = dayOrdinal(input.checkout) - dayOrdinal(input.checkin);
-  if (nights < 1 || nights > 30 || input.nightlyPrices.length !== nights) {
-    invalidInput();
-  }
-  if (
-    !isUuid(input.propertySnapshot.id) ||
-    input.propertySnapshot.id !== input.propertyId ||
-    !isNonblank(input.propertySnapshot.name, 120) ||
-    Reflect.ownKeys(input.propertySnapshot).length !== 2 ||
-    !isUuid(input.roomTypeSnapshot.id) ||
-    input.roomTypeSnapshot.id !== input.roomTypeId ||
-    !isNonblank(input.roomTypeSnapshot.name, 120) ||
-    !isNonblank(input.roomTypeSnapshot.cover_url, 500) ||
-    Reflect.ownKeys(input.roomTypeSnapshot).length !== 3
-  ) {
-    invalidInput();
-  }
-
-  let total = 0;
-  for (let index = 0; index < input.nightlyPrices.length; index += 1) {
-    const nightly = input.nightlyPrices[index]!;
     if (
-      Reflect.ownKeys(nightly).length !== 4 ||
-      nightly.business_date !== dateAfter(input.checkin, index) ||
-      !isInteger(nightly.sale_price_cents, 0, Number.MAX_SAFE_INTEGER) ||
-      !isInteger(nightly.rack_price_cents, nightly.sale_price_cents, Number.MAX_SAFE_INTEGER) ||
-      nightly.currency !== "CNY"
+      !isUuid(userId) ||
+      !isUuid(propertyId) ||
+      !isUuid(roomTypeId) ||
+      typeof checkin !== "string" ||
+      !catalogDateSchema.safeParse(checkin).success ||
+      typeof checkout !== "string" ||
+      !catalogDateSchema.safeParse(checkout).success ||
+      !isInteger(guests, 1, 10) ||
+      currency !== "CNY" ||
+      typeof fingerprint !== "string" ||
+      !FINGERPRINT_PATTERN.test(fingerprint) ||
+      !isNonblank(bookingPolicySnapshot, 2_000) ||
+      !isInteger(totalPriceCents, 0, POSTGRES_INTEGER_MAX) ||
+      !(expiresAt instanceof Date) ||
+      nodeTypes.isProxy(expiresAt) ||
+      Reflect.getPrototypeOf(expiresAt) !== Date.prototype
     ) {
-      invalidInput();
+      return invalidInput();
     }
-    total += nightly.sale_price_cents;
-    if (!Number.isSafeInteger(total)) {
-      invalidInput();
+    const expiresAtEpoch = Date.prototype.getTime.call(expiresAt);
+    if (!Number.isFinite(expiresAtEpoch)) {
+      return invalidInput();
     }
-  }
-  if (input.totalPriceCents !== total) {
-    invalidInput();
-  }
-};
+
+    const nights = dayOrdinal(checkout) - dayOrdinal(checkin);
+    if (nights < 1 || nights > 30 || nightlyPriceSnapshots.length !== nights) {
+      return invalidInput();
+    }
+
+    const propertyIdSnapshot = propertySnapshot.id;
+    const propertyNameSnapshot = propertySnapshot.name;
+    const roomTypeIdSnapshot = roomTypeSnapshot.id;
+    const roomTypeNameSnapshot = roomTypeSnapshot.name;
+    const roomTypeCoverSnapshot = roomTypeSnapshot.cover_url;
+    if (
+      !isUuid(propertyIdSnapshot) ||
+      propertyIdSnapshot !== propertyId ||
+      !isNonblank(propertyNameSnapshot, 120) ||
+      !isUuid(roomTypeIdSnapshot) ||
+      roomTypeIdSnapshot !== roomTypeId ||
+      !isNonblank(roomTypeNameSnapshot, 120) ||
+      !isNonblank(roomTypeCoverSnapshot, 500)
+    ) {
+      return invalidInput();
+    }
+
+    const nightlyPrices: PersistQuoteInput["nightlyPrices"] = [];
+    let total = 0;
+    for (let index = 0; index < nightlyPriceSnapshots.length; index += 1) {
+      const nightly = nightlyPriceSnapshots[index]!;
+      const businessDate = nightly.business_date;
+      const salePriceCents = nightly.sale_price_cents;
+      const rackPriceCents = nightly.rack_price_cents;
+      const nightlyCurrency = nightly.currency;
+      if (
+        typeof businessDate !== "string" ||
+        businessDate !== dateAfter(checkin, index) ||
+        !isInteger(salePriceCents, 0, POSTGRES_INTEGER_MAX) ||
+        !isInteger(rackPriceCents, salePriceCents, POSTGRES_INTEGER_MAX) ||
+        nightlyCurrency !== "CNY"
+      ) {
+        return invalidInput();
+      }
+      total += salePriceCents;
+      if (!isInteger(total, 0, POSTGRES_INTEGER_MAX)) {
+        return invalidInput();
+      }
+      nightlyPrices.push(
+        trustedRecord({
+          business_date: businessDate,
+          sale_price_cents: salePriceCents,
+          rack_price_cents: rackPriceCents,
+          currency: nightlyCurrency,
+        }),
+      );
+    }
+    if (totalPriceCents !== total) {
+      return invalidInput();
+    }
+
+    return {
+      userId,
+      propertyId,
+      roomTypeId,
+      checkin,
+      checkout,
+      guests,
+      propertySnapshot: trustedRecord({ id: propertyIdSnapshot, name: propertyNameSnapshot }),
+      roomTypeSnapshot: trustedRecord({
+        id: roomTypeIdSnapshot,
+        name: roomTypeNameSnapshot,
+        cover_url: roomTypeCoverSnapshot,
+      }),
+      nightlyPrices,
+      bookingPolicySnapshot,
+      totalPriceCents,
+      currency,
+      fingerprint,
+      expiresAt: new Date(expiresAtEpoch),
+    };
+  });
 
 const isLeapYear = (year: number): boolean =>
   year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
@@ -283,7 +491,9 @@ export class QuoteRepository {
   constructor(@Inject(DatabaseService) private readonly database: QuoteDatabase) {}
 
   async findQuoteInput(roomTypeId: string, range: QuoteRange): Promise<QuoteInputLookup> {
-    validateRange(roomTypeId, range);
+    const validated = validateRange(roomTypeId, range);
+    const trustedRoomTypeId = validated.roomTypeId;
+    const trustedRange = validated.range;
 
     const baseRows = normalizeRows(
       await this.database.$queryRaw<unknown[]>(Prisma.sql`
@@ -297,7 +507,7 @@ export class QuoteRepository {
           room."booking_policy_zh" AS "bookingPolicy"
         FROM "room_type" AS room
         JOIN "property" AS property ON property."id" = room."property_id"
-        WHERE room."id" = ${roomTypeId}::uuid
+        WHERE room."id" = ${trustedRoomTypeId}::uuid
           AND property."status" = 'OPEN'
           AND room."status" = 'ON_SALE'
         LIMIT 1
@@ -310,10 +520,10 @@ export class QuoteRepository {
       return invalidData();
     }
     const base = validateBaseRow(baseRows[0]);
-    if (base.roomTypeId !== roomTypeId) {
+    if (base.roomTypeId !== trustedRoomTypeId) {
       return invalidData();
     }
-    if (range.guests > base.maxGuests) {
+    if (trustedRange.guests > base.maxGuests) {
       return { status: "CAPACITY_EXCEEDED" };
     }
 
@@ -327,15 +537,15 @@ export class QuoteRepository {
           inventory."held_inventory" AS "heldInventory",
           inventory."sold_inventory" AS "soldInventory"
         FROM generate_series(
-          ${range.checkin}::date,
-          (${range.checkout}::date - INTERVAL '1 day'),
+          ${trustedRange.checkin}::date,
+          (${trustedRange.checkout}::date - INTERVAL '1 day'),
           INTERVAL '1 day'
         ) AS requested(business_date)
         LEFT JOIN "daily_price" AS price
-          ON price."room_type_id" = ${roomTypeId}::uuid
+          ON price."room_type_id" = ${trustedRoomTypeId}::uuid
          AND price."business_date" = requested.business_date
         LEFT JOIN "daily_inventory" AS inventory
-          ON inventory."room_type_id" = ${roomTypeId}::uuid
+          ON inventory."room_type_id" = ${trustedRoomTypeId}::uuid
          AND inventory."business_date" = requested.business_date
         ORDER BY requested.business_date ASC
       `),
@@ -364,7 +574,7 @@ export class QuoteRepository {
         return { status: "NOT_AVAILABLE" };
       }
       if (
-        businessDate !== dateAfter(range.checkin, index) ||
+        businessDate !== dateAfter(trustedRange.checkin, index) ||
         rackPriceCents < salePriceCents ||
         heldInventory + soldInventory > totalInventory
       ) {
@@ -377,7 +587,7 @@ export class QuoteRepository {
         available: totalInventory - heldInventory - soldInventory > 0,
       });
     }
-    if (nightlyRows.length !== range.nights) {
+    if (nightlyRows.length !== trustedRange.nights) {
       return { status: "NOT_AVAILABLE" };
     }
 
@@ -396,7 +606,10 @@ export class QuoteRepository {
   }
 
   async createQuote(input: PersistQuoteInput): Promise<PersistedQuote> {
-    validatePersistInput(input);
+    const trustedInput = materializePersistInput(input);
+    const nightlyPricesJson = JSON.stringify(trustedInput.nightlyPrices);
+    const propertySnapshotJson = JSON.stringify(trustedInput.propertySnapshot);
+    const roomTypeSnapshotJson = JSON.stringify(trustedInput.roomTypeSnapshot);
     const rows = normalizeRows(
       await this.database.$queryRaw<unknown[]>(Prisma.sql`
         INSERT INTO quote (
@@ -405,20 +618,20 @@ export class QuoteRepository {
           total_price_cents, currency, fingerprint, expires_at
         )
         VALUES (
-          ${input.userId}::uuid,
-          ${input.propertyId}::uuid,
-          ${input.roomTypeId}::uuid,
-          ${input.checkin}::date,
-          ${input.checkout}::date,
-          ${input.guests},
-          ${JSON.stringify(input.nightlyPrices)}::jsonb,
-          ${JSON.stringify(input.propertySnapshot)}::jsonb,
-          ${JSON.stringify(input.roomTypeSnapshot)}::jsonb,
-          ${input.bookingPolicySnapshot},
-          ${input.totalPriceCents},
-          ${input.currency},
-          ${input.fingerprint},
-          ${input.expiresAt}
+          ${trustedInput.userId}::uuid,
+          ${trustedInput.propertyId}::uuid,
+          ${trustedInput.roomTypeId}::uuid,
+          ${trustedInput.checkin}::date,
+          ${trustedInput.checkout}::date,
+          ${trustedInput.guests},
+          ${nightlyPricesJson}::jsonb,
+          ${propertySnapshotJson}::jsonb,
+          ${roomTypeSnapshotJson}::jsonb,
+          ${trustedInput.bookingPolicySnapshot},
+          ${trustedInput.totalPriceCents},
+          ${trustedInput.currency},
+          ${trustedInput.fingerprint},
+          ${trustedInput.expiresAt}
         )
         RETURNING
           id,
