@@ -1,7 +1,15 @@
 "use strict";
 
 const assert = require("node:assert/strict");
-const { lstat, mkdir, realpath, writeFile } = require("node:fs/promises");
+const { randomUUID } = require("node:crypto");
+const {
+  link,
+  mkdir,
+  mkdtemp,
+  realpath,
+  rm,
+  writeFile,
+} = require("node:fs/promises");
 const path = require("node:path");
 const automator = require("miniprogram-automator");
 
@@ -69,16 +77,61 @@ function isWithin(parent, candidate) {
   );
 }
 
-function withTimeout(label, task, timeoutMs = ACTION_TIMEOUT_MS) {
+function createCancellationContext(controller = new AbortController()) {
+  return {
+    abort(reason) {
+      if (!controller.signal.aborted) {
+        controller.abort(reason);
+      }
+    },
+    signal: controller.signal,
+    throwIfAborted() {
+      if (controller.signal.aborted) {
+        throw new Error("catalog automation cancelled");
+      }
+    },
+  };
+}
+
+function withTimeout(
+  label,
+  task,
+  timeoutMs = ACTION_TIMEOUT_MS,
+  context,
+) {
   let timer;
   const operation = Promise.resolve().then(task);
   const deadline = new Promise((_, reject) => {
     timer = setTimeout(
-      () => reject(new Error(`${label} timed out`)),
+      () => {
+        context?.abort?.();
+        reject(new Error(`${label} timed out`));
+      },
       timeoutMs,
     );
   });
   return Promise.race([operation, deadline]).finally(() => clearTimeout(timer));
+}
+
+function sleep(milliseconds) {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
+async function runInteraction(
+  context,
+  label,
+  operation,
+  timeoutMs = ACTION_TIMEOUT_MS,
+) {
+  context.throwIfAborted();
+  const result = await withTimeout(
+    label,
+    operation,
+    timeoutMs,
+    context,
+  );
+  context.throwIfAborted();
+  return result;
 }
 
 function invalidArguments() {
@@ -139,11 +192,43 @@ function launchMiniProgram(
   options,
   timeoutMs = ACTION_TIMEOUT_MS * 3,
 ) {
-  return withTimeout(
-    "launch mini-program",
-    () => automatorApi.launch(options),
-    timeoutMs,
+  let launchIsActive = true;
+  const launched = Promise.resolve().then(() => automatorApi.launch(options));
+  launched
+    .then((miniprogram) => {
+      if (!launchIsActive) {
+        return closeMiniProgram(miniprogram).catch(() => undefined);
+      }
+      return undefined;
+    })
+    .catch(() => undefined);
+  return withTimeout("launch mini-program", () => launched, timeoutMs).finally(
+    () => {
+      launchIsActive = false;
+    },
   );
+}
+
+async function closeMiniProgram(
+  miniprogram,
+  timeoutMs = ACTION_TIMEOUT_MS,
+) {
+  try {
+    await withTimeout(
+      "close mini-program",
+      () => miniprogram.close(),
+      timeoutMs,
+    );
+  } catch (error) {
+    try {
+      if (typeof miniprogram.disconnect === "function") {
+        miniprogram.disconnect();
+      }
+    } catch {
+      // The bounded graceful-close error remains the safe public failure.
+    }
+    throw error;
+  }
 }
 
 function createStepTracker() {
@@ -178,67 +263,224 @@ function catalogFailure(step, currentPage, evidencePaths) {
   return error;
 }
 
-async function prepareCatalogHome(miniprogram) {
-  const fixture = await withTimeout("establish catalog fixture", () =>
-    miniprogram.evaluate((value) => {
-      const stored = getApp().globalData.searchStore.set(value);
-      return {
-        city: {
-          id: stored.city.id,
-          code: stored.city.code,
-          name: stored.city.name,
-        },
-        checkin: stored.checkin,
-        checkout: stored.checkout,
-        guests: stored.guests,
-      };
-    }, CATALOG_SEARCH_FIXTURE),
+function formatCatalogFailure(error) {
+  const evidencePaths = Array.isArray(error?.evidencePaths)
+    ? error.evidencePaths.filter(
+        (value) =>
+          typeof value === "string" &&
+          /^catalog-[A-Za-z0-9_-]+\/[0-9A-Za-z_-]+\.(?:png|tree\.wxml)$/.test(
+            value,
+          ),
+      )
+    : [];
+  return {
+    status: "fail",
+    message: "catalog automation failed",
+    step: FAILURE_STEPS.has(error?.step) ? error.step : "workflow",
+    currentPage: safePageRoute(error?.currentPage),
+    evidencePaths,
+  };
+}
+
+async function prepareCatalogHome(miniprogram, context, options = {}) {
+  const cancellation = context || createCancellationContext();
+  const timeoutMs = options.timeoutMs ?? ACTION_TIMEOUT_MS;
+  cancellation.throwIfAborted();
+  const prepared = await withTimeout(
+    "establish catalog fixture",
+    () =>
+      miniprogram.evaluate((value) => {
+        const store = getApp().globalData.searchStore;
+        const original =
+          typeof store.get === "function" ? store.get() : undefined;
+        const stored = store.set(value);
+        return {
+          fixture: {
+            city: {
+              id: stored.city.id,
+              code: stored.city.code,
+              name: stored.city.name,
+            },
+            checkin: stored.checkin,
+            checkout: stored.checkout,
+            guests: stored.guests,
+          },
+          original: {
+            hasValue: original !== undefined && original !== null,
+            value: original,
+          },
+        };
+      }, CATALOG_SEARCH_FIXTURE),
+    timeoutMs,
+    cancellation,
   );
-  assert.deepEqual(fixture, CATALOG_SEARCH_FIXTURE);
-  await withTimeout("open home", () =>
-    miniprogram.reLaunch("/pages/home/home"),
+  cancellation.throwIfAborted();
+  assert.deepEqual(prepared.fixture, CATALOG_SEARCH_FIXTURE);
+  options.onOriginal?.(prepared.original);
+  await withTimeout(
+    "open home",
+    () => miniprogram.reLaunch("/pages/home/home"),
+    timeoutMs,
+    cancellation,
+  );
+  cancellation.throwIfAborted();
+  return prepared.original;
+}
+
+async function restoreCatalogSearch(
+  miniprogram,
+  original,
+  context,
+  timeoutMs = ACTION_TIMEOUT_MS,
+) {
+  const cancellation = context || createCancellationContext();
+  cancellation.throwIfAborted();
+  await withTimeout(
+    "restore catalog search",
+    () =>
+      miniprogram.evaluate((snapshot) => {
+        const store = getApp().globalData.searchStore;
+        return snapshot.hasValue
+          ? store.set(snapshot.value)
+          : store.clear();
+      }, original),
+    timeoutMs,
+    cancellation,
+  );
+  cancellation.throwIfAborted();
+}
+
+function requireElement(
+  container,
+  selector,
+  context,
+  options = {},
+) {
+  return pollUntil(
+    "required element",
+    () => container.$(selector),
+    (element) => element !== null && element !== undefined,
+    context,
+    options,
   );
 }
 
-async function requireElement(container, selector) {
-  const element = await withTimeout(`wait for ${selector}`, async () => {
-    if (typeof container.waitFor === "function") {
-      await container.waitFor(selector);
+async function waitForPage(
+  miniprogram,
+  expectedPath,
+  rootSelector,
+  context,
+  options = {},
+) {
+  const cancellation = context || createCancellationContext();
+  const pollIntervalMs = options.pollIntervalMs ?? 50;
+  const timeoutMs = options.timeoutMs ?? ACTION_TIMEOUT_MS;
+  return withTimeout(
+    `open ${expectedPath}`,
+    async () => {
+      while (true) {
+        cancellation.throwIfAborted();
+        const page = await miniprogram.currentPage();
+        cancellation.throwIfAborted();
+        if (
+          page &&
+          page.path.replace(/^\/+/, "") === expectedPath &&
+          (await page.$(rootSelector))
+        ) {
+          cancellation.throwIfAborted();
+          const data = await page.data();
+          cancellation.throwIfAborted();
+          return { data, page };
+        }
+        await sleep(pollIntervalMs);
+      }
+    },
+    timeoutMs,
+    cancellation,
+  );
+}
+
+function waitForData(
+  page,
+  predicate,
+  label,
+  context,
+  options = {},
+) {
+  return pollUntil(
+    label,
+    () => page.data(),
+    predicate,
+    context,
+    options,
+  );
+}
+
+async function pollUntil(
+  label,
+  operation,
+  predicate,
+  context,
+  options = {},
+) {
+  const cancellation = context || createCancellationContext();
+  const pollIntervalMs = options.pollIntervalMs ?? 50;
+  const timeoutMs = options.timeoutMs ?? ACTION_TIMEOUT_MS;
+  const deadline = Date.now() + timeoutMs;
+  while (true) {
+    cancellation.throwIfAborted();
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) {
+      cancellation.abort();
+      throw new Error(`${label} timed out`);
     }
-    return container.$(selector);
-  });
-  assert.ok(element, `required element missing: ${selector}`);
-  return element;
-}
-
-async function waitForPage(miniprogram, expectedPath, rootSelector) {
-  const page = await withTimeout(`open ${expectedPath}`, async () => {
-    const current = await miniprogram.currentPage();
-    assert.ok(current, `page missing: ${expectedPath}`);
-    await current.waitFor(rootSelector);
-    return current;
-  });
-  assert.equal(page.path.replace(/^\/+/, ""), expectedPath);
-  return { data: await page.data(), page };
-}
-
-async function waitForData(page, predicate, label) {
-  await withTimeout(label, () =>
-    page.waitFor(async () => predicate(await page.data())),
-  );
-  return page.data();
-}
-
-async function ensureAbsent(filePath) {
-  try {
-    await lstat(filePath);
-  } catch (error) {
-    if (error && error.code === "ENOENT") {
-      return;
+    const value = await withTimeout(
+      label,
+      operation,
+      remaining,
+      cancellation,
+    );
+    cancellation.throwIfAborted();
+    if (predicate(value)) {
+      return value;
     }
-    throw error;
+    await sleep(Math.min(pollIntervalMs, Math.max(0, deadline - Date.now())));
   }
-  throw new Error(`evidence artifact already exists: ${path.basename(filePath)}`);
+}
+
+function waitForElementCount(
+  page,
+  selector,
+  expectedCount,
+  context,
+  options = {},
+) {
+  return pollUntil(
+    "nightly price rows",
+    () => page.$$(selector),
+    (rows) => Array.isArray(rows) && rows.length === expectedCount,
+    context,
+    options,
+  );
+}
+
+function confirmBookingModal(miniprogram, context, options = {}) {
+  return pollUntil(
+    "confirm booking notice",
+    async () => {
+      try {
+        return {
+          confirmed: true,
+          value: await miniprogram.native().confirmModal(),
+        };
+      } catch {
+        return { confirmed: false };
+      }
+    },
+    (result) => result.confirmed,
+    context,
+    options,
+  ).then((result) => result.value);
 }
 
 function assertSafeEvidence(source) {
@@ -258,12 +500,51 @@ function relativeEvidencePath(evidenceRoot, filePath) {
   return relative.split(path.sep).join("/");
 }
 
-async function writeTree(evidenceRoot, name, source, evidencePaths) {
+async function publishTempFile(
+  temporaryPath,
+  filePath,
+  context,
+) {
+  context.throwIfAborted();
+  let linked = false;
+  try {
+    await link(temporaryPath, filePath);
+    linked = true;
+    context.throwIfAborted();
+  } catch (error) {
+    if (linked) {
+      await rm(filePath, { force: true });
+    }
+    throw error;
+  }
+}
+
+async function writeTree(
+  evidenceRoot,
+  evidenceParent,
+  name,
+  source,
+  evidencePaths,
+  context,
+) {
   assertSafeEvidence(source);
   const filePath = path.join(evidenceRoot, `${name}.tree.wxml`);
-  await ensureAbsent(filePath);
-  await writeFile(filePath, source, { encoding: "utf8", flag: "wx" });
-  evidencePaths.push(relativeEvidencePath(evidenceRoot, filePath));
+  const temporaryPath = path.join(
+    evidenceRoot,
+    `.${name}.${randomUUID()}.tmp`,
+  );
+  context.throwIfAborted();
+  try {
+    await writeFile(temporaryPath, source, {
+      encoding: "utf8",
+      flag: "wx",
+    });
+    context.throwIfAborted();
+    await publishTempFile(temporaryPath, filePath, context);
+    evidencePaths.push(relativeEvidencePath(evidenceParent, filePath));
+  } finally {
+    await rm(temporaryPath, { force: true });
+  }
 }
 
 async function capturePage(
@@ -273,17 +554,67 @@ async function capturePage(
   evidenceRoot,
   name,
   evidencePaths,
+  context,
+  options = {},
 ) {
-  const root = await requireElement(page, rootSelector);
-  const tree = await withTimeout(`${name} page tree`, () => root.outerWxml());
-  await writeTree(evidenceRoot, name, tree, evidencePaths);
+  const cancellation = context || createCancellationContext();
+  const evidenceParent = options.evidenceParent || evidenceRoot;
+  const timeoutMs = options.timeoutMs ?? ACTION_TIMEOUT_MS;
+  cancellation.throwIfAborted();
+  const root = await requireElement(page, rootSelector, cancellation);
+  cancellation.throwIfAborted();
+  const tree = await withTimeout(
+    `${name} page tree`,
+    () => root.outerWxml(),
+    timeoutMs,
+    cancellation,
+  );
+  cancellation.throwIfAborted();
+  await writeTree(
+    evidenceRoot,
+    evidenceParent,
+    name,
+    tree,
+    evidencePaths,
+    cancellation,
+  );
 
   const screenshotPath = path.join(evidenceRoot, `${name}.png`);
-  await ensureAbsent(screenshotPath);
-  await withTimeout(`${name} screenshot`, () =>
-    miniprogram.screenshot({ path: screenshotPath }),
+  const temporaryPath = path.join(
+    evidenceRoot,
+    `.${name}.${randomUUID()}.tmp`,
   );
-  evidencePaths.push(relativeEvidencePath(evidenceRoot, screenshotPath));
+  cancellation.throwIfAborted();
+  const screenshot = Promise.resolve().then(() =>
+    miniprogram.screenshot({ path: temporaryPath }),
+  );
+  let screenshotCompleted = false;
+  try {
+    await withTimeout(
+      `${name} screenshot`,
+      () => screenshot,
+      timeoutMs,
+      cancellation,
+    );
+    screenshotCompleted = true;
+    cancellation.throwIfAborted();
+    await publishTempFile(temporaryPath, screenshotPath, cancellation);
+    evidencePaths.push(
+      relativeEvidencePath(evidenceParent, screenshotPath),
+    );
+  } catch (error) {
+    await rm(temporaryPath, { force: true });
+    if (!screenshotCompleted) {
+      screenshot
+        .finally(() => rm(temporaryPath, { force: true }))
+        .catch(() => undefined);
+    }
+    throw error;
+  } finally {
+    if (screenshotCompleted) {
+      await rm(temporaryPath, { force: true });
+    }
+  }
 }
 
 async function captureComponent(
@@ -291,19 +622,38 @@ async function captureComponent(
   evidenceRoot,
   name,
   evidencePaths,
+  context,
+  options = {},
 ) {
-  const tree = await withTimeout(`${name} component tree`, () =>
-    component.wxml(),
+  const cancellation = context || createCancellationContext();
+  const tree = await withTimeout(
+    `${name} component tree`,
+    () => component.wxml(),
+    options.timeoutMs ?? ACTION_TIMEOUT_MS,
+    cancellation,
   );
-  await writeTree(evidenceRoot, name, tree, evidencePaths);
+  cancellation.throwIfAborted();
+  await writeTree(
+    evidenceRoot,
+    options.evidenceParent || evidenceRoot,
+    name,
+    tree,
+    evidencePaths,
+    cancellation,
+  );
 }
 
-async function filterElement(page, type) {
-  const filters = await withTimeout("catalog filters", () =>
+async function filterElement(page, type, context) {
+  const filters = await runInteraction(context, "catalog filters", () =>
     page.$$(FILTER_SELECTOR),
   );
   for (const filter of filters) {
-    if ((await filter.attribute("data-type")) === type) {
+    const filterType = await runInteraction(
+      context,
+      "catalog filter type",
+      () => filter.attribute("data-type"),
+    );
+    if (filterType === type) {
       return filter;
     }
   }
@@ -354,17 +704,16 @@ function assertPropertyOnlyItems(items) {
 
 async function catalogWorkflow(
   miniprogram,
-  evidenceRoot,
-  evidencePaths,
+  artifact,
   stepTracker,
+  context,
 ) {
-  stepTracker.enter("fixture");
-  await prepareCatalogHome(miniprogram);
-  stepTracker.enter("home");
+  const { evidenceParent, evidencePaths, evidenceRoot } = artifact;
   let current = await waitForPage(
     miniprogram,
     "pages/home/home",
     HOME_SELECTOR,
+    context,
   );
   assert.equal(current.data.status, "ready");
   const expectedSearch = safeSearchSnapshot(current.data.search);
@@ -375,27 +724,39 @@ async function catalogWorkflow(
     evidenceRoot,
     "01-home-ready",
     evidencePaths,
+    context,
+    { evidenceParent },
   );
 
   const searchAction = await requireElement(
     current.page,
     SEARCH_ACTION_SELECTOR,
+    context,
   );
-  await withTimeout("search properties", () => searchAction.tap());
+  await runInteraction(context, "search properties", () =>
+    searchAction.tap(),
+  );
   stepTracker.enter("property-list");
   current = await waitForPage(
     miniprogram,
     "pages/property-list/property-list",
     PROPERTY_LIST_SELECTOR,
+    context,
   );
   current.data = await waitForData(
     current.page,
     (data) => data.status === "list",
     "property list data",
+    context,
   );
   assertPropertyOnlyItems(current.data.items);
-  assert.equal(await current.page.$(".room-card"), null);
-  await requireElement(current.page, PROPERTY_RESULTS_SELECTOR);
+  assert.equal(
+    await runInteraction(context, "room card absence", () =>
+      current.page.$(".room-card"),
+    ),
+    null,
+  );
+  await requireElement(current.page, PROPERTY_RESULTS_SELECTOR, context);
   await capturePage(
     miniprogram,
     current.page,
@@ -403,16 +764,23 @@ async function catalogWorkflow(
     evidenceRoot,
     "02-property-list-all",
     evidencePaths,
+    context,
+    { evidenceParent },
   );
 
-  const homestay = await filterElement(current.page, HOMESTAY_TYPE);
+  const homestay = await filterElement(
+    current.page,
+    HOMESTAY_TYPE,
+    context,
+  );
   assert.ok(homestay, "HOMESTAY filter missing");
   stepTracker.enter("homestay-filter");
-  await withTimeout("select HOMESTAY", () => homestay.tap());
+  await runInteraction(context, "select HOMESTAY", () => homestay.tap());
   current.data = await waitForData(
     current.page,
     (data) => data.activeType === HOMESTAY_TYPE && data.status === "list",
     "HOMESTAY results",
+    context,
   );
   assertPropertyOnlyItems(current.data.items);
   assert.ok(current.data.items.every((item) => item.type === HOMESTAY_TYPE));
@@ -423,20 +791,23 @@ async function catalogWorkflow(
     evidenceRoot,
     "03-property-list-homestay",
     evidencePaths,
+    context,
+    { evidenceParent },
   );
 
-  const all = await filterElement(current.page, "");
+  const all = await filterElement(current.page, "", context);
   assert.ok(all, "all-properties filter missing");
   stepTracker.enter("restore-all");
-  await withTimeout("restore all properties", () => all.tap());
+  await runInteraction(context, "restore all properties", () => all.tap());
   current.data = await waitForData(
     current.page,
     (data) => data.activeType === "" && data.status === "list",
     "restored property results",
+    context,
   );
   assertPropertyOnlyItems(current.data.items);
 
-  const propertyCards = await withTimeout("property cards", () =>
+  const propertyCards = await runInteraction(context, "property cards", () =>
     current.page.$$(PROPERTY_CARD_SELECTOR),
   );
   assert.ok(propertyCards.length > 0, "property card missing");
@@ -446,23 +817,31 @@ async function catalogWorkflow(
     evidenceRoot,
     "04-first-property-card",
     evidencePaths,
+    context,
+    { evidenceParent },
   );
-  const propertyAction = await withTimeout("property card action", () =>
-    propertyCard.$(PROPERTY_CARD_ACTION_SELECTOR),
+  const propertyAction = await runInteraction(
+    context,
+    "property card action",
+    () => propertyCard.$(PROPERTY_CARD_ACTION_SELECTOR),
   );
   assert.ok(propertyAction, "property card action missing");
-  await withTimeout("open property", () => propertyAction.tap());
+  await runInteraction(context, "open property", () =>
+    propertyAction.tap(),
+  );
 
   stepTracker.enter("property-detail");
   current = await waitForPage(
     miniprogram,
     "pages/property-detail/property-detail",
     PROPERTY_DETAIL_SELECTOR,
+    context,
   );
   current.data = await waitForData(
     current.page,
     (data) => data.status === "success" && data.property !== null,
     "property detail data",
+    context,
   );
   assert.ok(current.data.property.roomTypes.length > 0);
   await capturePage(
@@ -472,31 +851,48 @@ async function catalogWorkflow(
     evidenceRoot,
     "05-property-detail",
     evidencePaths,
+    context,
+    { evidenceParent },
   );
 
-  const roomAction = await requireElement(current.page, ROOM_ACTION_SELECTOR);
-  await withTimeout("open room", () => roomAction.tap());
+  const roomAction = await requireElement(
+    current.page,
+    ROOM_ACTION_SELECTOR,
+    context,
+  );
+  await runInteraction(context, "open room", () => roomAction.tap());
   stepTracker.enter("room-detail");
   current = await waitForPage(
     miniprogram,
     "pages/room-detail/room-detail",
     ROOM_DETAIL_SELECTOR,
+    context,
   );
   current.data = await waitForData(
     current.page,
     (data) => data.status === "success" && data.roomType !== null,
     "room detail data",
+    context,
   );
   assert.ok(current.data.roomType.nightlyPrices.length > 0);
-  const nightlyRows = await withTimeout("nightly price rows", () =>
-    current.page.$$(NIGHTLY_PRICE_SELECTOR),
-  );
-  assert.equal(
-    nightlyRows.length,
+  const nightlyRows = await waitForElementCount(
+    current.page,
+    NIGHTLY_PRICE_SELECTOR,
     current.data.roomType.nightlyPrices.length,
+    context,
   );
-  const bookingHint = await requireElement(current.page, BOOKING_HINT_SELECTOR);
-  assert.match(await bookingHint.text(), /下一切片/);
+  assert.equal(nightlyRows.length, current.data.roomType.nightlyPrices.length);
+  const bookingHint = await requireElement(
+    current.page,
+    BOOKING_HINT_SELECTOR,
+    context,
+  );
+  assert.match(
+    await runInteraction(context, "booking hint text", () =>
+      bookingHint.text(),
+    ),
+    /下一切片/,
+  );
   await capturePage(
     miniprogram,
     current.page,
@@ -504,40 +900,47 @@ async function catalogWorkflow(
     evidenceRoot,
     "06-room-detail",
     evidencePaths,
+    context,
+    { evidenceParent },
   );
 
   const roomSelection = await requireElement(
     current.page,
     ROOM_SELECTION_SELECTOR,
+    context,
   );
   stepTracker.enter("booking-notice");
-  await withTimeout("show booking notice", () => roomSelection.tap());
-  await capturePage(
-    miniprogram,
-    current.page,
-    ROOM_DETAIL_SELECTOR,
-    evidenceRoot,
-    "07-booking-notice",
-    evidencePaths,
+  await runInteraction(context, "show booking notice", () =>
+    roomSelection.tap(),
   );
-  await withTimeout("close booking notice", () =>
-    miniprogram.native().confirmModal(),
+  await confirmBookingModal(
+    miniprogram,
+    context,
   );
 
   stepTracker.enter("return-to-list");
-  await withTimeout("return to property", () => miniprogram.navigateBack());
+  await runInteraction(context, "return to property", () =>
+    miniprogram.navigateBack(),
+  );
   await waitForPage(
     miniprogram,
     "pages/property-detail/property-detail",
     PROPERTY_DETAIL_SELECTOR,
+    context,
   );
-  await withTimeout("return to list", () => miniprogram.navigateBack());
+  await runInteraction(context, "return to list", () =>
+    miniprogram.navigateBack(),
+  );
   current = await waitForPage(
     miniprogram,
     "pages/property-list/property-list",
     PROPERTY_LIST_SELECTOR,
+    context,
   );
-  const restoredSearch = await withTimeout("read restored search", () =>
+  const restoredSearch = await runInteraction(
+    context,
+    "read restored search",
+    () =>
     miniprogram.evaluate(() => {
       const search = getApp().globalData.searchStore.get();
       return {
@@ -564,6 +967,8 @@ async function catalogWorkflow(
     evidenceRoot,
     "08-returned-property-list",
     evidencePaths,
+    context,
+    { evidenceParent },
   );
 
   return {
@@ -572,6 +977,7 @@ async function catalogWorkflow(
     checkout: expectedSearch.checkout,
     guests: expectedSearch.guests,
     propertyCount: current.data.items.length,
+    bookingModalConfirmed: true,
     evidencePaths,
   };
 }
@@ -582,35 +988,53 @@ async function run(
   cliPath,
   dependencies = {},
 ) {
-  assert.ok(path.isAbsolute(projectPath || ""), "absolute projectPath is required");
-  assert.ok(evidenceDirectory, "evidenceDirectory is required");
-  const projectRoot = await realpath(projectPath);
-  const requestedEvidenceRoot = path.resolve(evidenceDirectory);
-  assert.equal(
-    isWithin(projectRoot, requestedEvidenceRoot),
-    false,
-    "evidenceDirectory must be outside the mini-program project",
-  );
-  await mkdir(requestedEvidenceRoot, { recursive: true });
-  const evidenceRoot = await realpath(requestedEvidenceRoot);
-  assert.equal(
-    isWithin(projectRoot, evidenceRoot),
-    false,
-    "evidenceDirectory must be outside the mini-program project",
-  );
-
   const evidencePaths = [];
   const stepTracker = createStepTracker();
+  const timeouts = {
+    actionMs: dependencies.timeouts?.actionMs ?? ACTION_TIMEOUT_MS,
+    closeMs: dependencies.timeouts?.closeMs ?? ACTION_TIMEOUT_MS,
+    evidenceMs:
+      dependencies.timeouts?.evidenceMs ?? ACTION_TIMEOUT_MS,
+    workflowMs:
+      dependencies.timeouts?.workflowMs ?? WORKFLOW_TIMEOUT_MS,
+  };
+  let projectRoot;
+  let evidenceParent;
+  let evidenceRoot;
   let launchOptions;
   try {
+    assert.ok(
+      path.isAbsolute(projectPath || ""),
+      "absolute projectPath is required",
+    );
+    assert.ok(evidenceDirectory, "evidenceDirectory is required");
+    projectRoot = await realpath(projectPath);
+    const requestedEvidenceRoot = path.resolve(evidenceDirectory);
+    assert.equal(
+      isWithin(projectRoot, requestedEvidenceRoot),
+      false,
+      "evidenceDirectory must be outside the mini-program project",
+    );
+    await mkdir(requestedEvidenceRoot, { recursive: true });
+    evidenceParent = await realpath(requestedEvidenceRoot);
+    assert.equal(
+      isWithin(projectRoot, evidenceParent),
+      false,
+      "evidenceDirectory must be outside the mini-program project",
+    );
+    evidenceRoot = await mkdtemp(
+      path.join(evidenceParent, "catalog-"),
+    );
+    evidenceRoot = await realpath(evidenceRoot);
     launchOptions = buildLaunchOptions(
       projectRoot,
       cliPath,
       dependencies.environment || process.env,
     );
   } catch {
-    throw catalogFailure("launch", "unknown", evidencePaths);
+    throw catalogFailure("arguments", "unknown", evidencePaths);
   }
+  const artifact = { evidenceParent, evidencePaths, evidenceRoot };
   let miniprogram;
   try {
     miniprogram = await launchMiniProgram(
@@ -623,42 +1047,85 @@ async function run(
   let result;
   let failure = null;
   let currentPage = "unknown";
+  let originalSearch;
+  const workflowContext = createCancellationContext();
   try {
+    stepTracker.enter("fixture");
+    originalSearch = await prepareCatalogHome(
+      miniprogram,
+      workflowContext,
+      {
+        onOriginal(original) {
+          originalSearch = original;
+        },
+        timeoutMs: timeouts.actionMs,
+      },
+    );
+    stepTracker.enter("home");
+    const workflow = dependencies.workflow || catalogWorkflow;
     result = await withTimeout(
       "catalog workflow",
       () =>
-        catalogWorkflow(
+        workflow(
           miniprogram,
-          evidenceRoot,
-          evidencePaths,
+          artifact,
           stepTracker,
+          workflowContext,
         ),
-      WORKFLOW_TIMEOUT_MS,
+      timeouts.workflowMs,
+      workflowContext,
     );
+    workflowContext.throwIfAborted();
   } catch {
+    workflowContext.abort();
+    const evidenceContext = createCancellationContext();
     try {
-      await withTimeout("failure evidence", async () => {
-        const page = await miniprogram.currentPage();
-        currentPage = safePageRoute(page && page.path);
-        if (page) {
-          const root =
-            (await page.$(ROOM_DETAIL_SELECTOR)) ||
-            (await page.$(PROPERTY_DETAIL_SELECTOR)) ||
-            (await page.$(PROPERTY_LIST_SELECTOR)) ||
-            (await page.$(HOME_SELECTOR));
-          if (root) {
-            await capturePage(
-              miniprogram,
-              page,
-              `.${(await root.attribute("class")).split(/\s+/)[0]}`,
-              evidenceRoot,
-              "99-failure",
-              evidencePaths,
-            );
+      await withTimeout(
+        "failure evidence",
+        async () => {
+          evidenceContext.throwIfAborted();
+          const page = await miniprogram.currentPage();
+          evidenceContext.throwIfAborted();
+          currentPage = safePageRoute(page && page.path);
+          if (page) {
+            let root = null;
+            for (const selector of [
+              ROOM_DETAIL_SELECTOR,
+              PROPERTY_DETAIL_SELECTOR,
+              PROPERTY_LIST_SELECTOR,
+              HOME_SELECTOR,
+            ]) {
+              evidenceContext.throwIfAborted();
+              root = await page.$(selector);
+              evidenceContext.throwIfAborted();
+              if (root) {
+                break;
+              }
+            }
+            if (root) {
+              const rootClass = await root.attribute("class");
+              evidenceContext.throwIfAborted();
+              await capturePage(
+                miniprogram,
+                page,
+                `.${rootClass.split(/\s+/)[0]}`,
+                evidenceRoot,
+                "99-failure",
+                evidencePaths,
+                evidenceContext,
+                {
+                  evidenceParent,
+                  timeoutMs: timeouts.evidenceMs,
+                },
+              );
+            }
           }
-        }
-      });
+        },
+        timeouts.evidenceMs,
+        evidenceContext,
+      );
     } catch {
+      evidenceContext.abort();
       // A failed evidence capture must not mask the workflow failure.
     }
     failure = catalogFailure(
@@ -667,8 +1134,26 @@ async function run(
       evidencePaths,
     );
   }
+  if (originalSearch !== undefined) {
+    try {
+      await restoreCatalogSearch(
+        miniprogram,
+        originalSearch,
+        createCancellationContext(),
+        timeouts.actionMs,
+      );
+    } catch {
+      if (failure === null) {
+        failure = catalogFailure(
+          "cleanup",
+          currentPage,
+          evidencePaths,
+        );
+      }
+    }
+  }
   try {
-    await withTimeout("close mini-program", () => miniprogram.close());
+    await closeMiniProgram(miniprogram, timeouts.closeMs);
   } catch {
     if (failure === null) {
       failure = catalogFailure("cleanup", currentPage, evidencePaths);
@@ -710,15 +1195,7 @@ if (require.main === module) {
         : undefined,
     )
     .catch((error) => {
-      console.error(
-        JSON.stringify({
-          status: "fail",
-          message: error.message,
-          step: error.step || "workflow",
-          currentPage: error.currentPage || "unknown",
-          evidencePaths: error.evidencePaths || [],
-        }),
-      );
+      console.error(JSON.stringify(formatCatalogFailure(error)));
       process.exitCode = 1;
     });
 }
@@ -726,8 +1203,19 @@ if (require.main === module) {
 module.exports = {
   CATALOG_SEARCH_FIXTURE,
   buildLaunchOptions,
+  closeMiniProgram,
+  createCancellationContext,
   launchMiniProgram,
   parseCliArguments,
   prepareCatalogHome,
+  restoreCatalogSearch,
+  requireElement,
   run,
+  waitForData,
+  waitForPage,
+  capturePage,
+  confirmBookingModal,
+  formatCatalogFailure,
+  publishTempFile,
+  waitForElementCount,
 };
