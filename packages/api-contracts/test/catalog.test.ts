@@ -145,6 +145,33 @@ describe("catalog contracts", () => {
     }
   });
 
+  it("accepts real calendar dates while rejecting impossible calendar dates", () => {
+    expect(catalogDateSchema.parse("2028-02-29")).toBe("2028-02-29");
+
+    for (const date of ["2026-02-30", "2026-99-99", "0000-00-00", "2027-02-29"]) {
+      expect(catalogDateSchema.safeParse(date).success).toBe(false);
+    }
+  });
+
+  it("defaults and bounds property list pagination cursors", () => {
+    const query = {
+      checkin: "2026-08-01",
+      checkout: "2026-08-02",
+      guests: 2,
+      city_id: ids.city,
+    };
+
+    expect(propertyListQuerySchema.parse(query)).toEqual({ ...query, page_size: 10 });
+    expect(propertyListQuerySchema.parse({ ...query, cursor: "a" }).cursor).toBe("a");
+    expect(propertyListQuerySchema.parse({ ...query, cursor: "a".repeat(256) }).cursor).toBe(
+      "a".repeat(256),
+    );
+    expect(propertyListQuerySchema.safeParse({ ...query, cursor: "" }).success).toBe(false);
+    expect(propertyListQuerySchema.safeParse({ ...query, cursor: "a".repeat(257) }).success).toBe(
+      false,
+    );
+  });
+
   it("limits property types, currencies, resource paths, and money cents", () => {
     for (const type of ["HOTEL", "HOMESTAY", "FARM_STAY"]) {
       expect(propertyTypeSchema.parse(type)).toBe(type);
@@ -170,6 +197,31 @@ describe("catalog contracts", () => {
     }
   });
 
+  it("accepts only well-formed HTTPS URLs and safe local image paths", () => {
+    expect(catalogResourceSchema.parse("https://cdn.example.com/images/photo.jpg?width=480#hero")).toBe(
+      "https://cdn.example.com/images/photo.jpg?width=480#hero",
+    );
+    expect(catalogResourceSchema.parse("/images/rooms/lake_view-1.0.jpg")).toBe(
+      "/images/rooms/lake_view-1.0.jpg",
+    );
+
+    for (const resource of [
+      "https://",
+      "https://user:password@cdn.example.com/photo.jpg",
+      "/images/",
+      "/images//photo.jpg",
+      "/images/./photo.jpg",
+      "/images/../photo.jpg",
+      "/images/room\\photo.jpg",
+      "/images/photo.jpg?width=480",
+      "/images/photo.jpg#hero",
+      "/images/room name.jpg",
+      "https:/cdn.example.com/photo.jpg",
+    ]) {
+      expect(catalogResourceSchema.safeParse(resource).success).toBe(false);
+    }
+  });
+
   it("rejects unknown fields in strict catalog objects", () => {
     expect(
       propertyListQuerySchema.safeParse({
@@ -185,6 +237,32 @@ describe("catalog contracts", () => {
       propertyDetailSchema.safeParse({
         ...propertyDetail,
         media: [{ ...propertyDetail.media[0], ignored: true }],
+      }).success,
+    ).toBe(false);
+  });
+
+  it("rejects unknown fields in catalog response cities", () => {
+    expect(
+      propertyDetailSchema.safeParse({
+        ...propertyDetail,
+        city: { ...city, ignored: true },
+      }).success,
+    ).toBe(false);
+  });
+
+  it("bounds room type detail nightly prices from one through thirty entries", () => {
+    expect(roomTypeDetailSchema.parse(roomTypeDetail).nightly_prices).toHaveLength(1);
+    expect(
+      roomTypeDetailSchema.parse({
+        ...roomTypeDetail,
+        nightly_prices: Array.from({ length: 30 }, () => roomTypeDetail.nightly_prices[0]),
+      }).nightly_prices,
+    ).toHaveLength(30);
+    expect(roomTypeDetailSchema.safeParse({ ...roomTypeDetail, nightly_prices: [] }).success).toBe(false);
+    expect(
+      roomTypeDetailSchema.safeParse({
+        ...roomTypeDetail,
+        nightly_prices: Array.from({ length: 31 }, () => roomTypeDetail.nightly_prices[0]),
       }).success,
     ).toBe(false);
   });

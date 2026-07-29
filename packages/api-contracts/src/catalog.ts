@@ -2,13 +2,63 @@ import { z } from "zod";
 
 import { citySchema } from "./location.js";
 
+const catalogCitySchema = citySchema.strict();
+
 export const propertyTypeSchema = z.enum(["HOTEL", "HOMESTAY", "FARM_STAY"]);
 export const currencySchema = z.literal("CNY");
-export const catalogDateSchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
+const catalogDatePattern = /^\d{4}-\d{2}-\d{2}$/;
+
+const isCalendarDate = (value: string) => {
+  const [yearPart, monthPart, dayPart] = value.split("-");
+  if (!yearPart || !monthPart || !dayPart) {
+    return false;
+  }
+
+  const year = Number(yearPart);
+  const month = Number(monthPart);
+  const day = Number(dayPart);
+  const isLeapYear = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+  const daysInMonth = [31, isLeapYear ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+  const daysInSelectedMonth = daysInMonth[month - 1];
+
+  return (
+    year > 0 &&
+    month >= 1 &&
+    month <= 12 &&
+    day >= 1 &&
+    daysInSelectedMonth !== undefined &&
+    day <= daysInSelectedMonth
+  );
+};
+
+export const catalogDateSchema = z.string().regex(catalogDatePattern).refine(isCalendarDate);
+const localImagePathPattern = /^\/images\/[A-Za-z0-9._-]+(?:\/[A-Za-z0-9._-]+)*$/;
+
+const isCatalogResource = (value: string) => {
+  if (value.startsWith("/images/")) {
+    return (
+      localImagePathPattern.test(value) &&
+      value.split("/").slice(2).every((segment) => segment !== "." && segment !== "..")
+    );
+  }
+
+  if (!value.startsWith("https://")) {
+    return false;
+  }
+
+  try {
+    const url = new URL(value);
+
+    return url.protocol === "https:" && url.hostname.length > 0 && !url.username && !url.password;
+  } catch {
+    return false;
+  }
+};
+
 export const catalogResourceSchema = z
   .string()
   .max(500)
-  .refine((value) => value.startsWith("https://") || value.startsWith("/images/"));
+  .refine(isCatalogResource);
 
 const moneyCentsSchema = z.number().int().nonnegative().safe();
 
@@ -34,7 +84,7 @@ export const propertyListItemSchema = z
     id: z.uuid(),
     type: propertyTypeSchema,
     name: z.string().min(1).max(120),
-    city: citySchema,
+    city: catalogCitySchema,
     cover_url: catalogResourceSchema,
     short_description: z.string().min(1).max(240),
     facility_highlights: z.array(z.string().min(1).max(80)).max(4),
@@ -85,7 +135,7 @@ export const propertyDetailSchema = z
     id: z.uuid(),
     type: propertyTypeSchema,
     name: z.string().min(1).max(120),
-    city: citySchema,
+    city: catalogCitySchema,
     address: z.string().min(1).max(240),
     description: z.string().min(1).max(2000),
     policies: z.string().min(1).max(2000),
@@ -110,7 +160,7 @@ const roomTypePropertySchema = z
     id: z.uuid(),
     type: propertyTypeSchema,
     name: z.string().min(1).max(120),
-    city: citySchema,
+    city: catalogCitySchema,
   })
   .strict();
 
