@@ -195,21 +195,5 @@ FOREIGN KEY ("actor_user_id") REFERENCES "user"("id")
 ON DELETE RESTRICT ON UPDATE CASCADE;
 
 ALTER TABLE "daily_inventory"
-DROP CONSTRAINT "daily_inventory_available_check";
-
-ALTER TABLE "daily_inventory"
-ADD CONSTRAINT "daily_inventory_capacity_check"
-CHECK (
-    "total_inventory" < 0
-    OR "held_inventory" < 0
-    OR "sold_inventory" < 0
-    OR (
-        "total_inventory" >= 0
-        AND "held_inventory" >= 0
-        AND "sold_inventory" >= 0
-        AND "held_inventory" + "sold_inventory" <= "total_inventory"
-    )
-) NOT VALID;
-
-ALTER TABLE "daily_inventory"
-VALIDATE CONSTRAINT "daily_inventory_capacity_check";
+RENAME CONSTRAINT "daily_inventory_available_check"
+TO "daily_inventory_capacity_check";
