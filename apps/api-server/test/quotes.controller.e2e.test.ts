@@ -122,14 +122,27 @@ describe("QuotesController", () => {
   });
 
   it.each([
-    [{ ...body, unknown: true }],
-    [{ ...body, room_type_id: "not-a-uuid" }],
-    [{ ...body, checkin: "2026/08/01" }],
-    [{ ...body, guests: 0 }],
-    [{ ...body, guests: 1.5 }],
-  ])("rejects an invalid transport body before the service", async (invalidBody) => {
+    ["unknown field", { ...body, unknown: true }],
+    ["invalid UUID", { ...body, room_type_id: "not-a-uuid" }],
+    ["malformed date", { ...body, checkin: "2026/08/01" }],
+    ["guest count below range", { ...body, guests: 0 }],
+    ["fractional guest count", { ...body, guests: 1.5 }],
+    ["string guest count", { ...body, guests: "2" }],
+    ["null body", null],
+    ["array body", [body]],
+  ])("maps a transport failure for %s to the stable quote error", async (_name, invalidBody) => {
     const { quotes, server } = await createApp();
-    await request(server).post("/api/v1/quotes").send(invalidBody).expect(400);
+    const response = await request(server)
+      .post("/api/v1/quotes")
+      .send(invalidBody ?? undefined)
+      .expect(400);
+    expect(response.body).toMatchObject({
+      error: {
+        code: "QUOTE_REQUEST_INVALID",
+        message: "报价请求无效，请检查入住信息",
+      },
+    });
+    expect(response.body).toHaveProperty("request_id");
     expect(quotes.create).not.toHaveBeenCalled();
   });
 

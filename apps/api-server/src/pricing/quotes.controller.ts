@@ -17,7 +17,7 @@ import type { QuoteResponseData } from "@stay-fable/api-contracts/booking";
 
 import { CurrentUser, type AuthenticatedUser } from "../identity/current-user.js";
 import { SessionAuthGuard } from "../identity/session-auth.guard.js";
-import { CreateQuoteRequestDto } from "./dto/quote-request.dto.js";
+import { QuoteRequestPipe } from "./dto/quote-request.dto.js";
 import { QuoteEnvelopeDto, QuoteErrorEnvelopeDto } from "./dto/quote-response.dto.js";
 import { QuotesService } from "./quotes.service.js";
 
@@ -60,7 +60,7 @@ export class QuotesController {
   })
   createQuote(
     @CurrentUser() user: AuthenticatedUser,
-    @Body() body: CreateQuoteRequestDto,
+    @Body(new QuoteRequestPipe()) body: unknown,
   ): Promise<QuoteResponseData> {
     return this.quotes.create(user.id, body);
   }

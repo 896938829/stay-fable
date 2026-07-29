@@ -3,8 +3,9 @@ import { SwaggerModule } from "@nestjs/swagger";
 import { Test } from "@nestjs/testing";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { OPEN_API_CONFIG } from "../src/application-configuration.js";
+import { configureApplication, OPEN_API_CONFIG } from "../src/application-configuration.js";
 import { SessionAuthGuard } from "../src/identity/session-auth.guard.js";
+import { PricingModule } from "../src/pricing/pricing.module.js";
 import { QuotesController } from "../src/pricing/quotes.controller.js";
 import { QuotesService } from "../src/pricing/quotes.service.js";
 
@@ -47,10 +48,12 @@ describe("Booking slice OpenAPI", () => {
       .useValue({ canActivate: () => true })
       .compile();
     app = module.createNestApplication();
+    configureApplication(app, "production");
     await app.init();
     const document = SwaggerModule.createDocument(app, OPEN_API_CONFIG) as unknown as Document;
-    expect(Object.keys(document.paths)).toEqual(["/quotes"]);
-    const operation = document.paths["/quotes"]?.post;
+    expect(Object.keys(document.paths)).toEqual(["/api/v1/quotes"]);
+    expect(document.paths).not.toHaveProperty("/api/v1/bookings");
+    const operation = document.paths["/api/v1/quotes"]?.post;
     expect(operation?.security).toEqual([{ session: [] }]);
     expect(operation?.requestBody?.content?.["application/json"]?.schema).toEqual({
       type: "object",
@@ -97,5 +100,31 @@ describe("Booking slice OpenAPI", () => {
     expect(JSON.stringify(schemas?.QuoteResponseDto)).not.toMatch(
       /inventory|fingerprint|user_id|version|held|sold/,
     );
+  });
+
+  it("keeps the production module wiring explicit without exposing bookings early", async () => {
+    const previousEnvironment = {
+      DATABASE_URL: process.env.DATABASE_URL,
+      REDIS_URL: process.env.REDIS_URL,
+      IDENTITY_PROVIDER: process.env.IDENTITY_PROVIDER,
+    };
+    process.env.DATABASE_URL = "postgresql://test:test@127.0.0.1:5432/test";
+    process.env.REDIS_URL = "redis://127.0.0.1:6379";
+    process.env.IDENTITY_PROVIDER = "mock";
+    try {
+      const { AppModule } = await import("../src/app.module.js");
+      const appImports = Reflect.getMetadata("imports", AppModule) as unknown[];
+      const pricingControllers = Reflect.getMetadata("controllers", PricingModule) as unknown[];
+      expect(appImports).toContain(PricingModule);
+      expect(pricingControllers).toEqual([QuotesController]);
+    } finally {
+      for (const [key, value] of Object.entries(previousEnvironment)) {
+        if (value === undefined) {
+          delete process.env[key];
+        } else {
+          process.env[key] = value;
+        }
+      }
+    }
   });
 });
