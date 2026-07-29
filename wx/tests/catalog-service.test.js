@@ -98,6 +98,16 @@ function createService(response) {
   };
 }
 
+function deferred() {
+  let resolve;
+  let reject;
+  const promise = new Promise((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}
+
 describe("catalog service", () => {
   it("builds the property-list query in a fixed order and validates the response", async () => {
     const { requestClient, service } = createService(listResponse);
@@ -112,6 +122,45 @@ describe("catalog service", () => {
       }),
     ).resolves.toEqual(listResponse);
 
+    expect(requestClient.get).toHaveBeenCalledWith(
+      "/properties?city_id=10000000-0000-4000-8000-000000000001&checkin=2026-07-30&checkout=2026-08-01&guests=2&property_type=HOTEL&page_size=10&cursor=cursor_1-abc",
+    );
+  });
+
+  it("snapshots every list query field with a single read", async () => {
+    const reads = {};
+    const query = {};
+    const values = {
+      city_id: IDS.city,
+      checkin: availability.checkin,
+      checkout: availability.checkout,
+      guests: availability.guests,
+      property_type: "HOTEL",
+      page_size: 10,
+      cursor: "cursor_1-abc",
+    };
+    for (const [key, value] of Object.entries(values)) {
+      Object.defineProperty(query, key, {
+        enumerable: true,
+        get() {
+          reads[key] = (reads[key] || 0) + 1;
+          return reads[key] === 1 ? value : null;
+        },
+      });
+    }
+    const { requestClient, service } = createService(listResponse);
+
+    await expect(service.listProperties(query)).resolves.toEqual(listResponse);
+
+    expect(reads).toEqual({
+      city_id: 1,
+      checkin: 1,
+      checkout: 1,
+      guests: 1,
+      property_type: 1,
+      page_size: 1,
+      cursor: 1,
+    });
     expect(requestClient.get).toHaveBeenCalledWith(
       "/properties?city_id=10000000-0000-4000-8000-000000000001&checkin=2026-07-30&checkout=2026-08-01&guests=2&property_type=HOTEL&page_size=10&cursor=cursor_1-abc",
     );
@@ -142,6 +191,68 @@ describe("catalog service", () => {
     expect(room.requestClient.get).toHaveBeenCalledWith(
       `/room-types/${IDS.roomType}?checkin=2026-07-30&checkout=2026-08-01&guests=2`,
     );
+  });
+
+  it("binds a deferred room response to the availability snapshot sent in the request", async () => {
+    const pending = deferred();
+    const requestClient = { get: vi.fn(() => pending.promise) };
+    const service = createCatalogService(requestClient);
+    const mutableAvailability = { ...availability };
+
+    const result = service.getRoomType(IDS.roomType, mutableAvailability);
+    mutableAvailability.guests = 3;
+    pending.resolve(roomDetail);
+
+    await expect(result).resolves.toEqual(roomDetail);
+    expect(requestClient.get).toHaveBeenCalledWith(
+      `/room-types/${IDS.roomType}?checkin=2026-07-30&checkout=2026-08-01&guests=2`,
+    );
+  });
+
+  it("reads changing detail availability getters only once", async () => {
+    const reads = {};
+    const changingAvailability = {};
+    for (const [key, value] of Object.entries(availability)) {
+      Object.defineProperty(changingAvailability, key, {
+        enumerable: true,
+        get() {
+          reads[key] = (reads[key] || 0) + 1;
+          return reads[key] === 1 ? value : null;
+        },
+      });
+    }
+    const { requestClient, service } = createService(roomDetail);
+
+    await expect(
+      service.getRoomType(IDS.roomType, changingAvailability),
+    ).resolves.toEqual(roomDetail);
+
+    expect(reads).toEqual({ checkin: 1, checkout: 1, guests: 1 });
+    expect(requestClient.get).toHaveBeenCalledWith(
+      `/room-types/${IDS.roomType}?checkin=2026-07-30&checkout=2026-08-01&guests=2`,
+    );
+  });
+
+  it("maps a throwing availability getter to stable input rejection without requesting", async () => {
+    const hostileAvailability = {
+      checkout: availability.checkout,
+      guests: availability.guests,
+    };
+    Object.defineProperty(hostileAvailability, "checkin", {
+      enumerable: true,
+      get() {
+        throw new Error("hostile getter");
+      },
+    });
+    const { requestClient, service } = createService(roomDetail);
+
+    await expect(
+      service.getRoomType(IDS.roomType, hostileAvailability),
+    ).rejects.toMatchObject({
+      code: "INVALID_CATALOG_INPUT",
+      message: "Invalid catalog input",
+    });
+    expect(requestClient.get).not.toHaveBeenCalled();
   });
 
   it("accepts an empty property room collection from the real catalog service", async () => {
@@ -275,6 +386,34 @@ describe("catalog service", () => {
     expect(requestClient.get).not.toHaveBeenCalled();
   });
 
+  it("rejects non-canonical uppercase UUID inputs before requesting", async () => {
+    const list = createService(listResponse);
+    const property = createService(propertyDetail);
+    const room = createService(roomDetail);
+
+    await expect(
+      list.service.listProperties({
+        city_id: "10000000-0000-4000-8000-00000000000A",
+        ...availability,
+      }),
+    ).rejects.toMatchObject({ code: "INVALID_CATALOG_INPUT" });
+    await expect(
+      property.service.getProperty(
+        "20000000-0000-4000-8000-00000000000A",
+        availability,
+      ),
+    ).rejects.toMatchObject({ code: "INVALID_CATALOG_INPUT" });
+    await expect(
+      room.service.getRoomType(
+        "30000000-0000-4000-8000-00000000000A",
+        availability,
+      ),
+    ).rejects.toMatchObject({ code: "INVALID_CATALOG_INPUT" });
+    expect(list.requestClient.get).not.toHaveBeenCalled();
+    expect(property.requestClient.get).not.toHaveBeenCalled();
+    expect(room.requestClient.get).not.toHaveBeenCalled();
+  });
+
   it("rejects a response larger than the requested page before returning data", async () => {
     const { requestClient, service } = createService({
       items: [listResponse.items[0], { ...listResponse.items[0] }],
@@ -292,6 +431,29 @@ describe("catalog service", () => {
       message: "Invalid API response",
     });
     expect(requestClient.get).toHaveBeenCalledOnce();
+  });
+
+  it("binds a deferred list response to the page-size snapshot sent in the request", async () => {
+    const pending = deferred();
+    const requestClient = { get: vi.fn(() => pending.promise) };
+    const service = createCatalogService(requestClient);
+    const query = {
+      city_id: IDS.city,
+      ...availability,
+      page_size: 2,
+    };
+
+    const result = service.listProperties(query);
+    query.page_size = 1;
+    pending.resolve({
+      items: [listResponse.items[0], { ...listResponse.items[0] }],
+      next_cursor: null,
+    });
+
+    await expect(result).resolves.toMatchObject({ items: expect.any(Array) });
+    expect(requestClient.get).toHaveBeenCalledWith(
+      "/properties?city_id=10000000-0000-4000-8000-000000000001&checkin=2026-07-30&checkout=2026-08-01&guests=2&page_size=2",
+    );
   });
 
   it("reuses a server cursor through the real request client and safe path validation", async () => {

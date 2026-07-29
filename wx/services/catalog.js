@@ -6,11 +6,20 @@ const {
   assertRoomTypeDetail,
 } = require("./contracts");
 
-const UUID_PATTERN =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+// Catalog route identifiers mirror canonical lowercase PostgreSQL UUID v4 text.
+const CANONICAL_UUID_V4_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 const PROPERTY_TYPES = ["HOTEL", "HOMESTAY", "FARM_STAY"];
 const CATALOG_CURSOR_PATTERN = /^[A-Za-z0-9_-]+$/;
+const AVAILABILITY_KEYS = ["checkin", "checkout", "guests"];
+const LIST_QUERY_KEYS = [
+  "city_id",
+  ...AVAILABILITY_KEYS,
+  "property_type",
+  "page_size",
+  "cursor",
+];
 
 function catalogInputError() {
   const error = new Error("Invalid catalog input");
@@ -30,10 +39,6 @@ function isObject(value) {
   }
   const prototype = Object.getPrototypeOf(value);
   return prototype === Object.prototype || prototype === null;
-}
-
-function hasOnlyKeys(value, allowed) {
-  return Object.keys(value).every((key) => allowed.includes(key));
 }
 
 function parseDate(value) {
@@ -80,10 +85,29 @@ function parseDate(value) {
   return ordinal;
 }
 
-function assertAvailability(value, allowedKeys) {
-  if (!isObject(value) || !hasOnlyKeys(value, allowedKeys)) {
+function readInputSnapshot(value, allowedKeys, requiredKeys) {
+  try {
+    if (!isObject(value)) {
+      throw catalogInputError();
+    }
+    const keys = Object.keys(value);
+    if (
+      keys.some((key) => !allowedKeys.includes(key)) ||
+      requiredKeys.some((key) => !keys.includes(key))
+    ) {
+      throw catalogInputError();
+    }
+    const snapshot = Object.create(null);
+    for (const key of keys) {
+      snapshot[key] = value[key];
+    }
+    return Object.freeze(snapshot);
+  } catch {
     throw catalogInputError();
   }
+}
+
+function assertAvailability(value) {
   const checkinOrdinal = parseDate(value.checkin);
   const checkoutOrdinal = parseDate(value.checkout);
   const nights = checkoutOrdinal - checkinOrdinal;
@@ -96,7 +120,58 @@ function assertAvailability(value, allowedKeys) {
   ) {
     throw catalogInputError();
   }
-  return { checkinOrdinal, checkoutOrdinal, nights };
+  return Object.freeze({
+    checkin: value.checkin,
+    checkout: value.checkout,
+    guests: value.guests,
+    checkinOrdinal,
+    checkoutOrdinal,
+    nights,
+  });
+}
+
+function snapshotAvailability(value) {
+  return assertAvailability(
+    readInputSnapshot(value, AVAILABILITY_KEYS, AVAILABILITY_KEYS),
+  );
+}
+
+function snapshotListQuery(value) {
+  const input = readInputSnapshot(value, LIST_QUERY_KEYS, [
+    "city_id",
+    ...AVAILABILITY_KEYS,
+  ]);
+  const availability = assertAvailability(input);
+  if (
+    typeof input.city_id !== "string" ||
+    !CANONICAL_UUID_V4_PATTERN.test(input.city_id) ||
+    (Object.prototype.hasOwnProperty.call(input, "property_type") &&
+      !PROPERTY_TYPES.includes(input.property_type)) ||
+    (Object.prototype.hasOwnProperty.call(input, "page_size") &&
+      (!Number.isInteger(input.page_size) ||
+        input.page_size < 1 ||
+        input.page_size > 20)) ||
+    (Object.prototype.hasOwnProperty.call(input, "cursor") &&
+      (typeof input.cursor !== "string" ||
+        input.cursor.length < 1 ||
+        input.cursor.length > 256 ||
+        !CATALOG_CURSOR_PATTERN.test(input.cursor)))
+  ) {
+    throw catalogInputError();
+  }
+  return Object.freeze({
+    city_id: input.city_id,
+    ...availability,
+    ...(Object.prototype.hasOwnProperty.call(input, "property_type")
+      ? { property_type: input.property_type }
+      : {}),
+    ...(Object.prototype.hasOwnProperty.call(input, "page_size")
+      ? { page_size: input.page_size }
+      : {}),
+    ...(Object.prototype.hasOwnProperty.call(input, "cursor")
+      ? { cursor: input.cursor }
+      : {}),
+  });
 }
 
 function assertResponseId(value, requestedId) {
@@ -123,17 +198,17 @@ function responseDateOrdinal(value) {
   }
 }
 
-function assertRoomAvailability(value, availability, range) {
+function assertRoomAvailability(value, availability) {
   if (
     value.max_guests < availability.guests ||
-    value.nightly_prices.length !== range.nights
+    value.nightly_prices.length !== availability.nights
   ) {
     throw invalidResponse();
   }
   for (let index = 0; index < value.nightly_prices.length; index += 1) {
     if (
       responseDateOrdinal(value.nightly_prices[index].business_date) !==
-      range.checkinOrdinal + index
+      availability.checkinOrdinal + index
     ) {
       throw invalidResponse();
     }
@@ -153,7 +228,10 @@ function availabilityQuery(value) {
 }
 
 function assertPropertyId(value) {
-  if (typeof value !== "string" || !UUID_PATTERN.test(value)) {
+  if (
+    typeof value !== "string" ||
+    !CANONICAL_UUID_V4_PATTERN.test(value)
+  ) {
     throw catalogInputError();
   }
 }
@@ -161,56 +239,30 @@ function assertPropertyId(value) {
 function createCatalogService(requestClient) {
   return {
     async listProperties(query) {
-      const keys = [
-        "city_id",
-        "checkin",
-        "checkout",
-        "guests",
-        "property_type",
-        "page_size",
-        "cursor",
-      ];
-      assertAvailability(query, keys);
-      if (
-        typeof query.city_id !== "string" ||
-        !UUID_PATTERN.test(query.city_id) ||
-        (Object.prototype.hasOwnProperty.call(query, "property_type") &&
-          !PROPERTY_TYPES.includes(query.property_type)) ||
-        (Object.prototype.hasOwnProperty.call(query, "page_size") &&
-          (!Number.isInteger(query.page_size) ||
-            query.page_size < 1 ||
-            query.page_size > 20)) ||
-        (Object.prototype.hasOwnProperty.call(query, "cursor") &&
-          (typeof query.cursor !== "string" ||
-            query.cursor.length < 1 ||
-            query.cursor.length > 256 ||
-            !CATALOG_CURSOR_PATTERN.test(query.cursor)))
-      ) {
-        throw catalogInputError();
-      }
+      const snapshot = snapshotListQuery(query);
 
       const parts = [];
-      appendQuery(parts, "city_id", query.city_id);
-      appendQuery(parts, "checkin", query.checkin);
-      appendQuery(parts, "checkout", query.checkout);
-      appendQuery(parts, "guests", query.guests);
-      if (Object.prototype.hasOwnProperty.call(query, "property_type")) {
-        appendQuery(parts, "property_type", query.property_type);
+      appendQuery(parts, "city_id", snapshot.city_id);
+      appendQuery(parts, "checkin", snapshot.checkin);
+      appendQuery(parts, "checkout", snapshot.checkout);
+      appendQuery(parts, "guests", snapshot.guests);
+      if (Object.prototype.hasOwnProperty.call(snapshot, "property_type")) {
+        appendQuery(parts, "property_type", snapshot.property_type);
       }
-      if (Object.prototype.hasOwnProperty.call(query, "page_size")) {
-        appendQuery(parts, "page_size", query.page_size);
+      if (Object.prototype.hasOwnProperty.call(snapshot, "page_size")) {
+        appendQuery(parts, "page_size", snapshot.page_size);
       }
-      if (Object.prototype.hasOwnProperty.call(query, "cursor")) {
-        appendQuery(parts, "cursor", query.cursor);
+      if (Object.prototype.hasOwnProperty.call(snapshot, "cursor")) {
+        appendQuery(parts, "cursor", snapshot.cursor);
       }
 
       const data = await requestClient.get(`/properties?${parts.join("&")}`);
       const response = assertPropertyListResponse(data);
       const requestedPageSize = Object.prototype.hasOwnProperty.call(
-        query,
+        snapshot,
         "page_size",
       )
-        ? query.page_size
+        ? snapshot.page_size
         : 10;
       if (response.items.length > requestedPageSize) {
         throw invalidResponse();
@@ -220,29 +272,25 @@ function createCatalogService(requestClient) {
 
     async getProperty(propertyId, availability) {
       assertPropertyId(propertyId);
-      assertAvailability(availability, ["checkin", "checkout", "guests"]);
+      const snapshot = snapshotAvailability(availability);
       const data = await requestClient.get(
-        `/properties/${encodeURIComponent(propertyId)}?${availabilityQuery(availability)}`,
+        `/properties/${encodeURIComponent(propertyId)}?${availabilityQuery(snapshot)}`,
       );
       const response = assertPropertyDetail(data);
       assertResponseId(response, propertyId);
-      assertPropertyAvailability(response, availability);
+      assertPropertyAvailability(response, snapshot);
       return response;
     },
 
     async getRoomType(roomTypeId, availability) {
       assertPropertyId(roomTypeId);
-      const range = assertAvailability(availability, [
-        "checkin",
-        "checkout",
-        "guests",
-      ]);
+      const snapshot = snapshotAvailability(availability);
       const data = await requestClient.get(
-        `/room-types/${encodeURIComponent(roomTypeId)}?${availabilityQuery(availability)}`,
+        `/room-types/${encodeURIComponent(roomTypeId)}?${availabilityQuery(snapshot)}`,
       );
       const response = assertRoomTypeDetail(data);
       assertResponseId(response, roomTypeId);
-      assertRoomAvailability(response, availability, range);
+      assertRoomAvailability(response, snapshot);
       return response;
     },
   };
