@@ -1,0 +1,94 @@
+<navigation-bar
+  title="房型详情"
+  back="{{true}}"
+  color="#2f2925"
+  background="#f7f1eb"
+  loading="{{status === 'loading'}}"
+></navigation-bar>
+
+<view class="page-shell room-detail-page">
+  <loading-state
+    wx:if="{{status === 'loading'}}"
+    text="正在加载房型详情"
+  ></loading-state>
+
+  <error-state
+    wx:elif="{{status === 'error'}}"
+    title="暂时无法查看房型"
+    message="{{errorMessage}}"
+    action-text="重试"
+    bind:retry="retry"
+  ></error-state>
+
+  <view wx:elif="{{status === 'success' && roomType}}" class="room-detail">
+    <image
+      wx:if="{{roomType.coverUrl && !roomType.coverFailed}}"
+      class="room-hero"
+      src="{{roomType.coverUrl}}"
+      data-src="{{roomType.coverUrl}}"
+      mode="aspectFill"
+      binderror="handleImageError"
+      aria-role="img"
+      aria-label="{{roomType.coverAlt}}"
+    />
+    <view
+      wx:else
+      class="room-hero room-hero--fallback"
+      aria-role="img"
+      aria-label="房型封面图暂缺"
+    >
+      <text>Stay Fable</text>
+    </view>
+
+    <view class="surface-card room-overview">
+      <text class="room-overview__property">
+        {{roomType.property.typeLabel}} · {{roomType.property.name}}
+      </text>
+      <text class="room-overview__city">{{roomType.property.cityName}}</text>
+      <text class="room-overview__name">{{roomType.name}}</text>
+      <view class="room-overview__facts">
+        <text>{{roomType.bedType}}</text>
+        <text>{{roomType.areaLabel}}</text>
+        <text>{{roomType.maxGuestsLabel}}</text>
+      </view>
+      <text class="room-overview__description">{{roomType.description}}</text>
+    </view>
+
+    <view class="surface-card detail-section">
+      <text class="section-title">逐晚价格</text>
+      <text class="detail-section__hint">以下为展示价格，最终报价将在下一切片计算。</text>
+      <view class="nightly-list">
+        <view
+          wx:for="{{roomType.nightlyPrices}}"
+          wx:key="businessDate"
+          class="nightly-list__item"
+        >
+          <view class="nightly-list__date">
+            <text>{{item.dateLabel}}</text>
+            <text class="nightly-list__date-code">{{item.businessDate}}</text>
+          </view>
+          <price
+            cents="{{item.salePriceCents}}"
+            prefix="当晚"
+            suffix="展示价"
+          ></price>
+        </view>
+      </view>
+    </view>
+
+    <view class="surface-card detail-section">
+      <text class="section-title">预订规则</text>
+      <text class="detail-section__body">{{roomType.bookingPolicy}}</text>
+    </view>
+
+    <view class="selection-bar safe-bottom">
+      <button
+        class="primary-button selection-bar__action"
+        bindtap="selectRoom"
+        aria-label="选择{{roomType.name}}"
+      >
+        选择此房型
+      </button>
+    </view>
+  </view>
+</view>

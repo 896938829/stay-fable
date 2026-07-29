@@ -1,0 +1,160 @@
+<navigation-bar
+  title="旅店详情"
+  back="{{true}}"
+  color="#2f2925"
+  background="#f7f1eb"
+  loading="{{status === 'loading'}}"
+></navigation-bar>
+
+<view class="page-shell property-detail-page">
+  <loading-state
+    wx:if="{{status === 'loading'}}"
+    text="正在加载旅店详情"
+  ></loading-state>
+
+  <error-state
+    wx:elif="{{status === 'error'}}"
+    title="暂时无法查看旅店"
+    message="{{errorMessage}}"
+    action-text="重试"
+    bind:retry="retry"
+  ></error-state>
+
+  <view wx:elif="{{status === 'success' && property}}" class="property-detail">
+    <image
+      wx:if="{{property.coverUrl && !property.coverFailed}}"
+      class="property-hero"
+      src="{{property.coverUrl}}"
+      data-kind="cover"
+      data-src="{{property.coverUrl}}"
+      mode="aspectFill"
+      binderror="handleImageError"
+      aria-role="img"
+      aria-label="{{property.coverAlt}}"
+    />
+    <view
+      wx:else
+      class="property-hero property-hero--fallback"
+      aria-role="img"
+      aria-label="旅店封面图暂缺"
+    >
+      <text>Stay Fable</text>
+    </view>
+
+    <view class="surface-card property-overview">
+      <text class="property-overview__type">{{property.typeLabel}}</text>
+      <text class="property-overview__name">{{property.name}}</text>
+      <text class="property-overview__location">
+        {{property.cityName}} · {{property.address}}
+      </text>
+      <text class="property-overview__description">{{property.description}}</text>
+    </view>
+
+    <view wx:if="{{property.media.length}}" class="detail-section">
+      <text class="section-title">旅店风貌</text>
+      <scroll-view class="media-strip" scroll-x="{{true}}" show-scrollbar="{{false}}">
+        <view class="media-strip__track">
+          <block wx:for="{{property.media}}" wx:key="url">
+            <image
+              wx:if="{{!item.failed}}"
+              class="media-strip__image"
+              src="{{item.url}}"
+              data-kind="media"
+              data-index="{{index}}"
+              data-src="{{item.url}}"
+              mode="aspectFill"
+              lazy-load="{{true}}"
+              binderror="handleImageError"
+              aria-role="img"
+              aria-label="{{item.alt}}"
+            />
+            <view
+              wx:else
+              class="media-strip__image media-strip__image--fallback"
+              aria-role="img"
+              aria-label="旅店图片暂不可用"
+            >
+              <text>图片暂缺</text>
+            </view>
+          </block>
+        </view>
+      </scroll-view>
+    </view>
+
+    <view class="surface-card detail-section">
+      <text class="section-title">设施服务</text>
+      <view wx:if="{{property.facilities.length}}" class="facility-list">
+        <text
+          wx:for="{{property.facilities}}"
+          wx:key="code"
+          class="facility-list__item"
+        >
+          {{item.name}}
+        </text>
+      </view>
+      <text wx:else class="detail-section__muted">设施信息更新中</text>
+    </view>
+
+    <view class="surface-card detail-section">
+      <text class="section-title">入住政策</text>
+      <text class="detail-section__body">{{property.policies}}</text>
+    </view>
+
+    <view class="detail-section">
+      <text class="section-title">当前可售房型</text>
+      <empty-state
+        wx:if="{{!property.roomTypes.length}}"
+        title="当前条件暂无可售房型"
+        description="可以返回调整日期或人数后再试。"
+      ></empty-state>
+
+      <view
+        wx:for="{{property.roomTypes}}"
+        wx:key="id"
+        class="surface-card room-card"
+      >
+        <image
+          wx:if="{{item.coverUrl && !item.coverFailed}}"
+          class="room-card__cover"
+          src="{{item.coverUrl}}"
+          data-kind="room"
+          data-index="{{index}}"
+          data-src="{{item.coverUrl}}"
+          mode="aspectFill"
+          lazy-load="{{true}}"
+          binderror="handleImageError"
+          aria-role="img"
+          aria-label="{{item.coverAlt}}"
+        />
+        <view
+          wx:else
+          class="room-card__cover room-card__cover--fallback"
+          aria-role="img"
+          aria-label="房型封面图暂缺"
+        >
+          <text>房型图片暂缺</text>
+        </view>
+        <view class="room-card__body">
+          <text class="room-card__name">{{item.name}}</text>
+          <view class="room-card__facts">
+            <text>{{item.bedType}}</text>
+            <text>{{item.areaLabel}}</text>
+            <text>{{item.maxGuestsLabel}}</text>
+          </view>
+          <text class="room-card__policy">{{item.policySummary}}</text>
+          <view class="room-card__footer">
+            <price cents="{{item.priceCents}}"></price>
+            <button
+              class="secondary-button room-card__action"
+              data-id="{{item.id}}"
+              bindtap="openRoom"
+              aria-label="查看{{item.name}}详情"
+            >
+              查看房型
+            </button>
+          </view>
+        </view>
+      </view>
+    </view>
+  </view>
+</view>
