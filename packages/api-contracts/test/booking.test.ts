@@ -66,6 +66,10 @@ const parseWithPrototypeField = (value: unknown) =>
 const parseJsonRecord = (value: unknown) =>
   JSON.parse(JSON.stringify(value)) as Record<string, unknown>;
 
+const isUnknownArray = (value: unknown): value is unknown[] => Array.isArray(value);
+
+const createNullRecord = () => Object.setPrototypeOf({}, null) as Record<string, unknown>;
+
 const hasPrototypeFieldAtAnyDepth = (value: unknown): boolean => {
   if (value === null || typeof value !== "object") {
     return false;
@@ -450,6 +454,201 @@ describe("booking contracts", () => {
     expect(() => quoteResponseDataSchema.safeParse(payload)).not.toThrow();
     expect(quoteResponseDataSchema.safeParse(payload).success).toBe(false);
     expect(getterWasInvoked).toBe(false);
+  });
+
+  it("clones root get-trap proxies without invoking traps and fails closed for used reflection traps", () => {
+    const quoteRequest = {
+      room_type_id: quote.room_type.id,
+      checkin: quote.checkin,
+      checkout: quote.checkout,
+      guests: quote.guests,
+    };
+    const roots = [
+      { input: quoteRequest, parse: (input: unknown) => createQuoteRequestSchema.safeParse(input) },
+      {
+        input: { quote_id: quote.quote_id },
+        parse: (input: unknown) => createBookingRequestSchema.safeParse(input),
+      },
+      { input: quote, parse: (input: unknown) => quoteResponseDataSchema.safeParse(input) },
+      { input: booking, parse: (input: unknown) => bookingSummarySchema.safeParse(input) },
+      {
+        input: { previous_total_price_cents: quote.total_price_cents, replacement_quote: quote },
+        parse: (input: unknown) => quoteChangedDetailsSchema.safeParse(input),
+      },
+    ];
+
+    for (const { input, parse } of roots) {
+      const before = JSON.stringify(input);
+      let getTrapCalls = 0;
+      const getTrapInput = new Proxy(input, {
+        get: () => {
+          getTrapCalls += 1;
+          throw new Error("root get trap");
+        },
+      });
+      let getTrapResult: { success: boolean; data?: unknown } | undefined;
+      expect(() => {
+        getTrapResult = parse(getTrapInput);
+      }).not.toThrow();
+      expect(getTrapResult?.success).toBe(true);
+      expect(getTrapResult?.data).not.toBe(input);
+      expect(getTrapCalls).toBe(0);
+      expect(JSON.stringify(input)).toBe(before);
+
+      for (const handler of [
+        {
+          ownKeys: () => {
+            throw new Error("root ownKeys trap");
+          },
+        },
+        {
+          getOwnPropertyDescriptor: () => {
+            throw new Error("root descriptor trap");
+          },
+        },
+      ]) {
+        const hostileInput = new Proxy(input, handler);
+        let result: { success: boolean; data?: unknown } | undefined;
+        expect(() => {
+          result = parse(hostileInput);
+        }).not.toThrow();
+        expect(result?.success).toBe(false);
+      }
+    }
+  });
+
+  it("clones nested get-trap proxies and fails closed for nested reflection traps, accessors, and cycles", () => {
+    const withNestedProxy = (
+      field: "property" | "room_type" | "nightly_prices",
+      handler: ProxyHandler<object>,
+    ) => {
+      const payload = parseJsonRecord(quote);
+      if (field === "nightly_prices") {
+        const nightlyPrices = payload.nightly_prices;
+        if (!Array.isArray(nightlyPrices)) {
+          throw new Error("Quote fixture must contain nightly prices");
+        }
+        payload.nightly_prices = new Proxy(nightlyPrices, handler);
+      } else {
+        const nestedValue = payload[field];
+        if (nestedValue === null || typeof nestedValue !== "object") {
+          throw new Error("Quote fixture must contain nested object");
+        }
+        payload[field] = new Proxy(nestedValue, handler);
+      }
+      return payload;
+    };
+    const withNightlyItemProxy = (handler: ProxyHandler<object>) => {
+      const payload = parseJsonRecord(quote);
+      const nightlyPrices = payload.nightly_prices;
+      if (!isUnknownArray(nightlyPrices)) {
+        throw new Error("Quote fixture must contain nightly price array");
+      }
+      const firstNightlyPrice = nightlyPrices[0];
+      if (firstNightlyPrice === null || typeof firstNightlyPrice !== "object") {
+        throw new Error("Quote fixture must contain nightly price object");
+      }
+      nightlyPrices[0] = new Proxy(firstNightlyPrice, handler);
+      return payload;
+    };
+    for (const createInput of [
+      (handler: ProxyHandler<object>) => withNestedProxy("property", handler),
+      (handler: ProxyHandler<object>) => withNestedProxy("room_type", handler),
+      (handler: ProxyHandler<object>) => withNestedProxy("nightly_prices", handler),
+      withNightlyItemProxy,
+    ]) {
+      let getTrapCalls = 0;
+      const getTrapInput = createInput({
+        get: () => {
+          getTrapCalls += 1;
+          throw new Error("nested get trap");
+        },
+      });
+      let getTrapResult: { success: boolean; data?: unknown } | undefined;
+      expect(() => {
+        getTrapResult = quoteResponseDataSchema.safeParse(getTrapInput);
+      }).not.toThrow();
+      expect(getTrapResult?.success).toBe(true);
+      expect(getTrapCalls).toBe(0);
+
+      for (const handler of [
+        {
+          ownKeys: () => {
+            throw new Error("nested ownKeys trap");
+          },
+        },
+        {
+          getOwnPropertyDescriptor: () => {
+            throw new Error("nested descriptor trap");
+          },
+        },
+      ]) {
+        const hostileInput = createInput(handler);
+        let result: { success: boolean; data?: unknown } | undefined;
+        expect(() => {
+          result = quoteResponseDataSchema.safeParse(hostileInput);
+        }).not.toThrow();
+        expect(result?.success).toBe(false);
+      }
+    }
+
+    const accessorInput = parseJsonRecord(quote);
+    let accessorWasInvoked = false;
+    Object.defineProperty(accessorInput, "quote_id", {
+      enumerable: true,
+      get: () => {
+        accessorWasInvoked = true;
+        throw new Error("must not execute accessor");
+      },
+    });
+    expect(() => quoteResponseDataSchema.safeParse(accessorInput)).not.toThrow();
+    expect(quoteResponseDataSchema.safeParse(accessorInput).success).toBe(false);
+    expect(accessorWasInvoked).toBe(false);
+
+    const cyclicInput = parseJsonRecord(quote);
+    cyclicInput.self = cyclicInput;
+    expect(() => quoteResponseDataSchema.safeParse(cyclicInput)).not.toThrow();
+    expect(quoteResponseDataSchema.safeParse(cyclicInput).success).toBe(false);
+  });
+
+  it("fails closed for sparse arrays and bounded snapshot limits", () => {
+    const sparseArrayInput = parseJsonRecord(quote);
+    const sparseNightlyPrices: unknown[] = [];
+    sparseNightlyPrices.length = 2;
+    sparseNightlyPrices[0] = quote.nightly_prices[0];
+    sparseArrayInput.nightly_prices = sparseNightlyPrices;
+
+    const tooManyKeysInput = parseJsonRecord(quote);
+    for (let index = 0; index <= 100; index += 1) {
+      tooManyKeysInput[`unknown_${index}`] = index;
+    }
+
+    const tooDeepInput = parseJsonRecord(quote);
+    const deepValue = createNullRecord();
+    let currentDeepValue = deepValue;
+    for (let index = 0; index <= 16; index += 1) {
+      const nextValue = createNullRecord();
+      currentDeepValue.nested = nextValue;
+      currentDeepValue = nextValue;
+    }
+    tooDeepInput.unknown = deepValue;
+
+    const tooManyNodesInput = parseJsonRecord(quote);
+    const createNodeTree = (depth: number): Record<string, unknown> => {
+      const result = createNullRecord();
+      if (depth > 0) {
+        for (let index = 0; index < 10; index += 1) {
+          result[`child_${index}`] = createNodeTree(depth - 1);
+        }
+      }
+      return result;
+    };
+    tooManyNodesInput.unknown = createNodeTree(3);
+
+    for (const input of [sparseArrayInput, tooManyKeysInput, tooDeepInput, tooManyNodesInput]) {
+      expect(() => quoteResponseDataSchema.safeParse(input)).not.toThrow();
+      expect(quoteResponseDataSchema.safeParse(input).success).toBe(false);
+    }
   });
 
   it("requires timezone-aware valid instants and valid booking numbers", () => {

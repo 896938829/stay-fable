@@ -14,19 +14,97 @@ const nonblankString = (maximum: number) =>
     .max(maximum)
     .refine((value) => value.trim().length > 0);
 
-const hasOwnPrototypePseudoField = (value: unknown) => {
-  if (value === null || typeof value !== "object") {
-    return false;
-  }
+const invalidJsonLikeInput = Symbol("invalidJsonLikeInput");
+const maximumSnapshotDepth = 16;
+const maximumSnapshotNodes = 1_000;
+const maximumSnapshotKeysPerObject = 100;
+const maximumSnapshotArrayLength = 100;
+
+const snapshotJsonLikeInput = (input: unknown): unknown => {
+  const seen = new WeakSet<object>();
+  let nodeCount = 0;
+
+  const snapshot = (value: unknown, depth: number): unknown => {
+    if (
+      value === null ||
+      typeof value === "string" ||
+      typeof value === "number" ||
+      typeof value === "boolean"
+    ) {
+      return value;
+    }
+    if (typeof value !== "object" || depth > maximumSnapshotDepth || seen.has(value)) {
+      return invalidJsonLikeInput;
+    }
+    seen.add(value);
+    nodeCount += 1;
+    if (nodeCount > maximumSnapshotNodes) {
+      return invalidJsonLikeInput;
+    }
+
+    const descriptors = Object.getOwnPropertyDescriptors(value);
+    const symbolKeys = Object.getOwnPropertySymbols(descriptors);
+    const keys = Object.getOwnPropertyNames(descriptors);
+    if (
+      symbolKeys.length > 0 ||
+      keys.length > maximumSnapshotKeysPerObject ||
+      keys.includes("__proto__")
+    ) {
+      return invalidJsonLikeInput;
+    }
+
+    if (Array.isArray(value)) {
+      const lengthDescriptor = descriptors.length;
+      if (
+        lengthDescriptor === undefined ||
+        !Object.hasOwn(lengthDescriptor, "value") ||
+        !Number.isSafeInteger(lengthDescriptor.value) ||
+        lengthDescriptor.value < 0 ||
+        lengthDescriptor.value > maximumSnapshotArrayLength ||
+        keys.length !== lengthDescriptor.value + 1
+      ) {
+        return invalidJsonLikeInput;
+      }
+      const result: unknown[] = [];
+      for (let index = 0; index < lengthDescriptor.value; index += 1) {
+        const descriptor = descriptors[String(index)];
+        if (descriptor === undefined || !Object.hasOwn(descriptor, "value")) {
+          return invalidJsonLikeInput;
+        }
+        const entry = snapshot(descriptor.value, depth + 1);
+        if (entry === invalidJsonLikeInput) {
+          return invalidJsonLikeInput;
+        }
+        result.push(entry);
+      }
+      return result;
+    }
+
+    const result = Object.create(null) as Record<string, unknown>;
+    for (const key of keys) {
+      const descriptor = descriptors[key];
+      if (descriptor === undefined || !Object.hasOwn(descriptor, "value")) {
+        return invalidJsonLikeInput;
+      }
+      const entry = snapshot(descriptor.value, depth + 1);
+      if (entry === invalidJsonLikeInput) {
+        return invalidJsonLikeInput;
+      }
+      result[key] = entry;
+    }
+    return result;
+  };
+
   try {
-    return Object.getOwnPropertyDescriptor(value, "__proto__") !== undefined;
+    const snapshotResult = snapshot(input, 0);
+    return snapshotResult === invalidJsonLikeInput ? undefined : snapshotResult;
   } catch {
-    return true;
+    return undefined;
   }
 };
 
-const rejectPrototypePseudoField = <T extends z.ZodType>(schema: T) =>
-  z.preprocess((value) => (hasOwnPrototypePseudoField(value) ? undefined : value), schema);
+const snapshotJsonLikeSchemaInput = <T extends z.ZodType>(schema: T) =>
+  z.preprocess(snapshotJsonLikeInput, schema);
 
 const moneyCentsSchema = z.number().int().nonnegative().safe();
 const guestCountSchema = z.number().int().min(1).max(10);
@@ -103,7 +181,7 @@ const addStayValidation = <T extends z.ZodObject<z.ZodRawShape>>(schema: T) =>
     }
   });
 
-const quoteNightlyPriceSchema = rejectPrototypePseudoField(nightlyPriceSchema).superRefine(
+const quoteNightlyPriceSchema = snapshotJsonLikeSchemaInput(nightlyPriceSchema).superRefine(
   (value, context) => {
     if (value.rack_price_cents < value.sale_price_cents) {
       context.addIssue({
@@ -126,9 +204,9 @@ const createQuoteRequestObjectSchema = addStayValidation(
     .strict(),
 );
 
-export const createQuoteRequestSchema = rejectPrototypePseudoField(createQuoteRequestObjectSchema);
+export const createQuoteRequestSchema = snapshotJsonLikeSchemaInput(createQuoteRequestObjectSchema);
 
-const quotePropertySchema = rejectPrototypePseudoField(
+const quotePropertySchema = snapshotJsonLikeSchemaInput(
   z
     .object({
       id: z.uuid(),
@@ -137,7 +215,7 @@ const quotePropertySchema = rejectPrototypePseudoField(
     .strict(),
 );
 
-const quoteRoomTypeSchema = rejectPrototypePseudoField(
+const quoteRoomTypeSchema = snapshotJsonLikeSchemaInput(
   z
     .object({
       id: z.uuid(),
@@ -164,7 +242,7 @@ const quoteResponseDataObjectSchema = z
   })
   .strict();
 
-export const quoteResponseDataSchema = rejectPrototypePseudoField(
+export const quoteResponseDataSchema = snapshotJsonLikeSchemaInput(
   quoteResponseDataObjectSchema,
 ).superRefine((value, context) => {
   const dateDifference = calendarDayDifference(value.checkin, value.checkout);
@@ -203,7 +281,7 @@ export const quoteResponseDataSchema = rejectPrototypePseudoField(
   }
 });
 
-export const createBookingRequestSchema = rejectPrototypePseudoField(
+export const createBookingRequestSchema = snapshotJsonLikeSchemaInput(
   z
     .object({
       quote_id: z.uuid(),
@@ -229,7 +307,7 @@ const bookingSummaryObjectSchema = z
   })
   .strict();
 
-export const bookingSummarySchema = rejectPrototypePseudoField(
+export const bookingSummarySchema = snapshotJsonLikeSchemaInput(
   bookingSummaryObjectSchema,
 ).superRefine((value, context) => {
   const dateDifference = calendarDayDifference(value.checkin, value.checkout);
@@ -241,7 +319,7 @@ export const bookingSummarySchema = rejectPrototypePseudoField(
   }
 });
 
-export const quoteChangedDetailsSchema = rejectPrototypePseudoField(
+export const quoteChangedDetailsSchema = snapshotJsonLikeSchemaInput(
   z
     .object({
       previous_total_price_cents: moneyCentsSchema,
