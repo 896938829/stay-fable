@@ -32,6 +32,9 @@ const migrationSqlHasForbiddenStatements = (migrationSql: string): boolean => {
   return destructiveStatement.test(migrationSql) || explicitDownSection.test(migrationSql);
 };
 
+const inventoryCapacityExpression =
+  /\(?\s*held_inventory\s*\+\s*sold_inventory\s*\)?\s*<=\s*total_inventory/;
+
 const preBookingInventoryFixtureSql = `
   ALTER TABLE "daily_inventory"
   DROP CONSTRAINT IF EXISTS "daily_inventory_capacity_check";
@@ -86,6 +89,13 @@ test("pre-booking fixture restores the original daily inventory capacity check",
   );
   expect(preBookingInventoryFixtureSql).not.toContain("daily_inventory_nonnegative_check");
   expect(preBookingInventoryFixtureSql).not.toContain("daily_price_");
+});
+
+test.each([
+  "held_inventory + sold_inventory <= total_inventory",
+  "((held_inventory + sold_inventory) <= total_inventory)",
+])("recognizes PostgreSQL capacity deparse %s", (definition) => {
+  expect(inventoryCapacityExpression.test(definition)).toBe(true);
 });
 
 describeDatabase(suiteName, () => {
@@ -393,7 +403,7 @@ describeDatabase(suiteName, () => {
     const schema = schemaName;
     const primaryKeys = await database().query<{ column_names: string[]; table_name: string }>(
       `
-      SELECT child.relname AS table_name, array_agg(attribute.attname ORDER BY key_column.ordinality) AS column_names
+      SELECT child.relname AS table_name, array_agg(attribute.attname::text ORDER BY key_column.ordinality) AS column_names
       FROM pg_constraint con
       JOIN pg_class child ON child.oid = con.conrelid
       JOIN pg_namespace child_schema ON child_schema.oid = child.relnamespace
@@ -518,7 +528,7 @@ describeDatabase(suiteName, () => {
 
     const uniqueKeys = await database().query<{ column_names: string[]; table_name: string }>(
       `
-      SELECT child.relname AS table_name, array_agg(attribute.attname ORDER BY key_column.ordinality) AS column_names
+      SELECT child.relname AS table_name, array_agg(attribute.attname::text ORDER BY key_column.ordinality) AS column_names
       FROM pg_constraint con
       JOIN pg_class child ON child.oid = con.conrelid
       JOIN pg_namespace child_schema ON child_schema.oid = child.relnamespace
@@ -592,7 +602,7 @@ describeDatabase(suiteName, () => {
           definition.includes("total_inventory >= 0") &&
           definition.includes("held_inventory >= 0") &&
           definition.includes("sold_inventory >= 0") &&
-          definition.includes("held_inventory + sold_inventory <= total_inventory"),
+          inventoryCapacityExpression.test(definition),
       ),
     ).toBe(true);
     expect(checks.rows).toContainEqual(
