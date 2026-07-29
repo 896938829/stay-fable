@@ -35,6 +35,45 @@ const migrationSqlHasForbiddenStatements = (migrationSql: string): boolean => {
 const inventoryCapacityExpression =
   /\(?\s*held_inventory\s*\+\s*sold_inventory\s*\)?\s*<=\s*total_inventory/;
 
+type ColumnContract = {
+  column_default: string | null;
+  data_type: string;
+  is_nullable: "NO" | "YES";
+  udt_name: string;
+};
+
+const normalizeColumnDefault = (columnDefault: string | null): string | null => {
+  if (columnDefault === null) {
+    return null;
+  }
+  if (/gen_random_uuid\(\)/i.test(columnDefault)) {
+    return "gen_random_uuid()";
+  }
+  if (/CURRENT_TIMESTAMP/i.test(columnDefault)) {
+    return "CURRENT_TIMESTAMP";
+  }
+  const literal = /^'([^']+)'::(?:[\w.]+|"[^"]+")$/.exec(columnDefault);
+  return literal?.[1] ?? columnDefault;
+};
+
+const requiredColumn = (
+  dataType: string,
+  udtName: string,
+  columnDefault: string | null = null,
+): ColumnContract => ({
+  column_default: columnDefault,
+  data_type: dataType,
+  is_nullable: "NO",
+  udt_name: udtName,
+});
+
+const nullableColumn = (dataType: string, udtName: string): ColumnContract => ({
+  column_default: null,
+  data_type: dataType,
+  is_nullable: "YES",
+  udt_name: udtName,
+});
+
 const preBookingInventoryFixtureSql = `
   ALTER TABLE "daily_inventory"
   DROP CONSTRAINT IF EXISTS "daily_inventory_capacity_check";
@@ -313,89 +352,87 @@ describeDatabase(suiteName, () => {
       [schema],
     );
     const contract = Object.fromEntries(
-      columns.rows.map((column) => [`${column.table_name}.${column.column_name}`, column]),
+      columns.rows.map(({ column_default: columnDefault, column_name: columnName, ...column }) => [
+        `${column.table_name}.${columnName}`,
+        {
+          column_default: normalizeColumnDefault(columnDefault),
+          data_type: column.data_type,
+          is_nullable: column.is_nullable,
+          udt_name: column.udt_name,
+        },
+      ]),
     );
-    expect(contract).toMatchObject({
-      "quote.id": { data_type: "uuid", udt_name: "uuid", is_nullable: "NO" },
-      "quote.user_id": {
-        data_type: "uuid",
-        udt_name: "uuid",
-        is_nullable: "NO",
-        column_default: null,
-      },
-      "quote.nightly_prices": {
-        data_type: "jsonb",
-        udt_name: "jsonb",
-        is_nullable: "NO",
-        column_default: null,
-      },
-      "quote.currency": { data_type: "character", udt_name: "bpchar", is_nullable: "NO" },
-      "quote.expires_at": {
-        data_type: "timestamp with time zone",
-        udt_name: "timestamptz",
-        is_nullable: "NO",
-        column_default: null,
-      },
-      "quote.created_at": {
-        data_type: "timestamp with time zone",
-        udt_name: "timestamptz",
-        is_nullable: "NO",
-      },
-      "booking.quote_id": {
-        data_type: "uuid",
-        udt_name: "uuid",
-        is_nullable: "NO",
-        column_default: null,
-      },
-      "booking.status": { data_type: "USER-DEFINED", udt_name: "BookingStatus", is_nullable: "NO" },
-      "booking.idempotency_key": {
-        data_type: "character varying",
-        udt_name: "varchar",
-        is_nullable: "NO",
-        column_default: null,
-      },
-      "booking.updated_at": {
-        data_type: "timestamp with time zone",
-        udt_name: "timestamptz",
-        is_nullable: "NO",
-        column_default: null,
-      },
-      "inventory_hold.status": {
-        data_type: "USER-DEFINED",
-        udt_name: "InventoryHoldStatus",
-        is_nullable: "NO",
-      },
-      "inventory_hold.business_date": {
-        data_type: "date",
-        udt_name: "date",
-        is_nullable: "NO",
-        column_default: null,
-      },
-      "booking_status_history.from_status": {
-        data_type: "USER-DEFINED",
-        udt_name: "BookingStatus",
-        is_nullable: "YES",
-        column_default: null,
-      },
-      "booking_status_history.actor_type": {
-        data_type: "USER-DEFINED",
-        udt_name: "BookingActorType",
-        is_nullable: "NO",
-      },
-      "booking_status_history.actor_user_id": {
-        data_type: "uuid",
-        udt_name: "uuid",
-        is_nullable: "YES",
-        column_default: null,
-      },
-    });
-    expect(contract["quote.id"]?.column_default).toBe("gen_random_uuid()");
-    expect(contract["quote.currency"]?.column_default).toBe("'CNY'::bpchar");
-    expect(contract["quote.created_at"]?.column_default).toBe("CURRENT_TIMESTAMP");
-    expect(contract["booking.status"]?.column_default).toBe("'PENDING_PAYMENT'::\"BookingStatus\"");
-    expect(contract["inventory_hold.status"]?.column_default).toBe(
-      "'HELD'::\"InventoryHoldStatus\"",
-    );
+    const expectedContract: Record<string, ColumnContract> = {
+      "quote.id": requiredColumn("uuid", "uuid", "gen_random_uuid()"),
+      "quote.user_id": requiredColumn("uuid", "uuid"),
+      "quote.property_id": requiredColumn("uuid", "uuid"),
+      "quote.room_type_id": requiredColumn("uuid", "uuid"),
+      "quote.checkin_date": requiredColumn("date", "date"),
+      "quote.checkout_date": requiredColumn("date", "date"),
+      "quote.guests": requiredColumn("integer", "int4"),
+      "quote.nightly_prices": requiredColumn("jsonb", "jsonb"),
+      "quote.property_snapshot": requiredColumn("jsonb", "jsonb"),
+      "quote.room_type_snapshot": requiredColumn("jsonb", "jsonb"),
+      "quote.booking_policy_snapshot": requiredColumn("character varying", "varchar"),
+      "quote.total_price_cents": requiredColumn("integer", "int4"),
+      "quote.currency": requiredColumn("character", "bpchar", "CNY"),
+      "quote.fingerprint": requiredColumn("character", "bpchar"),
+      "quote.expires_at": requiredColumn("timestamp with time zone", "timestamptz"),
+      "quote.created_at": requiredColumn(
+        "timestamp with time zone",
+        "timestamptz",
+        "CURRENT_TIMESTAMP",
+      ),
+      "booking.id": requiredColumn("uuid", "uuid", "gen_random_uuid()"),
+      "booking.user_id": requiredColumn("uuid", "uuid"),
+      "booking.quote_id": requiredColumn("uuid", "uuid"),
+      "booking.property_id": requiredColumn("uuid", "uuid"),
+      "booking.room_type_id": requiredColumn("uuid", "uuid"),
+      "booking.booking_number": requiredColumn("character varying", "varchar"),
+      "booking.status": requiredColumn("USER-DEFINED", "BookingStatus", "PENDING_PAYMENT"),
+      "booking.checkin_date": requiredColumn("date", "date"),
+      "booking.checkout_date": requiredColumn("date", "date"),
+      "booking.guests": requiredColumn("integer", "int4"),
+      "booking.property_snapshot": requiredColumn("jsonb", "jsonb"),
+      "booking.room_type_snapshot": requiredColumn("jsonb", "jsonb"),
+      "booking.nightly_prices": requiredColumn("jsonb", "jsonb"),
+      "booking.booking_policy_snapshot": requiredColumn("character varying", "varchar"),
+      "booking.total_price_cents": requiredColumn("integer", "int4"),
+      "booking.currency": requiredColumn("character", "bpchar", "CNY"),
+      "booking.idempotency_key": requiredColumn("character varying", "varchar"),
+      "booking.expires_at": requiredColumn("timestamp with time zone", "timestamptz"),
+      "booking.created_at": requiredColumn(
+        "timestamp with time zone",
+        "timestamptz",
+        "CURRENT_TIMESTAMP",
+      ),
+      "booking.updated_at": requiredColumn("timestamp with time zone", "timestamptz"),
+      "inventory_hold.id": requiredColumn("uuid", "uuid", "gen_random_uuid()"),
+      "inventory_hold.booking_id": requiredColumn("uuid", "uuid"),
+      "inventory_hold.room_type_id": requiredColumn("uuid", "uuid"),
+      "inventory_hold.business_date": requiredColumn("date", "date"),
+      "inventory_hold.status": requiredColumn("USER-DEFINED", "InventoryHoldStatus", "HELD"),
+      "inventory_hold.expires_at": requiredColumn("timestamp with time zone", "timestamptz"),
+      "inventory_hold.created_at": requiredColumn(
+        "timestamp with time zone",
+        "timestamptz",
+        "CURRENT_TIMESTAMP",
+      ),
+      "inventory_hold.updated_at": requiredColumn("timestamp with time zone", "timestamptz"),
+      "booking_status_history.id": requiredColumn("uuid", "uuid", "gen_random_uuid()"),
+      "booking_status_history.booking_id": requiredColumn("uuid", "uuid"),
+      "booking_status_history.from_status": nullableColumn("USER-DEFINED", "BookingStatus"),
+      "booking_status_history.to_status": requiredColumn("USER-DEFINED", "BookingStatus"),
+      "booking_status_history.reason": requiredColumn("character varying", "varchar"),
+      "booking_status_history.actor_type": requiredColumn("USER-DEFINED", "BookingActorType"),
+      "booking_status_history.actor_user_id": nullableColumn("uuid", "uuid"),
+      "booking_status_history.created_at": requiredColumn(
+        "timestamp with time zone",
+        "timestamptz",
+        "CURRENT_TIMESTAMP",
+      ),
+    };
+    expect(contract).toEqual(expectedContract);
   }, 25_000);
 
   test("primary, foreign, and unique keys use restrict deletes and cascade updates", async () => {
@@ -568,52 +605,98 @@ describeDatabase(suiteName, () => {
     `,
       [schema],
     );
-    const definitions = checks.rows.map(({ definition }) =>
-      definition.replaceAll('"', "").replaceAll(/\s+/g, " "),
+    const definitionByConstraint = new Map(
+      checks.rows.map(({ constraint_name: constraintName, definition, table_name: tableName }) => [
+        `${tableName}.${constraintName}`,
+        definition.replaceAll('"', "").replaceAll(/\s+/g, " "),
+      ]),
     );
-    for (const fragment of [
-      "checkout_date > checkin_date",
-      "guests >= 1",
-      "guests <= 10",
-      "total_price_cents >= 0",
-      "currency = 'CNY'",
-      "fingerprint",
-      "expires_at > created_at",
+    const expectedCheckKeys = [
+      "quote.quote_dates_check",
+      "quote.quote_guests_check",
+      "quote.quote_total_price_check",
+      "quote.quote_currency_check",
+      "quote.quote_fingerprint_check",
+      "quote.quote_expires_check",
+      "booking.booking_dates_check",
+      "booking.booking_guests_check",
+      "booking.booking_total_price_check",
+      "booking.booking_currency_check",
+      "booking.booking_number_check",
+      "booking.booking_idempotency_key_check",
+      "booking.booking_expires_check",
+      "inventory_hold.inventory_hold_expires_check",
+      "booking_status_history.booking_status_history_actor_check",
+      "daily_inventory.daily_inventory_nonnegative_check",
+      "daily_inventory.daily_inventory_capacity_check",
+      "daily_price.daily_price_sale_check",
+      "daily_price.daily_price_rack_check",
+    ].sort();
+    expect([...definitionByConstraint.keys()].sort()).toEqual(expectedCheckKeys);
+
+    const expectConstraint = (
+      tableName: string,
+      constraintName: string,
+      fragments: (RegExp | string)[],
+    ): void => {
+      const definition = definitionByConstraint.get(`${tableName}.${constraintName}`);
+      expect(definition, `${tableName}.${constraintName} must exist`).toBeDefined();
+      for (const fragment of fragments) {
+        if (typeof fragment === "string") {
+          expect(definition).toContain(fragment);
+        } else {
+          expect(definition).toMatch(fragment);
+        }
+      }
+    };
+
+    expectConstraint("quote", "quote_dates_check", ["checkout_date > checkin_date"]);
+    expectConstraint("quote", "quote_guests_check", ["guests >= 1", "guests <= 10"]);
+    expectConstraint("quote", "quote_total_price_check", ["total_price_cents >= 0"]);
+    expectConstraint("quote", "quote_currency_check", ["currency = 'CNY'"]);
+    expectConstraint("quote", "quote_fingerprint_check", ["fingerprint", "^[0-9a-f]{64}$"]);
+    expectConstraint("quote", "quote_expires_check", ["expires_at > created_at"]);
+
+    expectConstraint("booking", "booking_dates_check", ["checkout_date > checkin_date"]);
+    expectConstraint("booking", "booking_guests_check", ["guests >= 1", "guests <= 10"]);
+    expectConstraint("booking", "booking_total_price_check", ["total_price_cents >= 0"]);
+    expectConstraint("booking", "booking_currency_check", ["currency = 'CNY'"]);
+    expectConstraint("booking", "booking_number_check", [
       "booking_number",
+      "^SF[0-9]{8}[A-F0-9]{12}$",
+    ]);
+    expectConstraint("booking", "booking_idempotency_key_check", [
       "idempotency_key",
+      "^[A-Za-z0-9._~-]{32,80}$",
+    ]);
+    expectConstraint("booking", "booking_expires_check", ["expires_at > created_at"]);
+
+    expectConstraint("inventory_hold", "inventory_hold_expires_check", ["expires_at > created_at"]);
+    expectConstraint("booking_status_history", "booking_status_history_actor_check", [
       "actor_type",
-      "actor_user_id",
-    ]) {
-      expect(definitions.some((definition) => definition.includes(fragment))).toBe(true);
-    }
-    expect(definitions.some((definition) => /fingerprint.*\[0-9a-f\].*64/i.test(definition))).toBe(
-      true,
+      "USER",
+      "actor_user_id IS NOT NULL",
+      "SYSTEM",
+      "actor_user_id IS NULL",
+    ]);
+    expectConstraint("daily_inventory", "daily_inventory_nonnegative_check", [
+      "total_inventory >= 0",
+      "held_inventory >= 0",
+      "sold_inventory >= 0",
+      "version >= 0",
+    ]);
+    const capacityDefinition = definitionByConstraint.get(
+      "daily_inventory.daily_inventory_capacity_check",
     );
-    expect(definitions.some((definition) => /booking_number.*SF.*12/i.test(definition))).toBe(true);
-    expect(definitions.some((definition) => /idempotency_key.*32.*80/i.test(definition))).toBe(
-      true,
-    );
-    expect(
-      definitions.some((definition) => /actor_type.*USER.*actor_user_id.*SYSTEM/i.test(definition)),
-    ).toBe(true);
-    expect(
-      definitions.some(
-        (definition) =>
-          definition.includes("total_inventory >= 0") &&
-          definition.includes("held_inventory >= 0") &&
-          definition.includes("sold_inventory >= 0") &&
-          inventoryCapacityExpression.test(definition),
-      ),
-    ).toBe(true);
-    expect(checks.rows).toContainEqual(
-      expect.objectContaining({ constraint_name: "daily_inventory_capacity_check" }),
-    );
-    expect(checks.rows).toContainEqual(
-      expect.objectContaining({ constraint_name: "daily_price_sale_check" }),
-    );
-    expect(checks.rows).toContainEqual(
-      expect.objectContaining({ constraint_name: "daily_price_rack_check" }),
-    );
+    expect(capacityDefinition).toBeDefined();
+    expect(capacityDefinition).toContain("total_inventory >= 0");
+    expect(capacityDefinition).toContain("held_inventory >= 0");
+    expect(capacityDefinition).toContain("sold_inventory >= 0");
+    expect(capacityDefinition).toMatch(inventoryCapacityExpression);
+    expectConstraint("daily_price", "daily_price_sale_check", ["sale_price_cents >= 0"]);
+    expectConstraint("daily_price", "daily_price_rack_check", [
+      "rack_price_cents >= sale_price_cents",
+    ]);
 
     const indexes = await database().query<{ indexdef: string; indexname: string }>(
       `
@@ -723,6 +806,21 @@ describeDatabase(suiteName, () => {
       "daily_inventory_capacity_check",
     );
     await expectCheckViolation(
+      "UPDATE daily_inventory SET total_inventory = -1 WHERE business_date = $1::date",
+      ["2026-08-01"],
+      "daily_inventory_nonnegative_check",
+    );
+    await expectCheckViolation(
+      "UPDATE daily_inventory SET held_inventory = -1 WHERE business_date = $1::date",
+      ["2026-08-01"],
+      "daily_inventory_nonnegative_check",
+    );
+    await expectCheckViolation(
+      "UPDATE daily_inventory SET sold_inventory = -1 WHERE business_date = $1::date",
+      ["2026-08-01"],
+      "daily_inventory_nonnegative_check",
+    );
+    await expectCheckViolation(
       "UPDATE daily_price SET sale_price_cents = -1 WHERE business_date = $1::date",
       ["2026-08-01"],
       "daily_price_sale_check",
@@ -732,6 +830,21 @@ describeDatabase(suiteName, () => {
       ["2026-08-01"],
       "daily_price_rack_check",
     );
+
+    const fixtureAfterFailures = await database().query<{
+      held_inventory: number;
+      rack_price_cents: number;
+      sale_price_cents: number;
+      sold_inventory: number;
+      total_inventory: number;
+    }>(`
+      SELECT inventory.total_inventory, inventory.held_inventory, inventory.sold_inventory,
+             price.sale_price_cents, price.rack_price_cents
+      FROM daily_inventory inventory
+      JOIN daily_price price USING (room_type_id, business_date)
+      WHERE inventory.business_date = DATE '2026-08-01'
+    `);
+    expect(fixtureAfterFailures.rows).toEqual(fixture.rows);
   }, 25_000);
 
   test("quote booking hold and history checks reject invalid persisted states", async () => {
@@ -817,6 +930,12 @@ describeDatabase(suiteName, () => {
       [bookingId],
     );
     await expectCheckViolation("UPDATE booking SET guests = 11 WHERE id = $1::uuid", [bookingId]);
+    await expectCheckViolation("UPDATE booking SET total_price_cents = -1 WHERE id = $1::uuid", [
+      bookingId,
+    ]);
+    await expectCheckViolation("UPDATE booking SET currency = 'USD' WHERE id = $1::uuid", [
+      bookingId,
+    ]);
     await expectCheckViolation("UPDATE booking SET booking_number = 'bad' WHERE id = $1::uuid", [
       bookingId,
     ]);
@@ -838,5 +957,70 @@ describeDatabase(suiteName, () => {
       "UPDATE booking_status_history SET actor_type = 'SYSTEM' WHERE id = $1::uuid",
       [history.rows[0]?.id],
     );
+
+    const persistedRows = await database().query<{
+      booking_currency: string;
+      booking_guests: number;
+      booking_number: string;
+      booking_total_price_cents: number;
+      history_actor_type: string;
+      hold_status: string;
+      quote_currency: string;
+      quote_total_price_cents: number;
+    }>(
+      `
+      SELECT
+        quote.currency::text AS quote_currency,
+        quote.total_price_cents AS quote_total_price_cents,
+        booking.currency::text AS booking_currency,
+        booking.total_price_cents AS booking_total_price_cents,
+        booking.guests AS booking_guests,
+        booking.booking_number,
+        inventory_hold.status::text AS hold_status,
+        history.actor_type::text AS history_actor_type
+      FROM quote
+      JOIN booking ON booking.quote_id = quote.id
+      JOIN inventory_hold ON inventory_hold.booking_id = booking.id
+      JOIN booking_status_history history ON history.booking_id = booking.id
+      WHERE quote.id = $1::uuid
+    `,
+      [quoteId],
+    );
+    expect(persistedRows.rows).toEqual([
+      {
+        quote_currency: "CNY",
+        quote_total_price_cents: 15000,
+        booking_currency: "CNY",
+        booking_total_price_cents: 15000,
+        booking_guests: 2,
+        booking_number: "SF20260801ABCDEF123456",
+        hold_status: "HELD",
+        history_actor_type: "USER",
+      },
+    ]);
+
+    const baselineCounts = await database().query<{
+      daily_inventory_count: number;
+      daily_price_count: number;
+      property_count: number;
+      room_type_count: number;
+      user_count: number;
+    }>(`
+      SELECT
+        (SELECT COUNT(*)::integer FROM "user") AS user_count,
+        (SELECT COUNT(*)::integer FROM property) AS property_count,
+        (SELECT COUNT(*)::integer FROM room_type) AS room_type_count,
+        (SELECT COUNT(*)::integer FROM daily_price) AS daily_price_count,
+        (SELECT COUNT(*)::integer FROM daily_inventory) AS daily_inventory_count
+    `);
+    expect(baselineCounts.rows).toEqual([
+      {
+        user_count: 1,
+        property_count: 1,
+        room_type_count: 1,
+        daily_price_count: 1,
+        daily_inventory_count: 1,
+      },
+    ]);
   }, 25_000);
 });
