@@ -469,9 +469,9 @@ export async function runSeed(prisma: PrismaClient): Promise<void> {
         INSERT INTO "daily_inventory" (
           "room_type_id",
           "business_date",
-          "total",
-          "held",
-          "sold",
+          "total_inventory",
+          "held_inventory",
+          "sold_inventory",
           "version",
           "created_at",
           "updated_at"
@@ -479,7 +479,7 @@ export async function runSeed(prisma: PrismaClient): Promise<void> {
         SELECT
           supply."roomTypeId"::uuid,
           supply."businessDate"::date,
-          supply."total",
+          supply."totalInventory",
           0,
           0,
           0,
@@ -490,13 +490,13 @@ export async function runSeed(prisma: PrismaClient): Promise<void> {
           "businessDate" text,
           "salePriceCents" integer,
           "rackPriceCents" integer,
-          "total" integer
+          "totalInventory" integer
         )
         ON CONFLICT ("room_type_id", "business_date") DO UPDATE
         SET
-          "total" = EXCLUDED."total",
-          "held" = 0,
-          "sold" = 0,
+          "total_inventory" = EXCLUDED."total_inventory",
+          "held_inventory" = 0,
+          "sold_inventory" = 0,
           "version" = 0,
           "updated_at" = CURRENT_TIMESTAMP
       `,

@@ -175,15 +175,15 @@ model DailyPrice {
 }
 
 model DailyInventory {
-  roomTypeId   String   @map("room_type_id") @db.Uuid
-  businessDate DateTime @map("business_date") @db.Date
-  total        Int
-  held         Int
-  sold         Int
-  version      Int      @default(0)
-  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
-  updatedAt    DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
-  roomType     RoomType @relation(fields: [roomTypeId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+  roomTypeId     String   @map("room_type_id") @db.Uuid
+  businessDate   DateTime @map("business_date") @db.Date
+  totalInventory Int      @map("total_inventory")
+  heldInventory  Int      @default(0) @map("held_inventory")
+  soldInventory  Int      @default(0) @map("sold_inventory")
+  version        Int      @default(0)
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt      DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+  roomType       RoomType @relation(fields: [roomTypeId], references: [id], onDelete: Cascade, onUpdate: Cascade)
 
   @@id([roomTypeId, businessDate], map: "daily_inventory_pkey")
   @@index([businessDate, roomTypeId], map: "daily_inventory_date_room_idx")

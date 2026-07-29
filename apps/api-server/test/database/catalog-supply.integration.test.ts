@@ -81,11 +81,43 @@ describeDatabase(suiteName, () => {
 
   test("seed creates the fixed catalog supply row counts", async () => {
     await expect(getManagedCounts()).resolves.toMatchObject({
+      facility: 4,
       property: 6,
+      property_facility: 18,
+      property_media: 6,
       room_type: 12,
       daily_price: 720,
       daily_inventory: 720,
     });
+  });
+
+  test("daily inventory exposes the exact downstream column and default contract", async () => {
+    const columns = await pool.query<{
+      column_default: string | null;
+      column_name: string;
+    }>(`
+      SELECT column_name, column_default
+      FROM information_schema.columns
+      WHERE table_schema = 'public'
+        AND table_name = 'daily_inventory'
+        AND column_name IN (
+          'total',
+          'held',
+          'sold',
+          'total_inventory',
+          'held_inventory',
+          'sold_inventory',
+          'version'
+        )
+      ORDER BY ordinal_position
+    `);
+
+    expect(columns.rows).toEqual([
+      { column_default: null, column_name: "total_inventory" },
+      { column_default: "0", column_name: "held_inventory" },
+      { column_default: "0", column_name: "sold_inventory" },
+      { column_default: "0", column_name: "version" },
+    ]);
   });
 
   test("each city has all property types and every property has two rooms", async () => {
@@ -127,6 +159,61 @@ describeDatabase(suiteName, () => {
     `);
     expect(roomCounts.rows).toHaveLength(6);
     expect(roomCounts.rows.every(({ room_count: count }) => count === 2)).toBe(true);
+  });
+
+  test("properties have the exact facility links and one ordered image", async () => {
+    const facilityLinks = await pool.query<{
+      facility_codes: string[];
+      property_type: string;
+    }>(`
+      SELECT
+        p.type::text AS property_type,
+        array_agg(f.code ORDER BY f.code) AS facility_codes
+      FROM property p
+      JOIN property_facility pf ON pf.property_id = p.id
+      JOIN facility f ON f.id = pf.facility_id
+      GROUP BY p.id, p.type
+      ORDER BY p.id
+    `);
+
+    expect(facilityLinks.rows).toHaveLength(6);
+    expect(
+      facilityLinks.rows.filter(
+        ({ facility_codes: codes, property_type: type }) =>
+          type === "HOTEL" &&
+          JSON.stringify(codes) === JSON.stringify(["BREAKFAST", "PARKING", "WIFI"]),
+      ),
+    ).toHaveLength(2);
+    expect(
+      facilityLinks.rows.filter(
+        ({ facility_codes: codes, property_type: type }) =>
+          (type === "HOMESTAY" || type === "FARM_STAY") &&
+          JSON.stringify(codes) === JSON.stringify(["FAMILY", "PARKING", "WIFI"]),
+      ),
+    ).toHaveLength(4);
+
+    const media = await pool.query<{
+      display_order: number;
+      media_count: number;
+      media_type: string;
+    }>(`
+      SELECT
+        pm.type::text AS media_type,
+        pm.display_order,
+        COUNT(*)::integer AS media_count
+      FROM property p
+      LEFT JOIN property_media pm ON pm.property_id = p.id
+      GROUP BY p.id, pm.type, pm.display_order
+      ORDER BY p.id
+    `);
+    expect(media.rows).toHaveLength(6);
+    expect(media.rows).toEqual(
+      Array.from({ length: 6 }, () => ({
+        display_order: 10,
+        media_count: 1,
+        media_type: "IMAGE",
+      })),
+    );
   });
 
   test("every room has the continuous sixty-day price and inventory horizon", async () => {
@@ -264,9 +351,27 @@ describeDatabase(suiteName, () => {
   });
 
   test("catalog database checks reject invalid price, room, and inventory values", async () => {
+    const propertyId = "20000000-0000-4000-8000-000000000001";
+    const mediaId = "50000000-0000-4000-8000-000000000001";
+    const facilityId = "40000000-0000-4000-8000-000000000001";
     const roomId = "30000000-0000-4000-8000-000000000001";
     const businessDate = "2026-07-30";
 
+    await expectCheckViolation(
+      "UPDATE property SET display_order = -1 WHERE id = $1::uuid",
+      [propertyId],
+      "property_display_order_check",
+    );
+    await expectCheckViolation(
+      "UPDATE property_media SET display_order = -1 WHERE id = $1::uuid",
+      [mediaId],
+      "property_media_display_order_check",
+    );
+    await expectCheckViolation(
+      "UPDATE facility SET display_order = -1 WHERE id = $1::uuid",
+      [facilityId],
+      "facility_display_order_check",
+    );
     await expectCheckViolation(
       "UPDATE room_type SET area_sqm = 0 WHERE id = $1::uuid",
       [roomId],
@@ -276,6 +381,11 @@ describeDatabase(suiteName, () => {
       "UPDATE room_type SET max_guests = 0 WHERE id = $1::uuid",
       [roomId],
       "room_type_guests_check",
+    );
+    await expectCheckViolation(
+      "UPDATE room_type SET display_order = -1 WHERE id = $1::uuid",
+      [roomId],
+      "room_type_display_order_check",
     );
     await expectCheckViolation(
       "UPDATE room_type SET max_guests = 11 WHERE id = $1::uuid",
@@ -301,7 +411,12 @@ describeDatabase(suiteName, () => {
       "daily_price_rack_check",
     );
 
-    for (const column of ["total", "held", "sold", "version"] as const) {
+    for (const column of [
+      "total_inventory",
+      "held_inventory",
+      "sold_inventory",
+      "version",
+    ] as const) {
       await expectCheckViolation(
         `
           UPDATE daily_inventory
@@ -315,7 +430,7 @@ describeDatabase(suiteName, () => {
     await expectCheckViolation(
       `
         UPDATE daily_inventory
-        SET held = total, sold = 1
+        SET held_inventory = total_inventory, sold_inventory = 1
         WHERE room_type_id = $1::uuid AND business_date = $2::date
       `,
       [roomId, businessDate],

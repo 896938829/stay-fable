@@ -50,7 +50,7 @@ export type CatalogDailySupplySeed = {
   businessDate: string;
   salePriceCents: number;
   rackPriceCents: number;
-  total: number;
+  totalInventory: number;
 };
 
 const fixedUuid = (prefix: 2 | 3 | 4 | 5, suffix: number): string =>
@@ -247,7 +247,7 @@ export const catalogDailySupply: readonly CatalogDailySupplySeed[] = catalogRoom
         businessDate,
         salePriceCents,
         rackPriceCents: salePriceCents + 6_000,
-        total: room.inventory,
+        totalInventory: room.inventory,
       };
     }),
 );

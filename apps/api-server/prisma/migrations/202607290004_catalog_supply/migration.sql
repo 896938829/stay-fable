@@ -89,22 +89,27 @@ CREATE TABLE "daily_price" (
 CREATE TABLE "daily_inventory" (
     "room_type_id" UUID NOT NULL,
     "business_date" DATE NOT NULL,
-    "total" INTEGER NOT NULL,
-    "held" INTEGER NOT NULL,
-    "sold" INTEGER NOT NULL,
+    "total_inventory" INTEGER NOT NULL,
+    "held_inventory" INTEGER NOT NULL DEFAULT 0,
+    "sold_inventory" INTEGER NOT NULL DEFAULT 0,
     "version" INTEGER NOT NULL DEFAULT 0,
     "created_at" TIMESTAMPTZ(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "updated_at" TIMESTAMPTZ(3) NOT NULL,
 
     CONSTRAINT "daily_inventory_pkey" PRIMARY KEY ("room_type_id", "business_date"),
     CONSTRAINT "daily_inventory_nonnegative_check"
-        CHECK ("total" >= 0 AND "held" >= 0 AND "sold" >= 0 AND "version" >= 0),
+        CHECK (
+            "total_inventory" >= 0
+            AND "held_inventory" >= 0
+            AND "sold_inventory" >= 0
+            AND "version" >= 0
+        ),
     CONSTRAINT "daily_inventory_available_check"
         CHECK (
-            "total" < 0
-            OR "held" < 0
-            OR "sold" < 0
-            OR "held" + "sold" <= "total"
+            "total_inventory" < 0
+            OR "held_inventory" < 0
+            OR "sold_inventory" < 0
+            OR "held_inventory" + "sold_inventory" <= "total_inventory"
         )
 );
 
