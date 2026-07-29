@@ -36,29 +36,49 @@ const instantSchema = z.string().refine((value) => {
   );
 });
 
-const calendarDayDifference = (checkin: string, checkout: string) => {
-  const [checkinYearPart = "", checkinMonthPart = "", checkinDayPart = ""] = checkin.split("-");
-  const [checkoutYearPart = "", checkoutMonthPart = "", checkoutDayPart = ""] = checkout.split("-");
-  const checkinYear = Number(checkinYearPart);
-  const checkinMonth = Number(checkinMonthPart);
-  const checkinDay = Number(checkinDayPart);
-  const checkoutYear = Number(checkoutYearPart);
-  const checkoutMonth = Number(checkoutMonthPart);
-  const checkoutDay = Number(checkoutDayPart);
+const calendarDateParts = (date: string) => {
+  const [yearPart = "", monthPart = "", dayPart = ""] = date.split("-");
+  return { year: Number(yearPart), month: Number(monthPart), day: Number(dayPart) };
+};
 
+const daysFromCivil = (year: number, month: number, day: number) => {
+  const adjustedYear = year - (month <= 2 ? 1 : 0);
+  const era = Math.floor(adjustedYear / 400);
+  const yearOfEra = adjustedYear - era * 400;
+  const dayOfYear = Math.floor((153 * (month + (month > 2 ? -3 : 9)) + 2) / 5) + day - 1;
+  const dayOfEra =
+    yearOfEra * 365 + Math.floor(yearOfEra / 4) - Math.floor(yearOfEra / 100) + dayOfYear;
+  return era * 146_097 + dayOfEra;
+};
+
+const isLeapYear = (year: number) => year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+
+const daysInMonth = (year: number, month: number) =>
+  [31, isLeapYear(year) ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][month - 1]!;
+
+const calendarDayDifference = (checkin: string, checkout: string) => {
+  const checkinParts = calendarDateParts(checkin);
+  const checkoutParts = calendarDateParts(checkout);
   return (
-    (Date.UTC(checkoutYear, checkoutMonth - 1, checkoutDay) -
-      Date.UTC(checkinYear, checkinMonth - 1, checkinDay)) /
-    86_400_000
+    daysFromCivil(checkoutParts.year, checkoutParts.month, checkoutParts.day) -
+    daysFromCivil(checkinParts.year, checkinParts.month, checkinParts.day)
   );
 };
 
 const dateAfterDays = (date: string, days: number) => {
-  const [yearPart = "", monthPart = "", dayPart = ""] = date.split("-");
-  const year = Number(yearPart);
-  const month = Number(monthPart);
-  const day = Number(dayPart);
-  return new Date(Date.UTC(year, month - 1, day + days)).toISOString().slice(0, 10);
+  let { year, month, day } = calendarDateParts(date);
+  for (let remainingDays = days; remainingDays > 0; remainingDays -= 1) {
+    day += 1;
+    if (day > daysInMonth(year, month)) {
+      day = 1;
+      month += 1;
+      if (month > 12) {
+        month = 1;
+        year += 1;
+      }
+    }
+  }
+  return `${String(year).padStart(4, "0")}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
 };
 
 const addStayValidation = <T extends z.ZodObject<z.ZodRawShape>>(schema: T) =>

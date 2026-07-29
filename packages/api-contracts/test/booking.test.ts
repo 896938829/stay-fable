@@ -217,6 +217,77 @@ describe("booking contracts", () => {
     }
   });
 
+  it("rejects a quote whose individually safe nightly prices overflow their total", () => {
+    const nightlySalePrice = Number.MAX_SAFE_INTEGER - 1;
+    expect(
+      quoteResponseDataSchema.safeParse({
+        ...quote,
+        nightly_prices: [
+          {
+            ...quote.nightly_prices[0],
+            sale_price_cents: nightlySalePrice,
+            rack_price_cents: nightlySalePrice,
+          },
+          {
+            ...quote.nightly_prices[1],
+            sale_price_cents: nightlySalePrice,
+            rack_price_cents: nightlySalePrice,
+          },
+        ],
+        total_price_cents: nightlySalePrice,
+      }).success,
+    ).toBe(false);
+  });
+
+  it("rejects negative and unsafe previous QUOTE_CHANGED totals", () => {
+    for (const previous_total_price_cents of [-1, Number.MAX_SAFE_INTEGER + 1]) {
+      expect(
+        quoteChangedDetailsSchema.safeParse({
+          previous_total_price_cents,
+          replacement_quote: quote,
+        }).success,
+      ).toBe(false);
+    }
+  });
+
+  it("handles proleptic early calendar years, leap years, cross-year stays, and 30-night coverage", () => {
+    expect(
+      quoteResponseDataSchema.safeParse({
+        ...quote,
+        checkin: "0099-12-31",
+        checkout: "0100-01-01",
+        nights: 1,
+        nightly_prices: [{ ...quote.nightly_prices[0], business_date: "0099-12-31" }],
+        total_price_cents: 58800,
+      }).success,
+    ).toBe(true);
+    expect(
+      quoteResponseDataSchema.safeParse({
+        ...quote,
+        checkin: "2028-02-28",
+        checkout: "2028-03-01",
+        nightly_prices: [
+          { ...quote.nightly_prices[0], business_date: "2028-02-28" },
+          { ...quote.nightly_prices[1], business_date: "2028-02-29" },
+        ],
+      }).success,
+    ).toBe(true);
+    const thirtyNights = Array.from({ length: 30 }, (_, index) => ({
+      ...quote.nightly_prices[0],
+      business_date: `2026-12-${String(index + 1).padStart(2, "0")}`,
+    }));
+    expect(
+      quoteResponseDataSchema.safeParse({
+        ...quote,
+        checkin: "2026-12-01",
+        checkout: "2026-12-31",
+        nights: 30,
+        nightly_prices: thirtyNights,
+        total_price_cents: 1_764_000,
+      }).success,
+    ).toBe(true);
+  });
+
   it("requires timezone-aware valid instants and valid booking numbers", () => {
     for (const invalidQuote of [
       { ...quote, expires_at: "2026-07-30T02:05:00" },
