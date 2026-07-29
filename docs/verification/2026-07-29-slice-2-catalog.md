@@ -10,9 +10,9 @@
 ## 结论
 
 仓库门禁、官方微信页面与模板编译，以及 WSL2 Catalog 运行时验证已完成。真实 Catalog
-Automator 未通过：当前 Windows 官方 CLI 与 `miniprogram-automator@0.12.1` 的自动化启动
-协议不兼容。因没有生成真实页面树或用户闭环截图，本记录不宣称 Slice 2 完成，也不以
-单元测试、手工模拟或截图替代该门禁。
+Automator 在 `launch` 阶段未通过，因而没有生成真实页面树或用户闭环截图。Task 12 验证记录已
+完成；Slice 2 状态为 **NOT_COMPLETE/BLOCKED_BY_AUTOMATOR**（未完成），Automator 用户闭环是
+退出阻断，不能以单元测试、手工模拟或截图替代。
 
 ## 仓库门禁与审计
 
@@ -73,16 +73,15 @@ node wx/automator/slice-2-catalog.js $wxPath $evidenceParent --cli-path 'D:\Soft
 ```
 
 脚本安全输出为 `status=fail`、`step=launch`、`currentPage=unknown`，退出码 1；因此未生成
-`catalog-*` 页面树或截图，不能虚构其相对路径。使用同一输入重现的本地非提交诊断表明：
+`catalog-*` 页面树或截图，不能虚构其相对路径。使用同一输入重现的本地非提交诊断提供以下线索：
 
 - Node 24 直接启动该 `.bat` 时返回 `EINVAL`；
-- 用官方 CLI 单独启用自动化可启动 IDE 的 HTTP 服务，但该 CLI 不支持或忽略
-  `miniprogram-automator@0.12.1` 所需的 `--auto-port` 参数；
-- Automator 所需的本地 WebSocket 自动化端口未监听，故启动阶段无法连接。
+- 官方 CLI 的 `auto` 帮助未列出 `--auto-port`，且携带该参数的观察只记录到 IDE HTTP 服务；
+- 未观察到 Automator 需要的本地 WebSocket 自动化端口处于监听状态。
 
-这是当前开发者工具 CLI 与 Automator 依赖的外部版本兼容性门禁。需要升级/匹配开发者工具与
-Automator 协议后，重新执行上述原始命令并归档其真实 `catalog-*` 页面树与截图；不得以手工
-模拟结果关闭该项。
+这些诊断线索提示当前 CLI/Automator 启动协议可能存在兼容问题，但根因尚未确认。必须先确认并
+修复该外部工具启动问题，再重新执行上述原始命令并归档其真实 `catalog-*` 页面树与截图；不得以
+手工模拟结果关闭该项。
 
 Slice 1 的真实定位拒绝仍是独立人工面板验收项：需在微信开发者工具授权设置中明确拒绝位置权限，
 再按 [Slice 1 记录](2026-07-29-slice-1-identity-search.md) 的步骤留存实际截图。本次不把它
@@ -91,5 +90,5 @@ Slice 1 的真实定位拒绝仍是独立人工面板验收项：需在微信开
 ## 最终验证结果
 
 完整 WSL2 验证以退出码 0 完成，包含 10/10 Worker 观察和清理标志。仓库、官方编译与 WSL2
-运行时证据均为通过；Automator 用户闭环因记录的外部 CLI/协议兼容性问题未通过。因此 Slice 2
-当前状态为 **DONE_WITH_CONCERNS**（验证记录与提交完成，但不代表 Slice 2 发布或用户闭环完成）。
+运行时证据均为通过；Automator 用户闭环在 `launch` 阶段未通过。因此 Task 12 验证记录已完成，
+但 Slice 2 当前状态为 **NOT_COMPLETE/BLOCKED_BY_AUTOMATOR**（未完成）；该用户闭环是退出阻断。
