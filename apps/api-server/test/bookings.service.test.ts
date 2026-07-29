@@ -423,23 +423,47 @@ const repositoryInput: CreateBookingInput = {
 
 const createBookingDatabase = (responses: unknown[]) => {
   let index = 0;
+  const staged: string[] = [];
+  const committed: string[] = [];
+  let rollbackCount = 0;
   const transaction = {
-    $queryRaw: vi.fn<(query: unknown) => Promise<unknown>>(() =>
-      Promise.resolve(responses[index++]),
-    ),
+    $queryRaw: vi.fn<(query: unknown) => Promise<unknown>>((query) => {
+      const sql = (query as { sql?: string }).sql ?? "";
+      if (/\b(?:UPDATE|INSERT)\b/.test(sql)) {
+        staged.push(sql);
+      }
+      const response = responses[index++];
+      return response instanceof Error ? Promise.reject(response) : Promise.resolve(response);
+    }),
   };
   const database = {
     transactionOptions: undefined as { isolationLevel: string } | undefined,
+    committed,
+    get staged() {
+      return [...staged];
+    },
+    get rollbackCount() {
+      return rollbackCount;
+    },
     $transaction: vi.fn(
-      <T>(
+      async <T>(
         operation: (client: typeof transaction) => Promise<T>,
         options: { isolationLevel: string },
       ) => {
         database.transactionOptions = options;
-        return operation(transaction);
+        try {
+          const result = await operation(transaction);
+          committed.push(...staged);
+          staged.length = 0;
+          return result;
+        } catch (error) {
+          rollbackCount += 1;
+          staged.length = 0;
+          throw error;
+        }
       },
     ),
-    $queryRaw: vi.fn(),
+    $queryRaw: vi.fn<(query: unknown) => Promise<unknown>>(),
   };
   return { database, transaction };
 };
@@ -604,6 +628,9 @@ describe("BookingRepository", () => {
       kind: "INVENTORY_UNAVAILABLE",
     });
     expect(transaction.$queryRaw).toHaveBeenCalledTimes(9);
+    expect(database.rollbackCount).toBe(1);
+    expect(database.staged).toEqual([]);
+    expect(database.committed).toEqual([]);
   });
 
   it("rejects malformed input and unknown database rows without continuing writes", async () => {
@@ -622,27 +649,190 @@ describe("BookingRepository", () => {
     ).rejects.toThrow("Invalid booking repository input");
   });
 
-  it("classifies only the booking-number unique target as retryable", async () => {
-    const bookingNumberConflict = new Prisma.PrismaClientKnownRequestError("conflict", {
-      code: "P2002",
+  const knownRequestError = (
+    code: "P2002" | "P2010",
+    meta: Record<string, unknown>,
+    message = "database error",
+  ) =>
+    new Prisma.PrismaClientKnownRequestError(message, {
+      code,
       clientVersion: "test",
-      meta: { target: ["booking_number"] },
+      meta,
     });
-    const unknownConflict = new Prisma.PrismaClientKnownRequestError("secret", {
-      code: "P2002",
-      clientVersion: "test",
-      meta: { target: ["quote_id"] },
+
+  it.each([
+    [
+      "P2002 target columns",
+      knownRequestError("P2002", { target: ["booking_number"] }),
+      "booking_number",
+    ],
+    [
+      "P2002 constraint target",
+      knownRequestError("P2002", { target: "booking_booking_number_key" }),
+      "booking_number",
+    ],
+    [
+      "P2002 idempotency columns",
+      knownRequestError("P2002", { target: ["user_id", "idempotency_key"] }),
+      "idempotency",
+    ],
+    ["P2002 quote column", knownRequestError("P2002", { target: ["quote_id"] }), "quote"],
+    [
+      "P2010 trusted constraint",
+      knownRequestError("P2010", {
+        code: "23505",
+        constraint: "booking_booking_number_key",
+      }),
+      "booking_number",
+    ],
+    [
+      "P2010 standard message",
+      knownRequestError("P2010", {
+        code: "23505",
+        message: 'duplicate key value violates unique constraint "booking_booking_number_key"',
+      }),
+      "booking_number",
+    ],
+    [
+      "P2010 idempotency constraint",
+      knownRequestError("P2010", {
+        code: "23505",
+        constraint: "booking_user_id_idempotency_key_key",
+      }),
+      "idempotency",
+    ],
+    [
+      "P2010 quote constraint",
+      knownRequestError("P2010", {
+        code: "23505",
+        constraint: "booking_quote_id_key",
+      }),
+      "quote",
+    ],
+  ])("checks user/key after confirmed unique: %s", async (_name, error, classification) => {
+    const { database } = createBookingDatabase([]);
+    database.$transaction.mockRejectedValueOnce(error);
+    database.$queryRaw.mockResolvedValueOnce([bookingRecord]);
+    const repository = new BookingRepository(database as unknown as BookingDatabase);
+
+    await expect(repository.createFromQuote(repositoryInput)).resolves.toEqual({
+      kind: "REPLAYED",
+      booking,
     });
-    for (const [error, expected] of [
-      [bookingNumberConflict, BookingNumberConflictError],
-      [unknownConflict, Prisma.PrismaClientKnownRequestError],
-    ] as const) {
-      const { database } = createBookingDatabase([]);
-      database.$transaction.mockRejectedValueOnce(error);
-      const repository = new BookingRepository(database as unknown as BookingDatabase);
-      await expect(repository.createFromQuote(repositoryInput)).rejects.toBeInstanceOf(expected);
-      expect(database.$queryRaw).not.toHaveBeenCalled();
-    }
+    expect(database.$queryRaw).toHaveBeenCalledTimes(1);
+    const lookup = database.$queryRaw.mock.calls[0]?.[0] as {
+      sql: string;
+      values: unknown[];
+    };
+    expect(lookup.sql).toContain("idempotency_key");
+    expect(lookup.values).toEqual(expect.arrayContaining([USER_ID, IDEMPOTENCY_KEY]));
+    expect(classification).toBeTruthy();
+  });
+
+  it("retries only a confirmed booking-number unique after rollback and empty user/key lookup", async () => {
+    const error = knownRequestError("P2010", {
+      code: "23505",
+      message: 'duplicate key value violates unique constraint "booking_booking_number_key"',
+    });
+    const { database } = createBookingDatabase([]);
+    database.$transaction.mockRejectedValueOnce(error);
+    database.$queryRaw.mockResolvedValueOnce([]);
+    const repository = new BookingRepository(database as unknown as BookingDatabase);
+
+    await expect(repository.createFromQuote(repositoryInput)).rejects.toBeInstanceOf(
+      BookingNumberConflictError,
+    );
+    expect(database.$queryRaw).toHaveBeenCalledTimes(1);
+  });
+
+  it("makes exactly one full service retry for a raw P2010 booking-number conflict", async () => {
+    const error = knownRequestError("P2010", {
+      code: "23505",
+      constraint: "booking_booking_number_key",
+    });
+    const { database } = createBookingDatabase([[{ locked: null }], [bookingRecord]]);
+    database.$transaction.mockRejectedValueOnce(error);
+    database.$queryRaw.mockResolvedValueOnce([]);
+    const repository = new BookingRepository(database as unknown as BookingDatabase);
+    const generator = createGenerator("SF20260730AAAAAAAAAAAA", "SF20260730BBBBBBBBBBBB");
+    const service = new BookingsService(
+      repository,
+      createRateLimit() as unknown as WriteRateLimitService,
+      { now: () => NOW },
+      generator,
+    );
+
+    await expect(service.create(USER_ID, IDEMPOTENCY_KEY, { quote_id: QUOTE_ID })).resolves.toEqual(
+      { kind: "REPLAYED", booking },
+    );
+    expect(database.$transaction).toHaveBeenCalledTimes(2);
+    expect(database.$queryRaw).toHaveBeenCalledTimes(1);
+    expect(generator.next).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([
+    [
+      "other SQLSTATE",
+      knownRequestError("P2010", {
+        code: "23503",
+        constraint: "booking_booking_number_key",
+      }),
+    ],
+    [
+      "forged message",
+      knownRequestError("P2010", {
+        code: "23505",
+        message: 'user input mentions "booking_booking_number_key"',
+      }),
+    ],
+    [
+      "unknown constraint",
+      knownRequestError("P2010", {
+        code: "23505",
+        constraint: "some_other_unique_key",
+      }),
+    ],
+    [
+      "malformed meta",
+      knownRequestError("P2010", {
+        code: "23505",
+        constraint: { toString: () => "booking_booking_number_key" },
+      }),
+    ],
+  ])("does not treat %s as a confirmed unique conflict", async (_name, error) => {
+    const { database } = createBookingDatabase([]);
+    database.$transaction.mockRejectedValueOnce(error);
+    const repository = new BookingRepository(database as unknown as BookingDatabase);
+    await expect(repository.createFromQuote(repositoryInput)).rejects.toBe(error);
+    expect(database.$queryRaw).not.toHaveBeenCalled();
+  });
+
+  it("rolls back staged inventory and writes before classifying a raw unique violation", async () => {
+    const unique = knownRequestError("P2010", {
+      code: "23505",
+      constraint: "booking_booking_number_key",
+    });
+    const { database } = createBookingDatabase([
+      [{ locked: null }],
+      [],
+      [quoteRow],
+      [],
+      [currentBase],
+      currentNightly,
+      inventoryRows,
+      [{ roomTypeId: ROOM_TYPE_ID }],
+      [{ roomTypeId: ROOM_TYPE_ID }],
+      unique,
+    ]);
+    database.$queryRaw.mockResolvedValueOnce([]);
+    const repository = new BookingRepository(database as unknown as BookingDatabase);
+    await expect(repository.createFromQuote(repositoryInput)).rejects.toBeInstanceOf(
+      BookingNumberConflictError,
+    );
+    expect(database.rollbackCount).toBe(1);
+    expect(database.staged).toEqual([]);
+    expect(database.committed).toEqual([]);
+    expect(database.$queryRaw).toHaveBeenCalledTimes(1);
   });
 });
 

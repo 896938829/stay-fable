@@ -444,29 +444,84 @@ const inventoryKeys = [
   "soldInventory",
 ] as const;
 
-const uniqueTarget = (error: unknown): string[] | null => {
-  if (!(error instanceof Prisma.PrismaClientKnownRequestError) || error.code !== "P2002") {
-    return null;
-  }
-  const target = error.meta?.target;
-  if (typeof target === "string") {
-    return [target];
-  }
-  if (Array.isArray(target) && target.every((entry) => typeof entry === "string")) {
-    return [...target];
-  }
-  return [];
+type KnownUniqueConstraint =
+  "booking_booking_number_key" | "booking_user_id_idempotency_key_key" | "booking_quote_id_key";
+
+const knownUniqueConstraints = new Set<KnownUniqueConstraint>([
+  "booking_booking_number_key",
+  "booking_user_id_idempotency_key_key",
+  "booking_quote_id_key",
+]);
+
+const asKnownConstraint = (value: unknown): KnownUniqueConstraint | null =>
+  typeof value === "string" && knownUniqueConstraints.has(value as KnownUniqueConstraint)
+    ? (value as KnownUniqueConstraint)
+    : null;
+
+const ownDataValue = (value: object, key: string): unknown => {
+  const descriptor = Reflect.getOwnPropertyDescriptor(value, key);
+  return descriptor !== undefined && Object.hasOwn(descriptor, "value")
+    ? descriptor.value
+    : undefined;
 };
 
-const isBookingNumberTarget = (target: string[] | null): boolean =>
-  target !== null &&
-  ((target.length === 1 && target[0] === "booking_number") ||
-    (target.length === 1 && target[0] === "booking_booking_number_key"));
+const p2002Constraint = (meta: unknown): KnownUniqueConstraint | null => {
+  if (meta === null || typeof meta !== "object") {
+    return null;
+  }
+  const target = ownDataValue(meta, "target");
+  const named = asKnownConstraint(target);
+  if (named !== null) {
+    return named;
+  }
+  if (!Array.isArray(target) || nodeTypes.isProxy(target)) {
+    return null;
+  }
+  const columns = snapshotRows(target);
+  if (columns.length === 1 && columns[0] === "booking_number") {
+    return "booking_booking_number_key";
+  }
+  if (columns.length === 2 && columns.includes("user_id") && columns.includes("idempotency_key")) {
+    return "booking_user_id_idempotency_key_key";
+  }
+  return columns.length === 1 && columns[0] === "quote_id" ? "booking_quote_id_key" : null;
+};
 
-const isIdempotencyTarget = (target: string[] | null): boolean =>
-  target !== null &&
-  ((target.length === 2 && target.includes("user_id") && target.includes("idempotency_key")) ||
-    (target.length === 1 && target[0] === "booking_user_id_idempotency_key_key"));
+const STANDARD_UNIQUE_MESSAGE =
+  /^(?:ERROR: )?duplicate key value violates unique constraint "(booking_booking_number_key|booking_user_id_idempotency_key_key|booking_quote_id_key)"(?:\r?\nDETAIL: [^\r\n]*)?$/;
+
+const p2010Constraint = (meta: unknown): KnownUniqueConstraint | null => {
+  if (meta === null || typeof meta !== "object" || ownDataValue(meta, "code") !== "23505") {
+    return null;
+  }
+  const named = asKnownConstraint(ownDataValue(meta, "constraint"));
+  if (named !== null) {
+    return named;
+  }
+  const message = ownDataValue(meta, "message");
+  if (typeof message !== "string") {
+    return null;
+  }
+  const match = STANDARD_UNIQUE_MESSAGE.exec(message);
+  return match === null ? null : asKnownConstraint(match[1]);
+};
+
+const classifyUniqueConstraint = (error: unknown): KnownUniqueConstraint | null => {
+  try {
+    if (!(error instanceof Prisma.PrismaClientKnownRequestError)) {
+      return null;
+    }
+    if (error.code === "P2002") {
+      return p2002Constraint(error.meta);
+    }
+    if (error.code === "P2010") {
+      return p2010Constraint(error.meta);
+    }
+    return null;
+  } catch {
+    return null;
+  }
+};
 
 @Injectable()
 export class BookingRepository {
@@ -483,11 +538,8 @@ export class BookingRepository {
       if (error instanceof InventoryUnavailableRollback) {
         return { kind: "INVENTORY_UNAVAILABLE" };
       }
-      const target = uniqueTarget(error);
-      if (isBookingNumberTarget(target)) {
-        throw new BookingNumberConflictError();
-      }
-      if (isIdempotencyTarget(target)) {
+      const constraint = classifyUniqueConstraint(error);
+      if (constraint !== null) {
         const rows = snapshotRows(
           await this.database.$queryRaw<unknown[]>(Prisma.sql`
             ${this.bookingSummarySelect()}
@@ -498,6 +550,12 @@ export class BookingRepository {
         );
         if (rows.length === 1) {
           return { kind: "REPLAYED", booking: materializeBooking(rows[0]) };
+        }
+        if (rows.length > 1) {
+          return invalidData();
+        }
+        if (constraint === "booking_booking_number_key") {
+          throw new BookingNumberConflictError();
         }
       }
       throw error;
