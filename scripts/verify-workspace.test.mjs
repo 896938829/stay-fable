@@ -137,7 +137,7 @@ test("activates reproducible pnpm project settings", async () => {
   assert.match(lockfile, /^\s+injectWorkspacePackages:\s+true$/m);
 });
 
-test("excludes only the frozen Taro subtree from Prettier", async () => {
+test("excludes only approved generated and frozen paths from Prettier", async () => {
   const prettierIgnore = await readFile(new URL(".prettierignore", rootUrl), "utf8");
   const activeRules = prettierIgnore
     .split(/\r?\n/)
@@ -148,6 +148,7 @@ test("excludes only the frozen Taro subtree from Prettier", async () => {
     activeRules.toSorted(),
     [
       ".agents/skills/",
+      ".wsl-runtime/",
       "apps/consumer-miniapp/",
       "docs/superpowers/",
       "pnpm-lock.yaml",

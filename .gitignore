@@ -6,6 +6,7 @@ coverage/
 .turbo/
 .taro/
 .swc/
+.wsl-runtime/
 
 .env
 .env.*
