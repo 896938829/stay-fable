@@ -2,10 +2,25 @@ import { z } from "zod";
 
 import { citySchema } from "./location.js";
 
-const catalogCitySchema = citySchema.strict();
+const nonblankString = (maximum?: number) =>
+  (maximum === undefined ? z.string().min(1) : z.string().min(1).max(maximum)).refine(
+    (value) => value.trim().length > 0,
+  );
+
+const catalogCitySchema = citySchema
+  .extend({
+    code: nonblankString(),
+    name: nonblankString(),
+  })
+  .strict();
 
 export const propertyTypeSchema = z.enum(["HOTEL", "HOMESTAY", "FARM_STAY"]);
 export const currencySchema = z.literal("CNY");
+export const catalogCursorSchema = z
+  .string()
+  .min(1)
+  .max(256)
+  .regex(/^[A-Za-z0-9_-]+$/);
 const catalogDatePattern = /^\d{4}-\d{2}-\d{2}$/;
 
 const isCalendarDate = (value: string) => {
@@ -116,7 +131,7 @@ export const propertyListQuerySchema = availabilityQuerySchema
     city_id: z.uuid(),
     property_type: propertyTypeSchema.optional(),
     page_size: z.number().int().min(1).max(20).default(10),
-    cursor: z.string().min(1).max(256).optional(),
+    cursor: catalogCursorSchema.optional(),
   })
   .strict();
 
@@ -124,33 +139,33 @@ export const propertyListItemSchema = z
   .object({
     id: z.uuid(),
     type: propertyTypeSchema,
-    name: z.string().min(1).max(120),
+    name: nonblankString(120),
     city: catalogCitySchema,
     cover_url: catalogResourceSchema,
-    short_description: z.string().min(1).max(240),
-    facility_highlights: z.array(z.string().min(1).max(80)).max(4),
+    short_description: nonblankString(240),
+    facility_highlights: z.array(nonblankString(80)).max(4),
     from_nightly_price_cents: moneyCentsSchema,
     currency: currencySchema,
-    available_room_type_count: z.number().int().positive(),
+    available_room_type_count: z.number().int().positive().safe(),
   })
   .strict();
 
 export const propertyListResponseSchema = z
   .object({
-    items: z.array(propertyListItemSchema),
-    next_cursor: z.string().min(1).max(256).nullable(),
+    items: z.array(propertyListItemSchema).max(20),
+    next_cursor: catalogCursorSchema.nullable(),
   })
   .strict();
 
 export const roomTypeSummarySchema = z
   .object({
     id: z.uuid(),
-    name: z.string().min(1).max(120),
-    bed_type: z.string().min(1).max(120),
+    name: nonblankString(120),
+    bed_type: nonblankString(120),
     area_sqm: z.number().positive(),
     max_guests: z.number().int().min(1).max(10),
     cover_url: catalogResourceSchema,
-    policy_summary: z.string().min(1).max(500),
+    policy_summary: nonblankString(500),
     from_nightly_price_cents: moneyCentsSchema,
     currency: currencySchema,
   })
@@ -160,14 +175,14 @@ const mediaItemSchema = z
   .object({
     type: z.literal("IMAGE"),
     url: catalogResourceSchema,
-    alt: z.string().min(1).max(120),
+    alt: nonblankString(120),
   })
   .strict();
 
 const facilitySchema = z
   .object({
-    code: z.string().min(1),
-    name: z.string().min(1),
+    code: nonblankString(),
+    name: nonblankString(),
   })
   .strict();
 
@@ -175,11 +190,11 @@ export const propertyDetailSchema = z
   .object({
     id: z.uuid(),
     type: propertyTypeSchema,
-    name: z.string().min(1).max(120),
+    name: nonblankString(120),
     city: catalogCitySchema,
-    address: z.string().min(1).max(240),
-    description: z.string().min(1).max(2000),
-    policies: z.string().min(1).max(2000),
+    address: nonblankString(240),
+    description: nonblankString(2000),
+    policies: nonblankString(2000),
     cover_url: catalogResourceSchema,
     media: z.array(mediaItemSchema).max(20),
     facilities: z.array(facilitySchema).max(50),
@@ -200,7 +215,7 @@ const roomTypePropertySchema = z
   .object({
     id: z.uuid(),
     type: propertyTypeSchema,
-    name: z.string().min(1).max(120),
+    name: nonblankString(120),
     city: catalogCitySchema,
   })
   .strict();
@@ -212,8 +227,8 @@ export const roomTypeDetailSchema = roomTypeSummarySchema
   })
   .extend({
     property: roomTypePropertySchema,
-    description: z.string().min(1).max(2000),
-    booking_policy: z.string().min(1).max(2000),
+    description: nonblankString(2000),
+    booking_policy: nonblankString(2000),
     nightly_prices: z.array(nightlyPriceSchema).min(1).max(30),
   })
   .strict();

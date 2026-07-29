@@ -168,10 +168,41 @@ describe("catalog contracts", () => {
     expect(propertyListQuerySchema.parse({ ...query, cursor: "a".repeat(256) }).cursor).toBe(
       "a".repeat(256),
     );
-    expect(propertyListQuerySchema.safeParse({ ...query, cursor: "" }).success).toBe(false);
-    expect(propertyListQuerySchema.safeParse({ ...query, cursor: "a".repeat(257) }).success).toBe(
-      false,
-    );
+    for (const cursor of ["", "a".repeat(257), "a/b", "a\\b", "//", "\ud800"]) {
+      expect(propertyListQuerySchema.safeParse({ ...query, cursor }).success).toBe(false);
+      expect(
+        propertyListResponseSchema.safeParse({
+          items: [propertyListItem],
+          next_cursor: cursor,
+        }).success,
+      ).toBe(false);
+    }
+  });
+
+  it("bounds property list size and safe available-room counts", () => {
+    expect(
+      propertyListResponseSchema.safeParse({
+        items: Array.from({ length: 20 }, () => propertyListItem),
+        next_cursor: null,
+      }).success,
+    ).toBe(true);
+    expect(
+      propertyListResponseSchema.safeParse({
+        items: Array.from({ length: 21 }, () => propertyListItem),
+        next_cursor: null,
+      }).success,
+    ).toBe(false);
+    expect(
+      propertyListResponseSchema.safeParse({
+        items: [
+          {
+            ...propertyListItem,
+            available_room_type_count: Number.MAX_SAFE_INTEGER + 1,
+          },
+        ],
+        next_cursor: null,
+      }).success,
+    ).toBe(false);
   });
 
   it("limits property types, currencies, resource paths, and money cents", () => {
@@ -284,6 +315,69 @@ describe("catalog contracts", () => {
         city: { ...city, ignored: true },
       }).success,
     ).toBe(false);
+  });
+
+  it("rejects blank display strings without transforming valid text", () => {
+    const blankListItems = [
+      { ...propertyListItem, name: " \t " },
+      { ...propertyListItem, city: { ...city, code: "\n" } },
+      { ...propertyListItem, city: { ...city, name: " " } },
+      { ...propertyListItem, short_description: "\t" },
+      { ...propertyListItem, facility_highlights: [" "] },
+    ];
+    for (const item of blankListItems) {
+      expect(
+        propertyListResponseSchema.safeParse({ items: [item], next_cursor: null }).success,
+      ).toBe(false);
+    }
+
+    const blankPropertyDetails = [
+      { ...propertyDetail, name: " " },
+      { ...propertyDetail, address: "\t" },
+      { ...propertyDetail, description: "\n" },
+      { ...propertyDetail, policies: " " },
+      { ...propertyDetail, media: [{ ...propertyDetail.media[0], alt: " " }] },
+      { ...propertyDetail, facilities: [{ ...propertyDetail.facilities[0], code: "\t" }] },
+      { ...propertyDetail, facilities: [{ ...propertyDetail.facilities[0], name: "\n" }] },
+      { ...propertyDetail, room_types: [{ ...roomTypeSummary, name: " " }] },
+      { ...propertyDetail, room_types: [{ ...roomTypeSummary, bed_type: "\t" }] },
+      { ...propertyDetail, room_types: [{ ...roomTypeSummary, policy_summary: "\n" }] },
+    ];
+    for (const detail of blankPropertyDetails) {
+      expect(propertyDetailSchema.safeParse(detail).success).toBe(false);
+    }
+
+    const blankRoomDetails = [
+      { ...roomTypeDetail, name: " " },
+      { ...roomTypeDetail, bed_type: "\t" },
+      { ...roomTypeDetail, property: { ...roomTypeDetail.property, name: "\n" } },
+      {
+        ...roomTypeDetail,
+        property: {
+          ...roomTypeDetail.property,
+          city: { ...city, code: " " },
+        },
+      },
+      {
+        ...roomTypeDetail,
+        property: {
+          ...roomTypeDetail.property,
+          city: { ...city, name: "\t" },
+        },
+      },
+      { ...roomTypeDetail, description: "\n" },
+      { ...roomTypeDetail, booking_policy: " " },
+    ];
+    for (const detail of blankRoomDetails) {
+      expect(roomTypeDetailSchema.safeParse(detail).success).toBe(false);
+    }
+
+    expect(
+      propertyListResponseSchema.parse({
+        items: [{ ...propertyListItem, name: "  西湖云栖酒店  " }],
+        next_cursor: null,
+      }).items[0]?.name,
+    ).toBe("  西湖云栖酒店  ");
   });
 
   it("bounds room type detail nightly prices from one through thirty entries", () => {
