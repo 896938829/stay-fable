@@ -36,13 +36,35 @@ enum PropertyMediaType {
   IMAGE
 }
 
+enum BookingStatus {
+  PENDING_PAYMENT
+  PAID
+  CONFIRMED
+  CANCELLED
+  CLOSED
+}
+
+enum InventoryHoldStatus {
+  HELD
+  CONSUMED
+  RELEASED
+}
+
+enum BookingActorType {
+  USER
+  SYSTEM
+}
+
 model User {
-  id             String         @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  status         UserStatus     @default(ACTIVE)
-  sessionVersion Int            @default(0) @map("session_version")
-  createdAt      DateTime       @default(now()) @map("created_at") @db.Timestamptz(3)
-  updatedAt      DateTime       @updatedAt @map("updated_at") @db.Timestamptz(3)
-  identities     UserIdentity[]
+  id                   String                 @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  status               UserStatus             @default(ACTIVE)
+  sessionVersion       Int                    @default(0) @map("session_version")
+  createdAt            DateTime               @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt            DateTime               @updatedAt @map("updated_at") @db.Timestamptz(3)
+  identities           UserIdentity[]
+  quotes               Quote[]
+  bookings             Booking[]
+  bookingStatusHistory BookingStatusHistory[] @relation("BookingStatusActor")
 
   @@map("user")
 }
@@ -96,6 +118,8 @@ model Property {
   media              PropertyMedia[]
   propertyFacilities PropertyFacility[]
   roomTypes          RoomType[]
+  quotes             Quote[]
+  bookings           Booking[]
 
   @@unique([cityId, nameZh], map: "property_city_id_name_zh_key")
   @@index([cityId, status, type, displayOrder, id], map: "property_city_status_type_order_id_idx")
@@ -154,6 +178,9 @@ model RoomType {
   property        Property         @relation(fields: [propertyId], references: [id], onDelete: Cascade, onUpdate: Cascade)
   dailyPrices     DailyPrice[]
   dailyInventory  DailyInventory[]
+  quotes          Quote[]
+  bookings        Booking[]
+  inventoryHolds  InventoryHold[]
 
   @@unique([propertyId, nameZh], map: "room_type_property_id_name_zh_key")
   @@index([propertyId, status, maxGuests, displayOrder, id], map: "room_type_property_status_capacity_order_id_idx")
@@ -188,4 +215,100 @@ model DailyInventory {
   @@id([roomTypeId, businessDate], map: "daily_inventory_pkey")
   @@index([businessDate, roomTypeId], map: "daily_inventory_date_room_idx")
   @@map("daily_inventory")
+}
+
+model Quote {
+  id                    String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  userId                String   @map("user_id") @db.Uuid
+  propertyId            String   @map("property_id") @db.Uuid
+  roomTypeId            String   @map("room_type_id") @db.Uuid
+  checkinDate           DateTime @map("checkin_date") @db.Date
+  checkoutDate          DateTime @map("checkout_date") @db.Date
+  guests                Int
+  nightlyPrices         Json     @map("nightly_prices")
+  propertySnapshot      Json     @map("property_snapshot")
+  roomTypeSnapshot      Json     @map("room_type_snapshot")
+  bookingPolicySnapshot String   @map("booking_policy_snapshot") @db.VarChar(2000)
+  totalPriceCents       Int      @map("total_price_cents")
+  currency              String   @default("CNY") @db.Char(3)
+  fingerprint           String   @db.Char(64)
+  expiresAt             DateTime @map("expires_at") @db.Timestamptz(3)
+  createdAt             DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  user                  User     @relation(fields: [userId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  property              Property @relation(fields: [propertyId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  roomType              RoomType @relation(fields: [roomTypeId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  booking               Booking?
+
+  @@index([userId, expiresAt], map: "quote_user_expires_idx")
+  @@index([roomTypeId, createdAt], map: "quote_room_created_idx")
+  @@map("quote")
+}
+
+model Booking {
+  id                    String                 @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  userId                String                 @map("user_id") @db.Uuid
+  quoteId               String                 @unique(map: "booking_quote_id_key") @map("quote_id") @db.Uuid
+  propertyId            String                 @map("property_id") @db.Uuid
+  roomTypeId            String                 @map("room_type_id") @db.Uuid
+  bookingNumber         String                 @unique(map: "booking_booking_number_key") @map("booking_number") @db.VarChar(22)
+  status                BookingStatus          @default(PENDING_PAYMENT)
+  checkinDate           DateTime               @map("checkin_date") @db.Date
+  checkoutDate          DateTime               @map("checkout_date") @db.Date
+  guests                Int
+  propertySnapshot      Json                   @map("property_snapshot")
+  roomTypeSnapshot      Json                   @map("room_type_snapshot")
+  nightlyPrices         Json                   @map("nightly_prices")
+  bookingPolicySnapshot String                 @map("booking_policy_snapshot") @db.VarChar(2000)
+  totalPriceCents       Int                    @map("total_price_cents")
+  currency              String                 @default("CNY") @db.Char(3)
+  idempotencyKey        String                 @map("idempotency_key") @db.VarChar(80)
+  expiresAt             DateTime               @map("expires_at") @db.Timestamptz(3)
+  createdAt             DateTime               @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt             DateTime               @updatedAt @map("updated_at") @db.Timestamptz(3)
+  user                  User                   @relation(fields: [userId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  quote                 Quote                  @relation(fields: [quoteId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  property              Property               @relation(fields: [propertyId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  roomType              RoomType               @relation(fields: [roomTypeId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  inventoryHolds        InventoryHold[]
+  statusHistory         BookingStatusHistory[]
+
+  @@unique([userId, idempotencyKey], map: "booking_user_id_idempotency_key_key")
+  @@index([userId, createdAt, id], map: "booking_user_created_id_idx")
+  @@index([status, expiresAt, id], map: "booking_status_expires_id_idx")
+  @@map("booking")
+}
+
+model InventoryHold {
+  id           String              @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  bookingId    String              @map("booking_id") @db.Uuid
+  roomTypeId   String              @map("room_type_id") @db.Uuid
+  businessDate DateTime            @map("business_date") @db.Date
+  status       InventoryHoldStatus @default(HELD)
+  expiresAt    DateTime            @map("expires_at") @db.Timestamptz(3)
+  createdAt    DateTime            @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt    DateTime            @updatedAt @map("updated_at") @db.Timestamptz(3)
+  booking      Booking             @relation(fields: [bookingId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  roomType     RoomType            @relation(fields: [roomTypeId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+
+  @@unique([bookingId, businessDate], map: "inventory_hold_booking_id_business_date_key")
+  @@index([status, expiresAt, id], map: "inventory_hold_status_expires_id_idx")
+  @@index([roomTypeId, businessDate], map: "inventory_hold_room_date_idx")
+  @@map("inventory_hold")
+}
+
+model BookingStatusHistory {
+  id          String           @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  bookingId   String           @map("booking_id") @db.Uuid
+  fromStatus  BookingStatus?   @map("from_status")
+  toStatus    BookingStatus    @map("to_status")
+  reason      String           @db.VarChar(64)
+  actorType   BookingActorType @map("actor_type")
+  actorUserId String?          @map("actor_user_id") @db.Uuid
+  createdAt   DateTime         @default(now()) @map("created_at") @db.Timestamptz(3)
+  booking     Booking          @relation(fields: [bookingId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  actorUser   User?            @relation("BookingStatusActor", fields: [actorUserId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+
+  @@index([bookingId, createdAt, id], map: "booking_status_history_booking_created_id_idx")
+  @@index([actorUserId], map: "booking_status_history_actor_user_id_idx")
+  @@map("booking_status_history")
 }
