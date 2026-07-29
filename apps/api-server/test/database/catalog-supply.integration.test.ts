@@ -1,7 +1,7 @@
 import { randomBytes } from "node:crypto";
 
 import { PrismaPg } from "@prisma/adapter-pg";
-import { Pool } from "pg";
+import { Pool, type PoolClient } from "pg";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 
 import { runSeed } from "../../prisma/seed.js";
@@ -36,6 +36,28 @@ const quoteGeneratedTestSchema = (schemaName: string): string => {
   }
   return `"${schemaName}"`;
 };
+
+const awaitWithin = async <T>(promise: Promise<T>, milliseconds: number): Promise<T> =>
+  new Promise<T>((resolve, reject) => {
+    const timeout = setTimeout(
+      () => reject(new Error(`Timed out after ${milliseconds}ms`)),
+      milliseconds,
+    );
+    promise.then(
+      (value) => {
+        clearTimeout(timeout);
+        resolve(value);
+      },
+      (error: unknown) => {
+        clearTimeout(timeout);
+        reject(
+          error instanceof Error
+            ? error
+            : new Error("Promise rejected with a non-Error reason", { cause: error }),
+        );
+      },
+    );
+  });
 
 describeDatabase(suiteName, () => {
   let pool: Pool;
@@ -352,6 +374,7 @@ describeDatabase(suiteName, () => {
           'property_city_status_type_order_id_idx',
           'property_location_gix',
           'property_media_property_id_display_order_key',
+          'facility_code_key',
           'property_facility_pkey',
           'property_facility_facility_id_idx',
           'room_type_property_id_name_zh_key',
@@ -361,7 +384,7 @@ describeDatabase(suiteName, () => {
         )
       ORDER BY indexname
     `);
-    expect(indexes.rows).toHaveLength(10);
+    expect(indexes.rows).toHaveLength(11);
 
     const indexDefinitions = new Map(
       indexes.rows.map(({ indexdef, indexname }) => [indexname, indexdef]),
@@ -375,6 +398,7 @@ describeDatabase(suiteName, () => {
     expect(indexDefinitions.get("room_type_property_id_name_zh_key")).toMatch(
       /UNIQUE.*\(property_id, name_zh\)/,
     );
+    expect(indexDefinitions.get("facility_code_key")).toMatch(/UNIQUE.*\(code\)/);
     expect(indexDefinitions.get("property_location_gix")).toMatch(/USING gist \(location\)/i);
     expect(indexDefinitions.get("property_city_status_type_order_id_idx")).toContain(
       "(city_id, status, type, display_order, id)",
@@ -528,14 +552,14 @@ describeDatabase(suiteName, () => {
       held_inventory: number;
       sold_inventory: number;
       total_inventory: number;
-      updated_at: string;
+      updated_at_epoch: string;
       version: number;
     }> => {
       const result = await pool.query<{
         held_inventory: number;
         sold_inventory: number;
         total_inventory: number;
-        updated_at: string;
+        updated_at_epoch: string;
         version: number;
       }>(
         `
@@ -544,7 +568,7 @@ describeDatabase(suiteName, () => {
             held_inventory,
             sold_inventory,
             version,
-            updated_at::text
+            EXTRACT(EPOCH FROM updated_at)::bigint::text AS updated_at_epoch
           FROM daily_inventory
           WHERE room_type_id = $1::uuid
             AND business_date = $2::date
@@ -579,7 +603,7 @@ describeDatabase(suiteName, () => {
         held_inventory: 1,
         sold_inventory: 0,
         total_inventory: 1,
-        updated_at: "2026-01-01 00:00:00+00",
+        updated_at_epoch: "1767225600",
         version: 7,
       });
 
@@ -607,7 +631,7 @@ describeDatabase(suiteName, () => {
         total_inventory: 1,
         version: 8,
       });
-      expect(restored.updated_at).not.toBe("2026-01-02 00:00:00+00");
+      expect(restored.updated_at_epoch).not.toBe("1767312000");
 
       await pool.query("UPDATE facility SET name_zh = '容量冲突回滚标记' WHERE id = $1::uuid", [
         wifiId,
@@ -640,7 +664,7 @@ describeDatabase(suiteName, () => {
         held_inventory: 2,
         sold_inventory: 0,
         total_inventory: 2,
-        updated_at: "2026-01-03 00:00:00+00",
+        updated_at_epoch: "1767398400",
         version: 11,
       });
       const facility = await pool.query<{ name_zh: string }>(
@@ -664,6 +688,87 @@ describeDatabase(suiteName, () => {
         [roomId, businessDate],
       );
       await pool.query("UPDATE facility SET name_zh = '无线网络' WHERE id = $1::uuid", [wifiId]);
+    }
+  });
+
+  test("seed locks inventory in canonical business-date then room order", async () => {
+    const suffix = randomBytes(8).toString("hex");
+    const applicationName = `catalog_seed_lock_${suffix}`;
+    const connectionUrl = new URL(requireSafeDatabaseIntegrationUrl(process.env.DATABASE_URL));
+    connectionUrl.searchParams.set("application_name", applicationName);
+    const lockOrderPrisma = new PrismaClient({
+      adapter: new PrismaPg({ connectionString: connectionUrl.toString() }),
+    });
+    const blocker: PoolClient = await pool.connect();
+    const probe: PoolClient = await pool.connect();
+    let blockerOpen = false;
+    let probeOpen = false;
+    let seedAttempt: Promise<void> | undefined;
+
+    const waitForSeedLock = async (): Promise<void> => {
+      for (let attempt = 0; attempt < 200; attempt += 1) {
+        const activity = await pool.query<{ wait_event_type: string | null }>(
+          `
+            SELECT wait_event_type
+            FROM pg_stat_activity
+            WHERE application_name = $1
+              AND state = 'active'
+          `,
+          [applicationName],
+        );
+        if (activity.rows.some(({ wait_event_type: waitEventType }) => waitEventType === "Lock")) {
+          return;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+      throw new Error("Timed out waiting for catalog seed inventory lock");
+    };
+
+    try {
+      await blocker.query("BEGIN");
+      blockerOpen = true;
+      await blocker.query(
+        `
+          SELECT room_type_id
+          FROM daily_inventory
+          WHERE room_type_id = '30000000-0000-4000-8000-000000000002'::uuid
+            AND business_date = DATE '2026-07-30'
+          FOR UPDATE
+        `,
+      );
+
+      seedAttempt = runSeed(lockOrderPrisma);
+      await awaitWithin(waitForSeedLock(), 7_000);
+
+      await probe.query("BEGIN");
+      probeOpen = true;
+      const probeLock = await probe.query(
+        `
+          SELECT room_type_id
+          FROM daily_inventory
+          WHERE room_type_id = '30000000-0000-4000-8000-000000000001'::uuid
+            AND business_date = DATE '2026-07-31'
+          FOR UPDATE NOWAIT
+        `,
+      );
+      expect(probeLock.rowCount).toBe(1);
+
+      await probe.query("ROLLBACK");
+      probeOpen = false;
+      await blocker.query("COMMIT");
+      blockerOpen = false;
+      await awaitWithin(seedAttempt, 7_000);
+    } finally {
+      if (probeOpen) {
+        await probe.query("ROLLBACK");
+      }
+      if (blockerOpen) {
+        await blocker.query("ROLLBACK");
+      }
+      await seedAttempt?.catch(() => undefined);
+      probe.release();
+      blocker.release();
+      await lockOrderPrisma.$disconnect();
     }
   });
 

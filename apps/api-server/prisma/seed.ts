@@ -489,6 +489,7 @@ export async function runSeed(prisma: PrismaClient): Promise<void> {
         JOIN "daily_inventory" inventory
           ON inventory."room_type_id" = supply."roomTypeId"::uuid
          AND inventory."business_date" = supply."businessDate"::date
+        ORDER BY inventory."business_date" ASC, inventory."room_type_id" ASC
         FOR UPDATE OF inventory
       `,
     );
