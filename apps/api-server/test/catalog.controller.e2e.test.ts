@@ -4,8 +4,10 @@ import request from "supertest";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { configureApplication } from "../src/application-configuration.js";
+import { CLOCK } from "../src/common/clock/clock.js";
 import { BusinessException } from "../src/common/http/business.exception.js";
 import { CatalogController } from "../src/catalog/catalog.controller.js";
+import { CatalogRepository } from "../src/catalog/catalog.repository.js";
 import { CatalogService } from "../src/catalog/catalog.service.js";
 import { SessionAuthGuard } from "../src/identity/session-auth.guard.js";
 
@@ -60,6 +62,37 @@ describe("CatalogController", () => {
 
     return {
       catalog,
+      server: app.getHttpServer() as Parameters<typeof request>[0],
+    };
+  };
+
+  const createRealServiceApp = async () => {
+    const repository = {
+      listProperties: vi.fn(),
+      listFacilityHighlights: vi.fn(),
+      findProperty: vi.fn(),
+      findRoomType: vi.fn(),
+    };
+    const module = await Test.createTestingModule({
+      controllers: [CatalogController],
+      providers: [
+        CatalogService,
+        { provide: CatalogRepository, useValue: repository },
+        {
+          provide: CLOCK,
+          useValue: { now: () => new Date("2026-07-29T04:00:00.000Z") },
+        },
+      ],
+    })
+      .overrideGuard(SessionAuthGuard)
+      .useValue({ canActivate: () => true })
+      .compile();
+    app = module.createNestApplication();
+    configureApplication(app, "production");
+    await app.init();
+
+    return {
+      repository,
       server: app.getHttpServer() as Parameters<typeof request>[0],
     };
   };
@@ -197,6 +230,22 @@ describe("CatalogController", () => {
       error: { code: "PROPERTY_NOT_AVAILABLE", message: "住宿当前不可预订" },
     });
     expect(response.body).toHaveProperty("request_id");
+  });
+
+  it("rejects a malformed cursor through the real catalog service before repository access", async () => {
+    const { repository, server } = await createRealServiceApp();
+
+    const response = await request(server)
+      .get(`/api/v1/properties?city_id=${CITY_ID}&${availabilityQuery}&cursor=not-a-cursor`)
+      .expect(400);
+
+    expect(response.body).toMatchObject({
+      error: { code: "CATALOG_CURSOR_INVALID", message: "分页游标无效" },
+    });
+    expect(response.body).toHaveProperty("request_id");
+    for (const method of Object.values(repository)) {
+      expect(method).not.toHaveBeenCalled();
+    }
   });
 
   it("is protected by session authentication", async () => {

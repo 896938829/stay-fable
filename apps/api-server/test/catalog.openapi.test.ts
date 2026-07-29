@@ -172,6 +172,11 @@ describe("CatalogController OpenAPI", () => {
         $ref: "#/components/schemas/ApiErrorEnvelopeDto",
       });
     }
+    for (const operation of [list, property, room]) {
+      expect(responseSchema(operation, "403")).toEqual({
+        $ref: "#/components/schemas/ApiErrorEnvelopeDto",
+      });
+    }
     expect(responseSchema(property, "404")).toEqual({
       $ref: "#/components/schemas/ApiErrorEnvelopeDto",
     });

@@ -2,6 +2,7 @@ import { Controller, Get, Param, ParseUUIDPipe, Query, UseGuards } from "@nestjs
 import {
   ApiBadRequestResponse,
   ApiBearerAuth,
+  ApiForbiddenResponse,
   ApiNotFoundResponse,
   ApiOkResponse,
   ApiOperation,
@@ -39,6 +40,7 @@ export class CatalogController {
   @ApiOkResponse({ description: "Available properties", type: PropertyListEnvelopeDto })
   @ApiBadRequestResponse({ description: "Invalid catalog query", type: ApiErrorEnvelopeDto })
   @ApiUnauthorizedResponse({ description: "Authentication required", type: ApiErrorEnvelopeDto })
+  @ApiForbiddenResponse({ description: "User account disabled", type: ApiErrorEnvelopeDto })
   @ApiServiceUnavailableResponse({
     description: "Catalog service temporarily unavailable",
     type: ApiErrorEnvelopeDto,
@@ -53,6 +55,7 @@ export class CatalogController {
   @ApiOkResponse({ description: "Available property", type: PropertyDetailEnvelopeDto })
   @ApiBadRequestResponse({ description: "Invalid availability query", type: ApiErrorEnvelopeDto })
   @ApiUnauthorizedResponse({ description: "Authentication required", type: ApiErrorEnvelopeDto })
+  @ApiForbiddenResponse({ description: "User account disabled", type: ApiErrorEnvelopeDto })
   @ApiNotFoundResponse({ description: "Property not available", type: ApiErrorEnvelopeDto })
   @ApiServiceUnavailableResponse({
     description: "Catalog service temporarily unavailable",
@@ -71,6 +74,7 @@ export class CatalogController {
   @ApiOkResponse({ description: "Available room type", type: RoomTypeDetailEnvelopeDto })
   @ApiBadRequestResponse({ description: "Invalid availability query", type: ApiErrorEnvelopeDto })
   @ApiUnauthorizedResponse({ description: "Authentication required", type: ApiErrorEnvelopeDto })
+  @ApiForbiddenResponse({ description: "User account disabled", type: ApiErrorEnvelopeDto })
   @ApiNotFoundResponse({ description: "Room type not available", type: ApiErrorEnvelopeDto })
   @ApiUnprocessableEntityResponse({
     description: "Guest capacity exceeded",
