@@ -22,6 +22,17 @@ const createRedisClient = (): RedisClient => ({
   pttl: vi.fn(() => Promise.resolve(60_000)),
 });
 
+const captureError = async (rejection: Promise<unknown>): Promise<Error> => {
+  try {
+    await rejection;
+  } catch (error) {
+    expect(error).toBeInstanceOf(Error);
+    return error as Error;
+  }
+
+  throw new Error("Expected operation to reject");
+};
+
 describe("RedisService.executeRateLimit", () => {
   it("atomically increments a safe key, sets its first-window expiry, and returns count with TTL", async () => {
     const client = createRedisClient();
@@ -45,9 +56,13 @@ describe("RedisService.executeRateLimit", () => {
     ["", 30, 60_000],
     ["rate-limit:quotes:not-a-hash", 30, 60_000],
     [quoteKey, 0, 60_000],
+    [quoteKey, -1, 60_000],
     [quoteKey, 1.5, 60_000],
+    [quoteKey, Number.MAX_SAFE_INTEGER + 1, 60_000],
     [quoteKey, 30, 0],
-    [quoteKey, 30, 59_999],
+    [quoteKey, 30, -1],
+    [quoteKey, 30, 1.5],
+    [quoteKey, 30, Number.MAX_SAFE_INTEGER + 1],
   ])("rejects unsafe rate-limit inputs without touching Redis", async (key, limit, window) => {
     const client = createRedisClient();
     const service = new RedisService(client);
@@ -56,6 +71,18 @@ describe("RedisService.executeRateLimit", () => {
       "Redis rate limit failed",
     );
     expect(client.eval).not.toHaveBeenCalled();
+  });
+
+  it("accepts any positive safe integer window", async () => {
+    const client = createRedisClient();
+    vi.mocked(client.eval).mockResolvedValueOnce([1, 59_999]);
+    const service = new RedisService(client);
+
+    await expect(service.executeRateLimit(quoteKey, 30, 59_999)).resolves.toEqual({
+      count: 1,
+      ttlMilliseconds: 59_999,
+    });
+    expect(client.eval).toHaveBeenCalledWith(expect.any(String), 1, quoteKey, "59999");
   });
 
   it.each([
@@ -71,24 +98,46 @@ describe("RedisService.executeRateLimit", () => {
     [1, -1],
     [1, -2],
     [1, 60_001],
+    [`secret-${quoteKey}`, 60_000],
   ])("fails closed for malformed Redis result %j", async (result) => {
     const client = createRedisClient();
     vi.mocked(client.eval).mockResolvedValueOnce(result);
     const service = new RedisService(client);
 
-    await expect(service.executeRateLimit(quoteKey, 30, 60_000)).rejects.toThrow(
-      "Redis rate limit failed",
-    );
+    const error = await captureError(service.executeRateLimit(quoteKey, 30, 60_000));
+    expect(error.message).toBe("Redis rate limit failed");
+    expect(error.message).not.toContain("secret");
+    expect(error.message).not.toContain(quoteKey);
   });
 
-  it("does not expose Redis failures or the rate-limit key", async () => {
+  it("returns one exact safe error for Redis client failures", async () => {
     const client = createRedisClient();
     vi.mocked(client.eval).mockRejectedValueOnce(new Error(`secret ${quoteKey}`));
     const service = new RedisService(client);
 
-    await expect(service.executeRateLimit(quoteKey, 30, 60_000)).rejects.toThrow(
-      "Redis rate limit failed",
-    );
+    const error = await captureError(service.executeRateLimit(quoteKey, 30, 60_000));
+    expect(error.message).toBe("Redis rate limit failed");
+    expect(error.message).not.toContain("secret");
+    expect(error.message).not.toContain(quoteKey);
+  });
+
+  it("returns the same exact safe error for a hostile mocked result", async () => {
+    const client = createRedisClient();
+    const hostileResult = new Proxy([1, 60_000], {
+      get: (_target, property) => {
+        if (property === "then") {
+          return undefined;
+        }
+        throw new Error(`secret ${quoteKey}`);
+      },
+    });
+    vi.mocked(client.eval).mockResolvedValueOnce(hostileResult);
+    const service = new RedisService(client);
+
+    const error = await captureError(service.executeRateLimit(quoteKey, 30, 60_000));
+    expect(error.message).toBe("Redis rate limit failed");
+    expect(error.message).not.toContain("secret");
+    expect(error.message).not.toContain(quoteKey);
   });
 });
 
@@ -100,13 +149,34 @@ const createWriteRateLimitService = () => {
   return { redis, service: new WriteRateLimitService(redis) };
 };
 
-const expectUnavailable = (rejection: Promise<unknown>) =>
-  expect(rejection).rejects.toMatchObject({
-    code: "BOOKING_SERVICE_UNAVAILABLE",
-    details: undefined,
-    message: "预订服务暂时不可用，请稍后重试",
-    status: 503,
-  });
+const expectUnavailable = async (
+  rejection: Promise<unknown>,
+  internalValues: string[] = [],
+): Promise<void> => {
+  const error = await captureError(rejection);
+  expect(error).toBeInstanceOf(BusinessException);
+  const businessError = error as BusinessException;
+  expect(businessError.code).toBe("BOOKING_SERVICE_UNAVAILABLE");
+  expect(businessError.details).toBeUndefined();
+  expect(businessError.message).toBe("预订服务暂时不可用，请稍后重试");
+  expect(businessError.getStatus()).toBe(503);
+  for (const internalValue of internalValues) {
+    expect(businessError.message).not.toContain(internalValue);
+  }
+};
+
+const expectRateLimited = async (
+  rejection: Promise<unknown>,
+  retryAfterSeconds: number,
+): Promise<void> => {
+  const error = await captureError(rejection);
+  expect(error).toBeInstanceOf(BusinessException);
+  const businessError = error as BusinessException;
+  expect(businessError.code).toBe("RATE_LIMITED");
+  expect(businessError.details).toEqual({ retry_after_seconds: retryAfterSeconds });
+  expect(businessError.message).toBe("操作过于频繁，请稍后重试");
+  expect(businessError.getStatus()).toBe(429);
+};
 
 describe("WriteRateLimitService", () => {
   it("uses distinct hashed scopes and never exposes a raw user identifier", async () => {
@@ -142,7 +212,7 @@ describe("WriteRateLimitService", () => {
     ["quotes", 30, 31, "checkQuotes"],
     ["bookings", 10, 11, "checkBookings"],
   ] as const)(
-    "allows exactly %i %s writes and rejects the next one",
+    "allows exactly the %s limit of %i and rejects count %i",
     async (_, limit, rejectedCount, method) => {
       const { redis, service } = createWriteRateLimitService();
       vi.mocked(redis.executeRateLimit).mockImplementation((_, __, windowMilliseconds) =>
@@ -156,26 +226,23 @@ describe("WriteRateLimitService", () => {
         await expect(service[method](userId)).resolves.toBeUndefined();
       }
 
-      await expect(service[method](userId)).rejects.toMatchObject({
-        code: "RATE_LIMITED",
-        details: { retry_after_seconds: 60 },
-        status: 429,
-      });
+      await expectRateLimited(service[method](userId), 60);
       expect(vi.mocked(redis.executeRateLimit)).toHaveBeenCalledTimes(rejectedCount);
     },
   );
 
-  it("rounds retry seconds up and clamps it to the fixed window", async () => {
+  it.each([
+    [1, 1],
+    [1001, 2],
+    [59_999, 60],
+    [60_000, 60],
+  ])("rounds TTL %i up to %i retry seconds within the fixed window", async (ttl, expected) => {
     const { redis, service } = createWriteRateLimitService();
-    vi.mocked(redis.executeRateLimit).mockResolvedValueOnce({ count: 31, ttlMilliseconds: 1 });
-    await expect(service.checkQuotes(userId)).rejects.toMatchObject({
-      details: { retry_after_seconds: 1 },
+    vi.mocked(redis.executeRateLimit).mockResolvedValueOnce({
+      count: 31,
+      ttlMilliseconds: ttl,
     });
-
-    vi.mocked(redis.executeRateLimit).mockResolvedValueOnce({ count: 31, ttlMilliseconds: 60_000 });
-    await expect(service.checkQuotes(userId)).rejects.toMatchObject({
-      details: { retry_after_seconds: 60 },
-    });
+    await expectRateLimited(service.checkQuotes(userId), expected);
   });
 
   it.each([null, undefined, "", "not-a-uuid", "x".repeat(257), { toString: () => userId }])(
@@ -190,22 +257,37 @@ describe("WriteRateLimitService", () => {
 
   it("maps Redis and unknown mocked results to a stable unavailable error before a caller can write", async () => {
     const { redis, service } = createWriteRateLimitService();
-    vi.mocked(redis.executeRateLimit).mockRejectedValueOnce(new Error(`secret ${userId}`));
+    const internalSecret = `secret ${userId}`;
+    vi.mocked(redis.executeRateLimit).mockRejectedValueOnce(new Error(internalSecret));
     let sideEffect = false;
     const protectedWrite = async () => {
       await service.checkBookings(userId);
       sideEffect = true;
     };
 
-    await expectUnavailable(protectedWrite());
+    await expectUnavailable(protectedWrite(), [internalSecret, userId]);
     expect(sideEffect).toBe(false);
 
     vi.mocked(redis.executeRateLimit).mockRejectedValueOnce(
       new BusinessException(429, "UNSAFE_DEPENDENCY_ERROR", "internal rate-limit error"),
     );
-    await expectUnavailable(service.checkBookings(userId));
+    await expectUnavailable(service.checkBookings(userId), ["internal rate-limit error"]);
 
     vi.mocked(redis.executeRateLimit).mockResolvedValueOnce({ count: 1, ttlMilliseconds: -1 });
     await expectUnavailable(service.checkBookings(userId));
+
+    const hostileResult = new Proxy(
+      { count: 1, ttlMilliseconds: 60_000 },
+      {
+        get: (_target, property) => {
+          if (property === "then") {
+            return undefined;
+          }
+          throw new Error(internalSecret);
+        },
+      },
+    );
+    vi.mocked(redis.executeRateLimit).mockResolvedValueOnce(hostileResult);
+    await expectUnavailable(service.checkBookings(userId), [internalSecret, userId]);
   });
 });

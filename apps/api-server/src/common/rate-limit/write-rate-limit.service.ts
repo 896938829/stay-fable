@@ -34,20 +34,24 @@ const isUserId = (value: unknown): value is string =>
   UUID_PATTERN.test(value);
 
 const isRateLimitResult = (value: unknown): value is { count: number; ttlMilliseconds: number } => {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+  try {
+    if (typeof value !== "object" || value === null || Array.isArray(value)) {
+      return false;
+    }
+
+    const { count, ttlMilliseconds } = value as { count?: unknown; ttlMilliseconds?: unknown };
+    return (
+      typeof count === "number" &&
+      Number.isSafeInteger(count) &&
+      count > 0 &&
+      typeof ttlMilliseconds === "number" &&
+      Number.isSafeInteger(ttlMilliseconds) &&
+      ttlMilliseconds > 0 &&
+      ttlMilliseconds <= WINDOW_MILLISECONDS
+    );
+  } catch {
     return false;
   }
-
-  const { count, ttlMilliseconds } = value as { count?: unknown; ttlMilliseconds?: unknown };
-  return (
-    typeof count === "number" &&
-    Number.isSafeInteger(count) &&
-    count > 0 &&
-    typeof ttlMilliseconds === "number" &&
-    Number.isSafeInteger(ttlMilliseconds) &&
-    ttlMilliseconds > 0 &&
-    ttlMilliseconds <= WINDOW_MILLISECONDS
-  );
 };
 
 @Injectable()

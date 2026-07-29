@@ -20,7 +20,6 @@ end
 return value
 `.trim();
 
-const RATE_LIMIT_WINDOW_MILLISECONDS = 60_000;
 const RATE_LIMIT_KEY_PATTERN = /^rate-limit:(quotes|bookings):[a-f0-9]{64}$/;
 
 const parseStoredJson = <T>(value: string | null): T | null => {
@@ -139,7 +138,7 @@ return { count, redis.call('PTTL', KEYS[1]) }
         !Number.isSafeInteger(limit) ||
         limit <= 0 ||
         !Number.isSafeInteger(windowMilliseconds) ||
-        windowMilliseconds !== RATE_LIMIT_WINDOW_MILLISECONDS
+        windowMilliseconds <= 0
       ) {
         throw new Error("Invalid rate limit input");
       }
