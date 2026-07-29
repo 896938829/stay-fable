@@ -89,7 +89,7 @@ function canonicalCity(value, exact) {
       typeof id !== "string" ||
       !UUID_PATTERN.test(id) ||
       !isBoundedString(code, 32) ||
-      !isBoundedString(name, 64)
+      !isBoundedString(name, 80)
     ) {
       throw invalidResponse();
     }

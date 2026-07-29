@@ -99,7 +99,7 @@ describe("API contracts", () => {
     const boundary = {
       ...city,
       code: "c".repeat(32),
-      name: "城".repeat(64),
+      name: "城".repeat(80),
     };
     const spaced = {
       ...city,
@@ -112,7 +112,7 @@ describe("API contracts", () => {
     expect(assertCity(spaced)).toEqual(spaced);
     for (const invalid of [
       { ...city, code: "c".repeat(33) },
-      { ...city, name: "城".repeat(65) },
+      { ...city, name: "城".repeat(81) },
       { ...city, code: " \t " },
       { ...city, name: "\n" },
       Object.assign(Object.create({ inherited: true }), city),

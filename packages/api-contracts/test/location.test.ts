@@ -28,7 +28,7 @@ describe("location contracts", () => {
     const boundary = {
       id,
       code: "c".repeat(32),
-      name: "城".repeat(64),
+      name: "城".repeat(80),
     };
 
     expect(citySchema.parse(boundary)).toEqual(boundary);
@@ -45,7 +45,7 @@ describe("location contracts", () => {
     });
     for (const invalid of [
       { ...boundary, code: "c".repeat(33) },
-      { ...boundary, name: "城".repeat(65) },
+      { ...boundary, name: "城".repeat(81) },
       { ...boundary, code: " \t " },
       { ...boundary, name: "\n" },
     ]) {

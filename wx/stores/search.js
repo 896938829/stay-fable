@@ -30,6 +30,42 @@ function isPlainObject(value) {
   }
 }
 
+function snapshotUpdate(update) {
+  try {
+    if (!isPlainObject(update)) {
+      throw contextError();
+    }
+    const snapshot = {};
+    for (const key of Reflect.ownKeys(update)) {
+      if (typeof key !== "string" || !CONTEXT_KEYS.includes(key)) {
+        throw contextError();
+      }
+      const descriptor = Object.getOwnPropertyDescriptor(update, key);
+      if (!descriptor || !descriptor.enumerable) {
+        throw contextError();
+      }
+      snapshot[key] = update[key];
+    }
+    return snapshot;
+  } catch {
+    throw contextError();
+  }
+}
+
+function mergeContext(current, update) {
+  try {
+    const candidate = {};
+    for (const key of CONTEXT_KEYS) {
+      candidate[key] = Object.prototype.hasOwnProperty.call(update, key)
+        ? update[key]
+        : current[key];
+    }
+    return candidate;
+  } catch {
+    throw contextError();
+  }
+}
+
 function createSearchStore(options) {
   const { wxApi } = options;
   const storageKey = options.storageKey || DEFAULT_STORAGE_KEY;
@@ -114,14 +150,9 @@ function createSearchStore(options) {
   }
 
   function set(update) {
-    if (
-      !isPlainObject(update) ||
-      Object.keys(update).some((key) => !CONTEXT_KEYS.includes(key))
-    ) {
-      throw contextError();
-    }
+    const snapshot = snapshotUpdate(update);
     const current = get();
-    const next = validate({ ...current, ...update });
+    const next = validate(mergeContext(current, snapshot));
     return persist(next);
   }
 

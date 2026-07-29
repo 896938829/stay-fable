@@ -9,7 +9,7 @@ const boundedNonblankString = (maximum: number) =>
 export const citySchema = z.object({
   id: z.uuid(),
   code: boundedNonblankString(32),
-  name: boundedNonblankString(64),
+  name: boundedNonblankString(80),
 });
 
 export const resolveLocationRequestSchema = z.object({

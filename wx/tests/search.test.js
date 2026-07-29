@@ -64,7 +64,7 @@ describe("search store", () => {
     { guests: 11 },
     { city: { ...city, id: "bad" } },
     { city: { ...city, code: "c".repeat(33) } },
-    { city: { ...city, name: "城".repeat(65) } },
+    { city: { ...city, name: "城".repeat(81) } },
     { city: { ...city, code: " \t " } },
     { city: Object.assign(Object.create({ inherited: true }), city) },
     { longitude: 120.1 },
@@ -83,7 +83,7 @@ describe("search store", () => {
 
   it("replaces a persisted context with an oversized city using safe defaults", () => {
     const { store, stored } = setup({
-      city: { ...city, name: "城".repeat(65) },
+      city: { ...city, name: "城".repeat(81) },
       checkin: "2026-07-30",
       checkout: "2026-08-02",
       guests: 3,
@@ -96,6 +96,76 @@ describe("search store", () => {
       guests: 2,
     });
     expect(stored()).toEqual(store.get());
+  });
+
+  it.each([
+    [
+      "throwing value getter",
+      () =>
+        Object.defineProperty({}, "guests", {
+          enumerable: true,
+          get() {
+            throw new Error("private value getter");
+          },
+        }),
+    ],
+    [
+      "throwing ownKeys trap",
+      () =>
+        new Proxy(
+          { guests: 3 },
+          {
+            ownKeys() {
+              throw new Error("private ownKeys trap");
+            },
+          },
+        ),
+    ],
+    [
+      "throwing descriptor trap",
+      () =>
+        new Proxy(
+          { guests: 3 },
+          {
+            getOwnPropertyDescriptor() {
+              throw new Error("private descriptor trap");
+            },
+          },
+        ),
+    ],
+  ])("maps a hostile %s update to SEARCH_CONTEXT_INVALID atomically", (_label, createUpdate) => {
+    const { store, stored, wxApi } = setup();
+    const original = store.initializeDefaults();
+    wxApi.setStorageSync.mockClear();
+
+    expect(() => store.set(createUpdate())).toThrowError(
+      expect.objectContaining({
+        code: "SEARCH_CONTEXT_INVALID",
+        message: "Invalid search context",
+      }),
+    );
+    expect(store.get()).toEqual(original);
+    expect(stored()).toEqual(original);
+    expect(wxApi.setStorageSync).not.toHaveBeenCalled();
+  });
+
+  it("reads each allowed update key once into a canonical snapshot", () => {
+    const { store } = setup();
+    store.initializeDefaults();
+    let reads = 0;
+    const update = Object.defineProperty({}, "guests", {
+      enumerable: true,
+      get() {
+        reads += 1;
+        if (reads > 1) {
+          throw new Error("update getter read twice");
+        }
+        return 3;
+      },
+    });
+
+    expect(store.set(update)).toMatchObject({ guests: 3 });
+    expect(reads).toBe(1);
   });
 
   it("clear restores and persists current defaults", () => {

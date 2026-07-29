@@ -8,6 +8,7 @@ import {
   catalogResourceSchema,
   currencySchema,
   propertyDetailSchema,
+  propertyListItemSchema,
   propertyListQuerySchema,
   propertyListResponseSchema,
   propertyTypeSchema,
@@ -83,6 +84,32 @@ const roomTypeDetail = {
 };
 
 describe("catalog contracts", () => {
+  it("keeps catalog city bounds aligned with the location contract", () => {
+    const boundaryCity = {
+      ...city,
+      code: "c".repeat(32),
+      name: "城".repeat(80),
+    };
+
+    expect(
+      propertyListItemSchema.parse({
+        ...propertyListItem,
+        city: boundaryCity,
+      }).city,
+    ).toEqual(boundaryCity);
+    for (const invalidCity of [
+      { ...boundaryCity, code: "c".repeat(33) },
+      { ...boundaryCity, name: "城".repeat(81) },
+    ]) {
+      expect(
+        propertyListItemSchema.safeParse({
+          ...propertyListItem,
+          city: invalidCity,
+        }).success,
+      ).toBe(false);
+    }
+  });
+
   it("accepts fixed-UUID valid property list, property detail, and room type detail payloads", () => {
     expect(
       propertyListResponseSchema.parse({ items: [propertyListItem], next_cursor: null }),

@@ -7,12 +7,7 @@ const nonblankString = (maximum?: number) =>
     (value) => value.trim().length > 0,
   );
 
-const catalogCitySchema = citySchema
-  .extend({
-    code: nonblankString(),
-    name: nonblankString(),
-  })
-  .strict();
+const catalogCitySchema = citySchema.strict();
 
 export const propertyTypeSchema = z.enum(["HOTEL", "HOMESTAY", "FARM_STAY"]);
 export const currencySchema = z.literal("CNY");

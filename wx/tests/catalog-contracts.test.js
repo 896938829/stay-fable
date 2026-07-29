@@ -134,6 +134,32 @@ function expectInvalid(callback) {
 }
 
 describe("catalog response contracts", () => {
+  it("uses the same bounded city fields as the location contract", () => {
+    const boundaryCity = {
+      ...city,
+      code: "c".repeat(32),
+      name: "城".repeat(80),
+    };
+
+    expect(
+      assertPropertyListResponse({
+        items: [{ ...propertyListItem, city: boundaryCity }],
+        next_cursor: null,
+      }).items[0].city,
+    ).toEqual(boundaryCity);
+    for (const invalidCity of [
+      { ...boundaryCity, code: "c".repeat(33) },
+      { ...boundaryCity, name: "城".repeat(81) },
+    ]) {
+      expectInvalid(() =>
+        assertPropertyListResponse({
+          items: [{ ...propertyListItem, city: invalidCity }],
+          next_cursor: null,
+        }),
+      );
+    }
+  });
+
   it("accepts and safely reconstructs the three exact public response shapes", () => {
     const listInput = {
       items: [{ ...propertyListItem, facility_highlights: [...propertyListItem.facility_highlights] }],
