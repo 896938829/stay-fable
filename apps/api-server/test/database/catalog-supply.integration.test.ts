@@ -422,8 +422,14 @@ describeDatabase(suiteName, () => {
         conname AS constraint_name,
         confdeltype::text AS delete_action,
         confupdtype::text AS update_action
-      FROM pg_constraint
-      WHERE contype = 'f'
+      FROM pg_constraint foreign_key
+      JOIN pg_class child ON child.oid = foreign_key.conrelid
+      JOIN pg_namespace child_namespace ON child_namespace.oid = child.relnamespace
+      JOIN pg_class parent ON parent.oid = foreign_key.confrelid
+      JOIN pg_namespace parent_namespace ON parent_namespace.oid = parent.relnamespace
+      WHERE foreign_key.contype = 'f'
+        AND child_namespace.nspname = 'public'
+        AND parent_namespace.nspname = 'public'
         AND conname IN (
           'property_city_id_fkey',
           'property_media_property_id_fkey',

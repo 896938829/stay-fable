@@ -37,16 +37,6 @@ const migrationFiles = [
   "../prisma/migrations/202607290003_session_version_monotonic/migration.sql",
   "../prisma/migrations/202607290004_catalog_supply/migration.sql",
 ] as const;
-const isolatedForeignKeys = [
-  ["daily_inventory", "daily_inventory_room_type_id_fkey"],
-  ["daily_price", "daily_price_room_type_id_fkey"],
-  ["property", "property_city_id_fkey"],
-  ["property_facility", "property_facility_facility_id_fkey"],
-  ["property_facility", "property_facility_property_id_fkey"],
-  ["property_media", "property_media_property_id_fkey"],
-  ["room_type", "room_type_property_id_fkey"],
-  ["user_identity", "user_identity_user_id_fkey"],
-] as const;
 
 type ExplainPlanNode = {
   "Actual Rows"?: number;
@@ -98,6 +88,130 @@ const quoteGeneratedTestSchema = (schemaName: string): string => {
   return `"${schemaName}"`;
 };
 
+describe("catalog repository input validation", () => {
+  test("rejects every invalid input before executing a database query", async () => {
+    const queryRaw = vi.fn((query: unknown): Promise<unknown> => {
+      void query;
+      return Promise.reject(new Error("Database query must not execute"));
+    });
+    const validatingRepository = new CatalogRepository({
+      $queryRaw: queryRaw,
+    } as unknown as CatalogQueryDatabase);
+    const invalidCalls: Array<() => Promise<unknown>> = [
+      () => validatingRepository.listProperties(listInput({ cityId: "not-a-uuid" })),
+      () => validatingRepository.listProperties(listInput({ guests: 0 })),
+      () => validatingRepository.listProperties(listInput({ guests: 1.5 })),
+      () => validatingRepository.listProperties(listInput({ guests: 11 })),
+      () => validatingRepository.listProperties(listInput({ nights: 0 })),
+      () =>
+        validatingRepository.findRoomType(HOTEL_DOUBLE_ROOM_ID, {
+          checkin: "2026-07-30",
+          checkout: "2026-07-30",
+          nights: 0,
+          guests: 1,
+        }),
+      () =>
+        validatingRepository.listProperties(
+          listInput({
+            checkin: "2026-08-01",
+            checkout: "2026-07-31",
+          }),
+        ),
+      () =>
+        validatingRepository.listProperties(
+          listInput({
+            checkout: "2026-08-01",
+            nights: 1,
+          }),
+        ),
+      () =>
+        validatingRepository.listProperties(
+          listInput({
+            checkout: "2026-08-30",
+            nights: 31,
+          }),
+        ),
+      () => validatingRepository.listProperties(listInput({ pageSize: 0 })),
+      () => validatingRepository.listProperties(listInput({ pageSize: 1.5 })),
+      () => validatingRepository.listProperties(listInput({ pageSize: 21 })),
+      () =>
+        validatingRepository.listProperties(
+          listInput({
+            propertyType: "RESORT" as CatalogListInput["propertyType"],
+          }),
+        ),
+      () =>
+        validatingRepository.listProperties(
+          listInput({
+            after: { displayOrder: -1, propertyId: HOTEL_ID },
+          }),
+        ),
+      () =>
+        validatingRepository.listProperties(
+          listInput({
+            after: { displayOrder: Number.MAX_SAFE_INTEGER + 1, propertyId: HOTEL_ID },
+          }),
+        ),
+      () =>
+        validatingRepository.listProperties(
+          listInput({
+            after: { displayOrder: 2_147_483_648, propertyId: HOTEL_ID },
+          }),
+        ),
+      () =>
+        validatingRepository.listProperties(
+          listInput({
+            after: null,
+          } as unknown as Partial<CatalogListInput>),
+        ),
+      () =>
+        validatingRepository.listProperties(
+          listInput({
+            after: { displayOrder: 10, propertyId: "not-a-uuid" },
+          }),
+        ),
+      () =>
+        validatingRepository.findProperty(HOTEL_ID, {
+          ...availability,
+          checkout: "2026-07-30",
+        }),
+      () =>
+        validatingRepository.findRoomType(HOTEL_DOUBLE_ROOM_ID, {
+          ...availability,
+          checkin: "2026-02-30",
+        }),
+      () => validatingRepository.findProperty("not-a-uuid", availability),
+      () => validatingRepository.findRoomType("not-a-uuid", availability),
+      () => validatingRepository.listFacilityHighlights([HOTEL_ID, "not-a-uuid"]),
+    ];
+
+    for (const call of invalidCalls) {
+      await expect(call()).rejects.toThrow(INVALID_INPUT_ERROR);
+    }
+    expect(queryRaw).not.toHaveBeenCalled();
+  });
+
+  test("handles empty and duplicate facility ids without redundant queries or parameters", async () => {
+    const queryRaw = vi.fn((query: unknown): Promise<unknown> => {
+      void query;
+      return Promise.resolve([{ name: "无线网络", propertyId: HOTEL_ID }]);
+    });
+    const validatingRepository = new CatalogRepository({
+      $queryRaw: queryRaw,
+    } as unknown as CatalogQueryDatabase);
+
+    expect(await validatingRepository.listFacilityHighlights([])).toEqual(new Map());
+    expect(queryRaw).not.toHaveBeenCalled();
+
+    expect(await validatingRepository.listFacilityHighlights([HOTEL_ID, HOTEL_ID])).toEqual(
+      new Map([[HOTEL_ID, ["无线网络"]]]),
+    );
+    expect(queryRaw).toHaveBeenCalledTimes(1);
+    const query = queryRaw.mock.calls[0]?.[0] as { values: unknown[] } | undefined;
+    expect(query?.values.filter((value) => value === HOTEL_ID)).toHaveLength(1);
+  });
+});
+
 describeDatabase(suiteName, () => {
   let adminPool: Pool | undefined;
   let database!: PrismaClient;
@@ -144,15 +258,6 @@ describeDatabase(suiteName, () => {
       for (const migrationFile of migrationFiles) {
         const migrationSql = await readFile(new URL(migrationFile, import.meta.url), "utf8");
         await setupClient.query(migrationSql);
-      }
-      const constraintSuffix = schemaName.slice(-8);
-      for (const [table, constraint] of isolatedForeignKeys) {
-        await setupClient.query(
-          `
-            ALTER TABLE "${table}"
-            RENAME CONSTRAINT "${constraint}" TO "${constraint}_${constraintSuffix}"
-          `,
-        );
       }
     } finally {
       setupClient.release();
@@ -232,163 +337,116 @@ describeDatabase(suiteName, () => {
     ]);
 
     const foreignKeys = await pool.query<{
+      child_schema: string;
+      constraint_name: string;
       delete_action: string;
+      parent_schema: string;
       foreign_table_name: string;
       table_name: string;
+      update_action: string;
     }>(
       `
         SELECT
+          foreign_key.conname AS constraint_name,
+          child_namespace.nspname AS child_schema,
           child.relname AS table_name,
+          parent_namespace.nspname AS parent_schema,
           parent.relname AS foreign_table_name,
           CASE foreign_key.confdeltype
             WHEN 'c' THEN 'CASCADE'
             WHEN 'r' THEN 'RESTRICT'
             ELSE foreign_key.confdeltype::text
-          END AS delete_action
+          END AS delete_action,
+          CASE foreign_key.confupdtype
+            WHEN 'c' THEN 'CASCADE'
+            WHEN 'r' THEN 'RESTRICT'
+            ELSE foreign_key.confupdtype::text
+          END AS update_action
         FROM pg_constraint foreign_key
         JOIN pg_class child ON child.oid = foreign_key.conrelid
-        JOIN pg_namespace namespace ON namespace.oid = child.relnamespace
+        JOIN pg_namespace child_namespace ON child_namespace.oid = child.relnamespace
         JOIN pg_class parent ON parent.oid = foreign_key.confrelid
-        WHERE namespace.nspname = current_schema()
+        JOIN pg_namespace parent_namespace ON parent_namespace.oid = parent.relnamespace
+        WHERE child_namespace.nspname = current_schema()
+          AND parent_namespace.nspname = current_schema()
           AND foreign_key.contype = 'f'
-        ORDER BY child.relname, parent.relname
+        ORDER BY foreign_key.conname
       `,
     );
     expect(foreignKeys.rows).toEqual([
       {
+        child_schema: schemaName,
+        constraint_name: "daily_inventory_room_type_id_fkey",
         delete_action: "CASCADE",
         foreign_table_name: "room_type",
+        parent_schema: schemaName,
         table_name: "daily_inventory",
+        update_action: "CASCADE",
       },
       {
+        child_schema: schemaName,
+        constraint_name: "daily_price_room_type_id_fkey",
         delete_action: "CASCADE",
         foreign_table_name: "room_type",
+        parent_schema: schemaName,
         table_name: "daily_price",
+        update_action: "CASCADE",
       },
-      { delete_action: "RESTRICT", foreign_table_name: "city", table_name: "property" },
       {
+        child_schema: schemaName,
+        constraint_name: "property_city_id_fkey",
+        delete_action: "RESTRICT",
+        foreign_table_name: "city",
+        parent_schema: schemaName,
+        table_name: "property",
+        update_action: "CASCADE",
+      },
+      {
+        child_schema: schemaName,
+        constraint_name: "property_facility_facility_id_fkey",
         delete_action: "CASCADE",
         foreign_table_name: "facility",
+        parent_schema: schemaName,
         table_name: "property_facility",
+        update_action: "CASCADE",
       },
       {
+        child_schema: schemaName,
+        constraint_name: "property_facility_property_id_fkey",
         delete_action: "CASCADE",
         foreign_table_name: "property",
+        parent_schema: schemaName,
         table_name: "property_facility",
+        update_action: "CASCADE",
       },
       {
+        child_schema: schemaName,
+        constraint_name: "property_media_property_id_fkey",
         delete_action: "CASCADE",
         foreign_table_name: "property",
+        parent_schema: schemaName,
         table_name: "property_media",
+        update_action: "CASCADE",
       },
       {
+        child_schema: schemaName,
+        constraint_name: "room_type_property_id_fkey",
         delete_action: "CASCADE",
         foreign_table_name: "property",
+        parent_schema: schemaName,
         table_name: "room_type",
+        update_action: "CASCADE",
       },
       {
+        child_schema: schemaName,
+        constraint_name: "user_identity_user_id_fkey",
         delete_action: "CASCADE",
         foreign_table_name: "user",
+        parent_schema: schemaName,
         table_name: "user_identity",
+        update_action: "CASCADE",
       },
     ]);
-  });
-
-  test("rejects zero-night room lookup instead of returning an empty available stay", async () => {
-    await expect(
-      repository.findRoomType(HOTEL_DOUBLE_ROOM_ID, {
-        checkin: "2026-07-30",
-        checkout: "2026-07-30",
-        nights: 0,
-        guests: 1,
-      }),
-    ).rejects.toThrow(INVALID_INPUT_ERROR);
-  });
-
-  test("rejects invalid repository inputs before executing a database query", async () => {
-    const queryRaw = vi.fn(() => Promise.resolve([]));
-    const validatingRepository = new CatalogRepository({
-      $queryRaw: queryRaw,
-    } as unknown as CatalogQueryDatabase);
-    const invalidCalls: Array<() => Promise<unknown>> = [
-      () => validatingRepository.listProperties(listInput({ cityId: "not-a-uuid" })),
-      () => validatingRepository.listProperties(listInput({ guests: 0 })),
-      () => validatingRepository.listProperties(listInput({ guests: 1.5 })),
-      () => validatingRepository.listProperties(listInput({ guests: 11 })),
-      () => validatingRepository.listProperties(listInput({ nights: 0 })),
-      () =>
-        validatingRepository.listProperties(
-          listInput({
-            checkin: "2026-08-01",
-            checkout: "2026-07-31",
-          }),
-        ),
-      () =>
-        validatingRepository.listProperties(
-          listInput({
-            checkout: "2026-08-01",
-            nights: 1,
-          }),
-        ),
-      () =>
-        validatingRepository.listProperties(
-          listInput({
-            checkout: "2026-08-30",
-            nights: 31,
-          }),
-        ),
-      () => validatingRepository.listProperties(listInput({ pageSize: 0 })),
-      () => validatingRepository.listProperties(listInput({ pageSize: 1.5 })),
-      () => validatingRepository.listProperties(listInput({ pageSize: 21 })),
-      () =>
-        validatingRepository.listProperties(
-          listInput({
-            after: { displayOrder: -1, propertyId: HOTEL_ID },
-          }),
-        ),
-      () =>
-        validatingRepository.listProperties(
-          listInput({
-            after: { displayOrder: Number.MAX_SAFE_INTEGER + 1, propertyId: HOTEL_ID },
-          }),
-        ),
-      () =>
-        validatingRepository.listProperties(
-          listInput({
-            after: { displayOrder: 2_147_483_648, propertyId: HOTEL_ID },
-          }),
-        ),
-      () =>
-        validatingRepository.listProperties(
-          listInput({
-            after: null,
-          } as unknown as Partial<CatalogListInput>),
-        ),
-      () =>
-        validatingRepository.listProperties(
-          listInput({
-            after: { displayOrder: 10, propertyId: "not-a-uuid" },
-          }),
-        ),
-      () =>
-        validatingRepository.findProperty(HOTEL_ID, {
-          ...availability,
-          checkout: "2026-07-30",
-        }),
-      () =>
-        validatingRepository.findRoomType(HOTEL_DOUBLE_ROOM_ID, {
-          ...availability,
-          checkin: "2026-02-30",
-        }),
-      () => validatingRepository.findProperty("not-a-uuid", availability),
-      () => validatingRepository.findRoomType("not-a-uuid", availability),
-      () => validatingRepository.listFacilityHighlights([HOTEL_ID, "not-a-uuid"]),
-    ];
-
-    for (const call of invalidCalls) {
-      await expect(call()).rejects.toThrow(INVALID_INPUT_ERROR);
-    }
-    expect(queryRaw).not.toHaveBeenCalled();
   });
 
   test("lists only properties available for every requested night in stable display order", async () => {
