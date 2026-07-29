@@ -107,10 +107,7 @@ const isNonblank = (value: unknown, maximum: number): value is string =>
   value.length <= maximum &&
   value.trim().length > 0;
 const isInteger = (value: unknown, minimum: number, maximum: number): value is number =>
-  typeof value === "number" &&
-  Number.isSafeInteger(value) &&
-  value >= minimum &&
-  value <= maximum;
+  typeof value === "number" && Number.isSafeInteger(value) && value >= minimum && value <= maximum;
 
 const dayOrdinal = (value: string): number => {
   const [yearPart, monthPart, dayPart] = value.split("-");
@@ -259,10 +256,26 @@ const validatePersistInput = (input: PersistQuoteInput): void => {
   }
 };
 
+const isLeapYear = (year: number): boolean =>
+  year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+
+const daysInMonth = (year: number, month: number): number =>
+  [31, isLeapYear(year) ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][month - 1]!;
+
 const dateAfter = (date: string, offset: number): string => {
-  const [year, month, day] = date.split("-").map(Number) as [number, number, number];
-  const result = new Date(Date.UTC(year, month - 1, day + offset));
-  return result.toISOString().slice(0, 10);
+  let [year, month, day] = date.split("-").map(Number) as [number, number, number];
+  for (let remaining = offset; remaining > 0; remaining -= 1) {
+    day += 1;
+    if (day > daysInMonth(year, month)) {
+      day = 1;
+      month += 1;
+      if (month > 12) {
+        month = 1;
+        year += 1;
+      }
+    }
+  }
+  return `${String(year).padStart(4, "0")}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
 };
 
 @Injectable()

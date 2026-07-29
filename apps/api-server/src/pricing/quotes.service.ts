@@ -69,22 +69,26 @@ export class QuotesService {
       throw unavailable();
     }
 
+    let trustedBusinessError: BusinessException | undefined;
     try {
       const lookup = await this.repository.findQuoteInput(parsed.data.room_type_id, {
         ...range,
         guests: parsed.data.guests,
       });
       if (lookup.status === "NOT_AVAILABLE") {
-        throw roomUnavailable();
+        trustedBusinessError = roomUnavailable();
+        throw trustedBusinessError;
       }
       if (lookup.status === "CAPACITY_EXCEEDED") {
-        throw capacityExceeded();
+        trustedBusinessError = capacityExceeded();
+        throw trustedBusinessError;
       }
       if (
         lookup.nightlyPrices.length !== range.nights ||
         lookup.nightlyPrices.some((night) => !night.available)
       ) {
-        throw roomUnavailable();
+        trustedBusinessError = roomUnavailable();
+        throw trustedBusinessError;
       }
 
       let totalPriceCents = 0;
@@ -175,8 +179,8 @@ export class QuotesService {
       }
       return response.data;
     } catch (error) {
-      if (error instanceof BusinessException) {
-        throw error;
+      if (trustedBusinessError !== undefined && error === trustedBusinessError) {
+        throw trustedBusinessError;
       }
       throw unavailable();
     }

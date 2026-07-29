@@ -49,9 +49,9 @@ const availableLookup = (): Extract<QuoteInputLookup, { status: "AVAILABLE" }> =
 });
 
 const createRepository = () => ({
-  findQuoteInput: vi.fn<
-    (roomTypeId: string, range: QuoteRange) => Promise<QuoteInputLookup>
-  >(() => Promise.resolve(availableLookup())),
+  findQuoteInput: vi.fn<(roomTypeId: string, range: QuoteRange) => Promise<QuoteInputLookup>>(() =>
+    Promise.resolve(availableLookup()),
+  ),
   createQuote: vi.fn<(input: PersistQuoteInput) => Promise<PersistedQuote>>(() =>
     Promise.resolve({
       id: QUOTE_ID,
@@ -191,12 +191,7 @@ describe("QuotesService", () => {
 
   it.each([
     ["NOT_AVAILABLE", { status: "NOT_AVAILABLE" } as const, 404, "ROOM_NOT_AVAILABLE"],
-    [
-      "CAPACITY_EXCEEDED",
-      { status: "CAPACITY_EXCEEDED" } as const,
-      422,
-      "ROOM_CAPACITY_EXCEEDED",
-    ],
+    ["CAPACITY_EXCEEDED", { status: "CAPACITY_EXCEEDED" } as const, 422, "ROOM_CAPACITY_EXCEEDED"],
   ])("maps %s lookup without persisting", async (_name, lookup, status, code) => {
     const repository = createRepository();
     repository.findQuoteInput.mockResolvedValue(lookup);
@@ -211,7 +206,10 @@ describe("QuotesService", () => {
   });
 
   it.each([
-    ["a missing night", { ...availableLookup(), nightlyPrices: [availableLookup().nightlyPrices[0]!] }],
+    [
+      "a missing night",
+      { ...availableLookup(), nightlyPrices: [availableLookup().nightlyPrices[0]!] },
+    ],
     [
       "a sold-out night",
       {
@@ -280,11 +278,7 @@ describe("QuotesService", () => {
       { now: () => CAPTURED_AT },
     );
 
-    await expectBusinessError(
-      service.create(USER_ID, request),
-      503,
-      "BOOKING_SERVICE_UNAVAILABLE",
-    );
+    await expectBusinessError(service.create(USER_ID, request), 503, "BOOKING_SERVICE_UNAVAILABLE");
     expect(repository.createQuote).not.toHaveBeenCalled();
   });
 
@@ -332,12 +326,38 @@ describe("QuotesService", () => {
   });
 
   it.each([
+    ["lookup", "findQuoteInput"],
+    ["create", "createQuote"],
+  ] as const)(
+    "sanitizes a repository %s BusinessException instead of trusting its public shape",
+    async (_name, method) => {
+      const repository = createRepository();
+      const repositoryError = new BusinessException(
+        418,
+        "INTERNAL_SECRET",
+        "repository-secret-message",
+        { credential: "repository-secret-details" },
+      );
+      repository[method].mockRejectedValue(repositoryError);
+      const service = new QuotesService(
+        repository as unknown as QuoteRepository,
+        createRateLimit() as unknown as WriteRateLimitService,
+        { now: () => CAPTURED_AT },
+      );
+
+      const error = await captureBusinessError(service.create(USER_ID, request));
+      expect(error).not.toBe(repositoryError);
+      expect(error.getStatus()).toBe(503);
+      expect(error.code).toBe("BOOKING_SERVICE_UNAVAILABLE");
+      expect(error.message).toBe("预订服务暂时不可用，请稍后重试");
+      expect(error.details).toBeUndefined();
+      expect(JSON.stringify(error)).not.toContain("repository-secret");
+    },
+  );
+
+  it.each([
     new BusinessException(429, "RATE_LIMITED", "操作过于频繁，请稍后重试"),
-    new BusinessException(
-      503,
-      "BOOKING_SERVICE_UNAVAILABLE",
-      "预订服务暂时不可用，请稍后重试",
-    ),
+    new BusinessException(503, "BOOKING_SERVICE_UNAVAILABLE", "预订服务暂时不可用，请稍后重试"),
   ])("preserves rate-limit BusinessException before database access", async (rateLimitError) => {
     const repository = createRepository();
     const rateLimit = createRateLimit();
@@ -461,11 +481,7 @@ describe("QuotesService", () => {
       { now: () => CAPTURED_AT },
     );
 
-    await expectBusinessError(
-      service.create(USER_ID, request),
-      503,
-      "BOOKING_SERVICE_UNAVAILABLE",
-    );
+    await expectBusinessError(service.create(USER_ID, request), 503, "BOOKING_SERVICE_UNAVAILABLE");
   });
 });
 
@@ -498,9 +514,7 @@ const databaseNightlyRows = [
   },
 ];
 
-const createQuoteDatabase = (
-  responses: unknown[] = [[databaseBaseRow], databaseNightlyRows],
-) => {
+const createQuoteDatabase = (responses: unknown[] = [[databaseBaseRow], databaseNightlyRows]) => {
   let index = 0;
   return {
     $queryRaw: vi.fn((query: unknown) => {
@@ -661,6 +675,29 @@ describe("QuoteRepository", () => {
     }
   });
 
+  it("maps proleptic Gregorian nightly rows for years before 0100", async () => {
+    const database = createQuoteDatabase([
+      [databaseBaseRow],
+      [
+        { ...databaseNightlyRows[0], businessDate: "0001-01-01" },
+        { ...databaseNightlyRows[1], businessDate: "0001-01-02" },
+      ],
+    ]);
+    const repository = new QuoteRepository(database as unknown as QuoteDatabase);
+
+    await expect(
+      repository.findQuoteInput(ROOM_TYPE_ID, {
+        checkin: "0001-01-01",
+        checkout: "0001-01-03",
+        nights: 2,
+        guests: 2,
+      }),
+    ).resolves.toMatchObject({
+      status: "AVAILABLE",
+      nightlyPrices: [{ businessDate: "0001-01-01" }, { businessDate: "0001-01-02" }],
+    });
+  });
+
   it.each([
     ["unsafe price", [{ ...databaseNightlyRows[0], salePriceCents: Number.MAX_SAFE_INTEGER + 1 }]],
     ["negative price", [{ ...databaseNightlyRows[0], salePriceCents: -1 }]],
@@ -743,6 +780,38 @@ describe("QuoteRepository", () => {
       sale_price_cents: 42_800,
       rack_price_cents: 48_800,
       currency: "CNY",
+    });
+  });
+
+  it("validates proleptic Gregorian persistence dates before year 0100", async () => {
+    const input: PersistQuoteInput = {
+      ...persistInput(),
+      checkin: "0001-01-01",
+      checkout: "0001-01-03",
+      nightlyPrices: [
+        {
+          business_date: "0001-01-01",
+          sale_price_cents: 42_800,
+          rack_price_cents: 48_800,
+          currency: "CNY",
+        },
+        {
+          business_date: "0001-01-02",
+          sale_price_cents: 43_800,
+          rack_price_cents: 49_800,
+          currency: "CNY",
+        },
+      ],
+    };
+    const database = createQuoteDatabase([
+      [{ id: QUOTE_ID, createdAt: CAPTURED_AT, expiresAt: EXPIRES_AT }],
+    ]);
+    const repository = new QuoteRepository(database as unknown as QuoteDatabase);
+
+    await expect(repository.createQuote(input)).resolves.toEqual({
+      id: QUOTE_ID,
+      createdAt: CAPTURED_AT,
+      expiresAt: EXPIRES_AT,
     });
   });
 
