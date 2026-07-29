@@ -96,6 +96,48 @@ function assertAvailability(value, allowedKeys) {
   ) {
     throw catalogInputError();
   }
+  return { checkinOrdinal, checkoutOrdinal, nights };
+}
+
+function assertResponseId(value, requestedId) {
+  if (value.id !== requestedId) {
+    throw invalidResponse();
+  }
+}
+
+function assertPropertyAvailability(value, availability) {
+  if (
+    value.room_types.some(
+      (roomType) => roomType.max_guests < availability.guests,
+    )
+  ) {
+    throw invalidResponse();
+  }
+}
+
+function responseDateOrdinal(value) {
+  try {
+    return parseDate(value);
+  } catch {
+    throw invalidResponse();
+  }
+}
+
+function assertRoomAvailability(value, availability, range) {
+  if (
+    value.max_guests < availability.guests ||
+    value.nightly_prices.length !== range.nights
+  ) {
+    throw invalidResponse();
+  }
+  for (let index = 0; index < value.nightly_prices.length; index += 1) {
+    if (
+      responseDateOrdinal(value.nightly_prices[index].business_date) !==
+      range.checkinOrdinal + index
+    ) {
+      throw invalidResponse();
+    }
+  }
 }
 
 function appendQuery(parts, key, value) {
@@ -182,16 +224,26 @@ function createCatalogService(requestClient) {
       const data = await requestClient.get(
         `/properties/${encodeURIComponent(propertyId)}?${availabilityQuery(availability)}`,
       );
-      return assertPropertyDetail(data);
+      const response = assertPropertyDetail(data);
+      assertResponseId(response, propertyId);
+      assertPropertyAvailability(response, availability);
+      return response;
     },
 
     async getRoomType(roomTypeId, availability) {
       assertPropertyId(roomTypeId);
-      assertAvailability(availability, ["checkin", "checkout", "guests"]);
+      const range = assertAvailability(availability, [
+        "checkin",
+        "checkout",
+        "guests",
+      ]);
       const data = await requestClient.get(
         `/room-types/${encodeURIComponent(roomTypeId)}?${availabilityQuery(availability)}`,
       );
-      return assertRoomTypeDetail(data);
+      const response = assertRoomTypeDetail(data);
+      assertResponseId(response, roomTypeId);
+      assertRoomAvailability(response, availability, range);
+      return response;
     },
   };
 }

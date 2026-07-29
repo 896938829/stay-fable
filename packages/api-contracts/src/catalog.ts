@@ -176,8 +176,8 @@ const mediaItemSchema = z
 
 const facilitySchema = z
   .object({
-    code: nonblankString(),
-    name: nonblankString(),
+    code: nonblankString(64),
+    name: nonblankString(80),
   })
   .strict();
 

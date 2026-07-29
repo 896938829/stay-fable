@@ -145,6 +145,46 @@ describe("catalog contracts", () => {
     ).toBe(false);
   });
 
+  it("uses the Prisma facility code and name limits in details and highlights", () => {
+    const exactCode = "c".repeat(64);
+    const exactName = "设".repeat(80);
+    expect(
+      propertyDetailSchema.safeParse({
+        ...propertyDetail,
+        facilities: [{ code: exactCode, name: exactName }],
+      }).success,
+    ).toBe(true);
+    expect(
+      propertyListResponseSchema.safeParse({
+        items: [{ ...propertyListItem, facility_highlights: [exactName] }],
+        next_cursor: null,
+      }).success,
+    ).toBe(true);
+
+    for (const facilities of [
+      [{ code: "c".repeat(65), name: "设施" }],
+      [{ code: "WIFI", name: "设".repeat(81) }],
+    ]) {
+      expect(
+        propertyDetailSchema.safeParse({
+          ...propertyDetail,
+          facilities,
+        }).success,
+      ).toBe(false);
+    }
+    expect(
+      propertyListResponseSchema.safeParse({
+        items: [
+          {
+            ...propertyListItem,
+            facility_highlights: ["设".repeat(81)],
+          },
+        ],
+        next_cursor: null,
+      }).success,
+    ).toBe(false);
+  });
+
   it("publishes the catalog contract from a stable package export", async () => {
     const packageJson = JSON.parse(
       await readFile(new URL("../package.json", import.meta.url), "utf8"),

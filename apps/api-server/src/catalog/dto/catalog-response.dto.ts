@@ -26,10 +26,10 @@ export class CatalogMediaDto {
 }
 
 export class CatalogFacilityDto {
-  @ApiProperty({ minLength: 1 })
+  @ApiProperty({ minLength: 1, maxLength: 64 })
   code!: string;
 
-  @ApiProperty({ minLength: 1 })
+  @ApiProperty({ minLength: 1, maxLength: 80 })
   name!: string;
 }
 
@@ -52,7 +52,11 @@ export class PropertyListItemDto {
   @ApiProperty({ minLength: 1, maxLength: 240 })
   short_description!: string;
 
-  @ApiProperty({ type: String, isArray: true, maxItems: 4 })
+  @ApiProperty({
+    type: "array",
+    maxItems: 4,
+    items: { type: "string", minLength: 1, maxLength: 80 },
+  })
   facility_highlights!: string[];
 
   @ApiProperty({ type: "integer", minimum: 0 })

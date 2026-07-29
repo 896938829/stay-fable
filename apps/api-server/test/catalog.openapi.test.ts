@@ -222,6 +222,15 @@ describe("CatalogController OpenAPI", () => {
       type: "integer",
       minimum: 1,
     });
+    expect(schemas?.PropertyListItemDto?.properties?.facility_highlights).toMatchObject({
+      type: "array",
+      maxItems: 4,
+      items: {
+        type: "string",
+        minLength: 1,
+        maxLength: 80,
+      },
+    });
     expect(schemas?.PropertyListItemDto?.properties).not.toHaveProperty("room_types");
     expect(schemas?.PropertyListItemDto?.properties).not.toHaveProperty("rooms");
     expect(JSON.stringify(schemas?.PropertyListItemDto)).not.toMatch(/inventory/);
@@ -244,6 +253,16 @@ describe("CatalogController OpenAPI", () => {
       minItems: 0,
       maxItems: 50,
       items: { $ref: "#/components/schemas/RoomTypeSummaryDto" },
+    });
+    expect(schemas?.CatalogFacilityDto?.properties?.code).toMatchObject({
+      type: "string",
+      minLength: 1,
+      maxLength: 64,
+    });
+    expect(schemas?.CatalogFacilityDto?.properties?.name).toMatchObject({
+      type: "string",
+      minLength: 1,
+      maxLength: 80,
     });
     expect(schemas?.NightlyPriceDto?.required).toEqual([
       "business_date",

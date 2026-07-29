@@ -377,4 +377,17 @@ describe("CatalogService", () => {
       BusinessException,
     );
   });
+
+  it.each([
+    { facilities: [{ code: "c".repeat(65), name: "设施" }] },
+    { facilities: [{ code: "WIFI", name: "设".repeat(81) }] },
+  ])("rejects repository facilities beyond Prisma text limits", async ({ facilities }) => {
+    const repository = createRepository();
+    repository.findProperty.mockResolvedValue({ ...propertyRow, facilities });
+    const service = new CatalogService(repository as unknown as CatalogRepository, clock);
+
+    await expect(service.getProperty(PROPERTY_ID, availability)).rejects.not.toBeInstanceOf(
+      BusinessException,
+    );
+  });
 });

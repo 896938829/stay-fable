@@ -221,6 +221,50 @@ describe("catalog response contracts", () => {
     );
   });
 
+  it("uses the Prisma facility code and name limits in details and highlights", () => {
+    const exactCode = "c".repeat(64);
+    const exactName = "设".repeat(80);
+    expect(
+      assertPropertyDetail({
+        ...propertyDetail,
+        facilities: [{ code: exactCode, name: exactName }],
+      }),
+    ).toMatchObject({
+      facilities: [{ code: exactCode, name: exactName }],
+    });
+    expect(
+      assertPropertyListResponse({
+        items: [{ ...propertyListItem, facility_highlights: [exactName] }],
+        next_cursor: null,
+      }),
+    ).toMatchObject({
+      items: [{ facility_highlights: [exactName] }],
+    });
+
+    for (const facilities of [
+      [{ code: "c".repeat(65), name: "设施" }],
+      [{ code: "WIFI", name: "设".repeat(81) }],
+    ]) {
+      expectInvalid(() =>
+        assertPropertyDetail({
+          ...propertyDetail,
+          facilities,
+        }),
+      );
+    }
+    expectInvalid(() =>
+      assertPropertyListResponse({
+        items: [
+          {
+            ...propertyListItem,
+            facility_highlights: ["设".repeat(81)],
+          },
+        ],
+        next_cursor: null,
+      }),
+    );
+  });
+
   it.each(["HOSTEL", "", null])("rejects unknown property type %j", (type) => {
     expectInvalid(() =>
       assertPropertyListResponse({

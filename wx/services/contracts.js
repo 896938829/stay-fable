@@ -403,8 +403,8 @@ function assertFacility(value) {
   if (
     !isObject(value) ||
     !hasExactKeys(value, ["code", "name"]) ||
-    !isNonemptyString(value.code) ||
-    !isNonemptyString(value.name)
+    !isBoundedString(value.code, 64) ||
+    !isBoundedString(value.name, 80)
   ) {
     throw invalidResponse();
   }

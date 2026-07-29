@@ -81,6 +81,12 @@ const roomDetail = {
       rack_price_cents: 69900,
       currency: "CNY",
     },
+    {
+      business_date: "2026-07-31",
+      sale_price_cents: 62900,
+      rack_price_cents: 72900,
+      currency: "CNY",
+    },
   ],
 };
 
@@ -149,6 +155,96 @@ describe("catalog service", () => {
       service.getProperty(IDS.property, availability),
     ).resolves.toEqual(emptyProperty);
     expect(requestClient.get).toHaveBeenCalledOnce();
+  });
+
+  it("rejects detail payloads whose resource id does not match the requested path", async () => {
+    const otherPropertyId = "20000000-0000-4000-8000-000000000004";
+    const otherRoomId = "30000000-0000-4000-8000-000000000005";
+    const property = createService({ ...propertyDetail, id: otherPropertyId });
+    const room = createService({ ...roomDetail, id: otherRoomId });
+
+    await expect(
+      property.service.getProperty(IDS.property, availability),
+    ).rejects.toMatchObject({ code: "INVALID_API_RESPONSE" });
+    await expect(
+      room.service.getRoomType(IDS.roomType, availability),
+    ).rejects.toMatchObject({ code: "INVALID_API_RESPONSE" });
+  });
+
+  it("rejects a property room summary that cannot hold the requested guests", async () => {
+    const { service } = createService({
+      ...propertyDetail,
+      room_types: [{ ...roomSummary, max_guests: availability.guests - 1 }],
+    });
+
+    await expect(
+      service.getProperty(IDS.property, availability),
+    ).rejects.toMatchObject({ code: "INVALID_API_RESPONSE" });
+  });
+
+  it.each([
+    {
+      name: "missing night",
+      response: {
+        ...roomDetail,
+        nightly_prices: roomDetail.nightly_prices.slice(0, 1),
+      },
+    },
+    {
+      name: "extra night",
+      response: {
+        ...roomDetail,
+        nightly_prices: [
+          ...roomDetail.nightly_prices,
+          {
+            business_date: "2026-08-01",
+            sale_price_cents: 63900,
+            rack_price_cents: 73900,
+            currency: "CNY",
+          },
+        ],
+      },
+    },
+    {
+      name: "skipped night",
+      response: {
+        ...roomDetail,
+        nightly_prices: [
+          roomDetail.nightly_prices[0],
+          {
+            ...roomDetail.nightly_prices[1],
+            business_date: "2026-08-01",
+          },
+        ],
+      },
+    },
+    {
+      name: "capacity mismatch",
+      response: {
+        ...roomDetail,
+        max_guests: availability.guests - 1,
+      },
+    },
+  ])("rejects room availability mismatch: $name", async ({ response }) => {
+    const { service } = createService(response);
+
+    await expect(
+      service.getRoomType(IDS.roomType, availability),
+    ).rejects.toMatchObject({
+      code: "INVALID_API_RESPONSE",
+      message: "Invalid API response",
+    });
+  });
+
+  it("keeps validating the nested room property relationship structurally", async () => {
+    const { service } = createService({
+      ...roomDetail,
+      property: { ...roomDetail.property, id: "not-a-uuid" },
+    });
+
+    await expect(
+      service.getRoomType(IDS.roomType, availability),
+    ).rejects.toMatchObject({ code: "INVALID_API_RESPONSE" });
   });
 
   it.each([
