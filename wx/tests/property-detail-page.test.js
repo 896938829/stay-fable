@@ -365,6 +365,36 @@ describe("property detail page state machine", () => {
     }
   });
 
+  it("settles a late invalid-link failure without falling back after hide or unload", async () => {
+    let callbackOptions;
+    const callbackWx = {
+      navigateBack: vi.fn((options) => {
+        callbackOptions = options;
+      }),
+      navigateTo: vi.fn(),
+      reLaunch: vi.fn(),
+    };
+    const callbackPage = createPage({ wxApi: callbackWx }).page;
+    callbackPage.onLoad.call(callbackPage, { id: "bad" });
+    callbackPage.onHide.call(callbackPage);
+    callbackOptions.fail(new Error("late callback"));
+    expect(callbackWx.reLaunch).not.toHaveBeenCalled();
+
+    const navigation = deferred();
+    const promiseWx = {
+      navigateBack: vi.fn(() => navigation.promise),
+      navigateTo: vi.fn(),
+      reLaunch: vi.fn(),
+    };
+    const promisePage = createPage({ wxApi: promiseWx }).page;
+    promisePage.onLoad.call(promisePage, { id: "bad" });
+    promisePage.onUnload.call(promisePage);
+    navigation.reject(new Error("late rejection"));
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(promiseWx.reLaunch).not.toHaveBeenCalled();
+  });
+
   it("blocks an invalid search context, returns home, and never requests", async () => {
     const getProperty = vi.fn();
     const wxApi = {
@@ -416,6 +446,46 @@ describe("property detail page state machine", () => {
     expect(getProperty).toHaveBeenCalledTimes(2);
     expect(page.data.status).toBe("success");
     expect(JSON.stringify(page.data)).not.toContain("private");
+  });
+
+  it("blocks overlong facility data before it can enter page data", async () => {
+    for (const facilities of [
+      [{ code: "c".repeat(65), name: "设施" }],
+      [{ code: "WIFI", name: "设".repeat(81) }],
+    ]) {
+      const privateText = facilities[0].code.length > 64
+        ? facilities[0].code
+        : facilities[0].name;
+      const requestClient = {
+        get: vi.fn(async () => ({ ...propertyDetail, facilities })),
+      };
+      const catalogService = createCatalogService(requestClient);
+      const app = {
+        globalData: {
+          searchStore: { get: vi.fn(() => search) },
+        },
+      };
+      const page = pageContext(
+        createPropertyDetailPage({
+          catalogService,
+          getApp: () => app,
+          wxApi: {
+            navigateBack: vi.fn(),
+            navigateTo: vi.fn(),
+            reLaunch: vi.fn(),
+          },
+        }),
+      );
+
+      await page.onLoad.call(page, { id: IDS.property });
+
+      expect(page.data).toEqual({
+        status: "error",
+        property: null,
+        errorMessage: "服务暂时不可用，请重试",
+      });
+      expect(JSON.stringify(page.data)).not.toContain(privateText);
+    }
   });
 
   it("silences late results after hide/unload and reloads only hidden loading work", async () => {

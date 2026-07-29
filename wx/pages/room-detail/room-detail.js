@@ -125,7 +125,9 @@ function createRoomDetailPage(dependencies = {}) {
   let availability = null;
   let invalidDestination = null;
   let returnInFlight = false;
+  let returnToken = 0;
   let choosing = false;
+  let selectionToken = 0;
 
   function current(requestGeneration) {
     return active && generation === requestGeneration;
@@ -142,16 +144,34 @@ function createRoomDetailPage(dependencies = {}) {
     });
   }
 
-  function returnHome(page) {
+  function currentReturn(token, requestGeneration) {
+    return (
+      active &&
+      generation === requestGeneration &&
+      returnToken === token &&
+      invalidDestination !== null
+    );
+  }
+
+  function settleReturn(token) {
+    if (returnToken === token) {
+      returnInFlight = false;
+    }
+  }
+
+  function returnHome(page, token, requestGeneration) {
+    if (!currentReturn(token, requestGeneration)) {
+      settleReturn(token);
+      return;
+    }
+    returnInFlight = true;
     invokeNavigation(
       wxApi && wxApi.reLaunch,
       { url: "/pages/home/home" },
+      () => settleReturn(token),
       () => {
-        returnInFlight = false;
-      },
-      () => {
-        returnInFlight = false;
-        if (active && invalidDestination !== null) {
+        settleReturn(token);
+        if (currentReturn(token, requestGeneration)) {
           renderInvalid(page, invalidDestination);
         }
       },
@@ -162,19 +182,24 @@ function createRoomDetailPage(dependencies = {}) {
     if (!active || invalidDestination === null || returnInFlight) {
       return;
     }
+    const token = ++returnToken;
+    const requestGeneration = generation;
     returnInFlight = true;
     renderInvalid(page, invalidDestination);
     if (invalidDestination === "home") {
-      returnHome(page);
+      returnHome(page, token, requestGeneration);
       return;
     }
     invokeNavigation(
       wxApi && wxApi.navigateBack,
       { delta: 1 },
+      () => settleReturn(token),
       () => {
-        returnInFlight = false;
+        settleReturn(token);
+        if (currentReturn(token, requestGeneration)) {
+          returnHome(page, token, requestGeneration);
+        }
       },
-      () => returnHome(page),
     );
   }
 
@@ -220,6 +245,8 @@ function createRoomDetailPage(dependencies = {}) {
       active = true;
       hidden = false;
       generation += 1;
+      returnToken += 1;
+      selectionToken += 1;
       roomId = canonicalId(options);
       availability = null;
       invalidDestination = null;
@@ -269,12 +296,17 @@ function createRoomDetailPage(dependencies = {}) {
       hidden = true;
       choosing = false;
       generation += 1;
+      returnToken += 1;
+      returnInFlight = false;
+      selectionToken += 1;
     },
 
     onUnload() {
       active = false;
       hidden = false;
       generation += 1;
+      returnToken += 1;
+      selectionToken += 1;
       roomId = null;
       availability = null;
       invalidDestination = null;
@@ -307,12 +339,28 @@ function createRoomDetailPage(dependencies = {}) {
       if (!active || this.data.status !== "success" || choosing) {
         return;
       }
+      const token = ++selectionToken;
       choosing = true;
+      let settled = false;
+      const settle = () => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        if (selectionToken === token) {
+          choosing = false;
+        }
+      };
       let result;
       try {
-        result = wxApi.showModal({ ...BOOKING_NOTICE });
+        result = wxApi.showModal({
+          ...BOOKING_NOTICE,
+          success: settle,
+          fail: settle,
+          complete: settle,
+        });
       } catch {
-        choosing = false;
+        settle();
         return;
       }
       try {
@@ -321,19 +369,10 @@ function createRoomDetailPage(dependencies = {}) {
           (typeof result === "object" || typeof result === "function") &&
           typeof result.then === "function"
         ) {
-          result.then(
-            () => {
-              choosing = false;
-            },
-            () => {
-              choosing = false;
-            },
-          );
-        } else {
-          choosing = false;
+          result.then(settle, settle);
         }
       } catch {
-        choosing = false;
+        settle();
       }
     },
 

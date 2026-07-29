@@ -121,6 +121,7 @@ function createPropertyDetailPage(dependencies = {}) {
   let availability = null;
   let invalidDestination = null;
   let returnInFlight = false;
+  let returnToken = 0;
   let navigating = false;
 
   function current(requestGeneration) {
@@ -136,16 +137,34 @@ function createPropertyDetailPage(dependencies = {}) {
     });
   }
 
-  function returnHome(page) {
+  function currentReturn(token, requestGeneration) {
+    return (
+      active &&
+      generation === requestGeneration &&
+      returnToken === token &&
+      invalidDestination !== null
+    );
+  }
+
+  function settleReturn(token) {
+    if (returnToken === token) {
+      returnInFlight = false;
+    }
+  }
+
+  function returnHome(page, token, requestGeneration) {
+    if (!currentReturn(token, requestGeneration)) {
+      settleReturn(token);
+      return;
+    }
+    returnInFlight = true;
     invokeNavigation(
       wxApi && wxApi.reLaunch,
       { url: "/pages/home/home" },
+      () => settleReturn(token),
       () => {
-        returnInFlight = false;
-      },
-      () => {
-        returnInFlight = false;
-        if (active && invalidDestination !== null) {
+        settleReturn(token);
+        if (currentReturn(token, requestGeneration)) {
           renderInvalid(page, invalidDestination);
         }
       },
@@ -156,19 +175,24 @@ function createPropertyDetailPage(dependencies = {}) {
     if (!active || invalidDestination === null || returnInFlight) {
       return;
     }
+    const token = ++returnToken;
+    const requestGeneration = generation;
     returnInFlight = true;
     renderInvalid(page, invalidDestination);
     if (invalidDestination === "home") {
-      returnHome(page);
+      returnHome(page, token, requestGeneration);
       return;
     }
     invokeNavigation(
       wxApi && wxApi.navigateBack,
       { delta: 1 },
+      () => settleReturn(token),
       () => {
-        returnInFlight = false;
+        settleReturn(token);
+        if (currentReturn(token, requestGeneration)) {
+          returnHome(page, token, requestGeneration);
+        }
       },
-      () => returnHome(page),
     );
   }
 
@@ -230,6 +254,7 @@ function createPropertyDetailPage(dependencies = {}) {
       active = true;
       hidden = false;
       generation += 1;
+      returnToken += 1;
       propertyId = canonicalId(options);
       availability = null;
       invalidDestination = null;
@@ -278,12 +303,15 @@ function createPropertyDetailPage(dependencies = {}) {
       active = false;
       hidden = true;
       generation += 1;
+      returnToken += 1;
+      returnInFlight = false;
     },
 
     onUnload() {
       active = false;
       hidden = false;
       generation += 1;
+      returnToken += 1;
       propertyId = null;
       availability = null;
       invalidDestination = null;

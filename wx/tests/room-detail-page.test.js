@@ -325,6 +325,36 @@ describe("room detail page state machine", () => {
     }
   });
 
+  it("settles a late invalid-link failure without falling back after hide or unload", async () => {
+    let callbackOptions;
+    const callbackWx = {
+      navigateBack: vi.fn((options) => {
+        callbackOptions = options;
+      }),
+      reLaunch: vi.fn(),
+      showModal: vi.fn(),
+    };
+    const callbackPage = createPage({ wxApi: callbackWx }).page;
+    callbackPage.onLoad.call(callbackPage, { id: "bad" });
+    callbackPage.onHide.call(callbackPage);
+    callbackOptions.fail(new Error("late callback"));
+    expect(callbackWx.reLaunch).not.toHaveBeenCalled();
+
+    const navigation = deferred();
+    const promiseWx = {
+      navigateBack: vi.fn(() => navigation.promise),
+      reLaunch: vi.fn(),
+      showModal: vi.fn(),
+    };
+    const promisePage = createPage({ wxApi: promiseWx }).page;
+    promisePage.onLoad.call(promisePage, { id: "bad" });
+    promisePage.onUnload.call(promisePage);
+    navigation.reject(new Error("late rejection"));
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(promiseWx.reLaunch).not.toHaveBeenCalled();
+  });
+
   it("blocks a bad search context and returns home without a request", async () => {
     const getRoomType = vi.fn();
     const wxApi = {
@@ -432,10 +462,18 @@ describe("room detail page state machine", () => {
     });
     page.selectRoom.call(page);
     expect(wxApi.showModal).toHaveBeenCalledOnce();
-    expect(wxApi.showModal).toHaveBeenCalledWith({
+    expect(wxApi.showModal.mock.calls[0][0]).toMatchObject({
       title: "预订功能即将开放",
       content: "报价与预订将在下一开发切片开放",
       showCancel: false,
+    });
+    expect(wxApi.showModal.mock.calls[0][0]).toEqual({
+      title: "预订功能即将开放",
+      content: "报价与预订将在下一开发切片开放",
+      showCancel: false,
+      success: expect.any(Function),
+      fail: expect.any(Function),
+      complete: expect.any(Function),
     });
     expect(catalogService).not.toHaveProperty("post");
     expect(wxApi.request).not.toHaveBeenCalled();
@@ -446,6 +484,86 @@ describe("room detail page state machine", () => {
     modal.reject(new Error("private modal failure"));
     await Promise.resolve();
     await Promise.resolve();
+    page.selectRoom.call(page);
+    expect(wxApi.showModal).toHaveBeenCalledTimes(2);
+  });
+
+  it("holds a callback-only modal lock until one guarded completion", async () => {
+    const calls = [];
+    const wxApi = {
+      navigateBack: vi.fn(),
+      reLaunch: vi.fn(),
+      showModal: vi.fn((options) => {
+        calls.push(options);
+        return undefined;
+      }),
+    };
+    const { page } = createPage({ wxApi });
+    await page.onLoad.call(page, { id: IDS.room });
+
+    page.selectRoom.call(page);
+    page.selectRoom.call(page);
+    expect(wxApi.showModal).toHaveBeenCalledOnce();
+
+    calls[0].success({ confirm: true });
+    calls[0].complete({ confirm: true });
+    page.selectRoom.call(page);
+    expect(wxApi.showModal).toHaveBeenCalledTimes(2);
+
+    calls[1].fail(new Error("native fail"));
+    calls[1].complete();
+    page.selectRoom.call(page);
+    expect(wxApi.showModal).toHaveBeenCalledTimes(3);
+  });
+
+  it("does not let an old modal callback unlock a newer page lifecycle", async () => {
+    const calls = [];
+    const wxApi = {
+      navigateBack: vi.fn(),
+      reLaunch: vi.fn(),
+      showModal: vi.fn((options) => {
+        calls.push(options);
+        return undefined;
+      }),
+    };
+    const { page } = createPage({ wxApi });
+    await page.onLoad.call(page, { id: IDS.room });
+    page.selectRoom.call(page);
+
+    page.onUnload.call(page);
+    await page.onLoad.call(page, { id: IDS.room });
+    page.selectRoom.call(page);
+    calls[0].complete();
+    page.selectRoom.call(page);
+    expect(wxApi.showModal).toHaveBeenCalledTimes(2);
+
+    calls[1].complete();
+    page.selectRoom.call(page);
+    expect(wxApi.showModal).toHaveBeenCalledTimes(3);
+  });
+
+  it("settles a malicious thenable only once and remains usable", async () => {
+    const malicious = {
+      then(resolve, reject) {
+        resolve();
+        reject(new Error("second settlement"));
+        throw new Error("throw after settlement");
+      },
+    };
+    const wxApi = {
+      navigateBack: vi.fn(),
+      reLaunch: vi.fn(),
+      showModal: vi
+        .fn()
+        .mockReturnValueOnce(malicious)
+        .mockImplementationOnce((options) => {
+          options.complete();
+        }),
+    };
+    const { page } = createPage({ wxApi });
+    await page.onLoad.call(page, { id: IDS.room });
+
+    expect(() => page.selectRoom.call(page)).not.toThrow();
     page.selectRoom.call(page);
     expect(wxApi.showModal).toHaveBeenCalledTimes(2);
   });
