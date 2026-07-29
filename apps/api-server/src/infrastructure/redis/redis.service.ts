@@ -20,6 +20,9 @@ end
 return value
 `.trim();
 
+const RATE_LIMIT_WINDOW_MILLISECONDS = 60_000;
+const RATE_LIMIT_KEY_PATTERN = /^rate-limit:(quotes|bookings):[a-f0-9]{64}$/;
+
 const parseStoredJson = <T>(value: string | null): T | null => {
   if (value === null) {
     return null;
@@ -34,6 +37,14 @@ const parseStoredJson = <T>(value: string | null): T | null => {
 
 @Injectable()
 export class RedisService implements OnModuleInit, OnModuleDestroy {
+  private static readonly RATE_LIMIT_SCRIPT = `
+local count = redis.call('INCR', KEYS[1])
+if count == 1 then
+  redis.call('PEXPIRE', KEYS[1], ARGV[1])
+end
+return { count, redis.call('PTTL', KEYS[1]) }
+`.trim();
+
   constructor(@Inject(REDIS_CLIENT) private readonly redis: RedisClient) {}
 
   async onModuleInit(): Promise<void> {
@@ -113,6 +124,52 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
       return result;
     } catch {
       throw new Error("Redis session script failed");
+    }
+  }
+
+  async executeRateLimit(
+    key: string,
+    limit: number,
+    windowMilliseconds: number,
+  ): Promise<{ count: number; ttlMilliseconds: number }> {
+    try {
+      if (
+        typeof key !== "string" ||
+        !RATE_LIMIT_KEY_PATTERN.test(key) ||
+        !Number.isSafeInteger(limit) ||
+        limit <= 0 ||
+        !Number.isSafeInteger(windowMilliseconds) ||
+        windowMilliseconds !== RATE_LIMIT_WINDOW_MILLISECONDS
+      ) {
+        throw new Error("Invalid rate limit input");
+      }
+
+      const result = await this.redis.eval(
+        RedisService.RATE_LIMIT_SCRIPT,
+        1,
+        key,
+        String(windowMilliseconds),
+      );
+      if (!Array.isArray(result) || result.length !== 2) {
+        throw new Error("Invalid rate limit result");
+      }
+
+      const values: readonly unknown[] = result;
+      if (
+        typeof values[0] !== "number" ||
+        !Number.isSafeInteger(values[0]) ||
+        values[0] <= 0 ||
+        typeof values[1] !== "number" ||
+        !Number.isSafeInteger(values[1]) ||
+        values[1] <= 0 ||
+        values[1] > windowMilliseconds
+      ) {
+        throw new Error("Invalid rate limit result");
+      }
+
+      return { count: values[0], ttlMilliseconds: values[1] };
+    } catch {
+      throw new Error("Redis rate limit failed");
     }
   }
 
