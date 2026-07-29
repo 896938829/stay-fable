@@ -703,20 +703,44 @@ describeDatabase(suiteName, () => {
     const probe: PoolClient = await pool.connect();
     let blockerOpen = false;
     let probeOpen = false;
+    let blockerBackendPid: number | undefined;
+    let seedBackendPid: number | undefined;
     let seedAttempt: Promise<void> | undefined;
+    let seedSettled = false;
 
     const waitForSeedLock = async (): Promise<void> => {
+      if (blockerBackendPid === undefined) {
+        throw new Error("Expected blocker backend PID");
+      }
+      const expectedBlockerPid = blockerBackendPid;
       for (let attempt = 0; attempt < 200; attempt += 1) {
-        const activity = await pool.query<{ wait_event_type: string | null }>(
+        const activity = await pool.query<{
+          application_name: string;
+          blocking_pids: number[];
+          pid: number;
+          query: string;
+        }>(
           `
-            SELECT wait_event_type
+            SELECT
+              application_name,
+              pid,
+              query,
+              pg_blocking_pids(pid) AS blocking_pids
             FROM pg_stat_activity
             WHERE application_name = $1
               AND state = 'active'
           `,
           [applicationName],
         );
-        if (activity.rows.some(({ wait_event_type: waitEventType }) => waitEventType === "Lock")) {
+        const blockedSeed = activity.rows.find(
+          ({ application_name: activeApplicationName, blocking_pids: blockingPids, query }) =>
+            activeApplicationName === applicationName &&
+            blockingPids.includes(expectedBlockerPid) &&
+            /\bdaily_inventory\b/i.test(query) &&
+            /\bFOR\s+UPDATE\b/i.test(query),
+        );
+        if (blockedSeed !== undefined) {
+          seedBackendPid = blockedSeed.pid;
           return;
         }
         await new Promise((resolve) => setTimeout(resolve, 25));
@@ -727,6 +751,11 @@ describeDatabase(suiteName, () => {
     try {
       await blocker.query("BEGIN");
       blockerOpen = true;
+      const blockerBackend = await blocker.query<{ pid: number }>(
+        "SELECT pg_backend_pid()::integer AS pid",
+      );
+      blockerBackendPid = blockerBackend.rows[0]?.pid;
+      expect(blockerBackendPid).toBeTypeOf("number");
       await blocker.query(
         `
           SELECT room_type_id
@@ -738,7 +767,16 @@ describeDatabase(suiteName, () => {
       );
 
       seedAttempt = runSeed(lockOrderPrisma);
+      void seedAttempt.then(
+        () => {
+          seedSettled = true;
+        },
+        () => {
+          seedSettled = true;
+        },
+      );
       await awaitWithin(waitForSeedLock(), 7_000);
+      expect(seedBackendPid).toBeTypeOf("number");
 
       await probe.query("BEGIN");
       probeOpen = true;
@@ -759,18 +797,60 @@ describeDatabase(suiteName, () => {
       blockerOpen = false;
       await awaitWithin(seedAttempt, 7_000);
     } finally {
-      if (probeOpen) {
-        await probe.query("ROLLBACK");
+      try {
+        if (blockerOpen) {
+          await blocker.query("ROLLBACK");
+        }
+        if (probeOpen) {
+          await probe.query("ROLLBACK");
+        }
+        if (seedAttempt !== undefined && !seedSettled) {
+          await awaitWithin(
+            seedAttempt.then(
+              () => undefined,
+              () => undefined,
+            ),
+            3_000,
+          ).catch(() => undefined);
+        }
+        if (!seedSettled && seedBackendPid === undefined) {
+          const seedActivity = await pool.query<{ pid: number }>(
+            `
+              SELECT pid
+              FROM pg_stat_activity
+              WHERE application_name = $1
+              ORDER BY (state = 'active') DESC, pid
+              LIMIT 1
+            `,
+            [applicationName],
+          );
+          seedBackendPid = seedActivity.rows[0]?.pid;
+        }
+        if (!seedSettled && seedBackendPid !== undefined) {
+          const seedActivity = await pool.query<{ state: string }>(
+            "SELECT state FROM pg_stat_activity WHERE pid = $1",
+            [seedBackendPid],
+          );
+          if (seedActivity.rows[0]?.state === "active") {
+            await pool.query("SELECT pg_cancel_backend($1)", [seedBackendPid]);
+          }
+        }
+        if (seedAttempt !== undefined && !seedSettled) {
+          await awaitWithin(
+            seedAttempt.then(
+              () => undefined,
+              () => undefined,
+            ),
+            3_000,
+          );
+        }
+      } finally {
+        probe.release();
+        blocker.release();
+        await awaitWithin(lockOrderPrisma.$disconnect(), 3_000);
       }
-      if (blockerOpen) {
-        await blocker.query("ROLLBACK");
-      }
-      await seedAttempt?.catch(() => undefined);
-      probe.release();
-      blocker.release();
-      await lockOrderPrisma.$disconnect();
     }
-  });
+  }, 30_000);
 
   test("a fixed UUID/business-key conflict rolls back the entire catalog seed", async () => {
     const schemaName = `catalog_seed_test_${randomBytes(8).toString("hex")}`;
