@@ -1,0 +1,51 @@
+<view
+  class="property-card {{viewModel.interactive ? '' : 'property-card--disabled'}}"
+  hover-class="property-card--pressed"
+  hover-stay-time="80"
+  bindtap="handleTap"
+  aria-role="button"
+  aria-label="查看{{viewModel.name}}"
+>
+  <image
+    wx:if="{{viewModel.coverUrl}}"
+    class="property-card__cover"
+    src="{{viewModel.coverUrl}}"
+    mode="aspectFill"
+    aria-role="img"
+    aria-label="{{viewModel.coverAlt}}"
+  />
+  <view
+    wx:else
+    class="property-card__cover property-card__cover--fallback"
+    aria-role="img"
+    aria-label="旅店封面图暂缺"
+  >
+    <text class="property-card__fallback-mark">Stay Fable</text>
+  </view>
+
+  <view class="property-card__body">
+    <view class="property-card__heading">
+      <text class="property-card__type">{{viewModel.typeLabel}}</text>
+      <text class="property-card__name">{{viewModel.name}}</text>
+    </view>
+    <text class="property-card__description">{{viewModel.description}}</text>
+
+    <view wx:if="{{viewModel.facilities.length}}" class="property-card__facilities">
+      <text
+        wx:for="{{viewModel.facilities}}"
+        wx:key="*this"
+        class="property-card__facility"
+      >
+        {{item}}
+      </text>
+    </view>
+    <text wx:else class="property-card__facilities-empty">设施信息更新中</text>
+
+    <view class="property-card__footer">
+      <text class="property-card__availability">
+        {{viewModel.availableCount}} 个可售房型
+      </text>
+      <price cents="{{viewModel.priceCents}}" />
+    </view>
+  </view>
+</view>

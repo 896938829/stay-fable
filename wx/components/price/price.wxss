@@ -1,0 +1,26 @@
+.price {
+  display: flex;
+  align-items: baseline;
+  color: var(--color-brand-dark);
+  white-space: nowrap;
+}
+
+.price__prefix,
+.price__suffix {
+  color: var(--color-muted);
+  font-size: 22rpx;
+}
+
+.price__prefix {
+  margin-right: 6rpx;
+}
+
+.price__suffix {
+  margin-left: 6rpx;
+}
+
+.price__amount {
+  font-size: 34rpx;
+  font-weight: 700;
+  letter-spacing: -1rpx;
+}

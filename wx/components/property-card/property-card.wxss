@@ -1,0 +1,117 @@
+.property-card {
+  min-height: 88rpx;
+  overflow: hidden;
+  border: 1rpx solid var(--color-border);
+  border-radius: var(--radius-large);
+  background: var(--color-surface);
+  box-shadow: var(--shadow-card);
+  transition:
+    opacity 120ms ease,
+    transform 120ms ease;
+}
+
+.property-card--pressed {
+  opacity: 0.88;
+  transform: scale(0.99);
+}
+
+.property-card--disabled {
+  opacity: 0.72;
+}
+
+.property-card__cover {
+  display: block;
+  width: 100%;
+  height: 320rpx;
+  background: #eaded6;
+}
+
+.property-card__cover--fallback {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: linear-gradient(145deg, #eaded6, #f7eee8);
+}
+
+.property-card__fallback-mark {
+  color: var(--color-brand-dark);
+  font-size: 26rpx;
+  font-weight: 650;
+  letter-spacing: 3rpx;
+}
+
+.property-card__body {
+  padding: 28rpx;
+}
+
+.property-card__heading {
+  display: flex;
+  align-items: center;
+}
+
+.property-card__type {
+  flex: none;
+  margin-right: 14rpx;
+  padding: 6rpx 14rpx;
+  border-radius: var(--radius-small);
+  background: #f4e7df;
+  color: var(--color-brand-dark);
+  font-size: 22rpx;
+  font-weight: 600;
+}
+
+.property-card__name {
+  overflow: hidden;
+  color: var(--color-text);
+  font-size: 34rpx;
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.property-card__description {
+  display: -webkit-box;
+  overflow: hidden;
+  margin-top: 16rpx;
+  color: var(--color-muted);
+  font-size: 26rpx;
+  line-height: 1.55;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.property-card__facilities {
+  display: flex;
+  margin-top: 20rpx;
+  flex-wrap: wrap;
+}
+
+.property-card__facility {
+  margin: 0 12rpx 12rpx 0;
+  padding: 7rpx 14rpx;
+  border: 1rpx solid var(--color-border);
+  border-radius: var(--radius-small);
+  color: var(--color-muted);
+  font-size: 22rpx;
+}
+
+.property-card__facilities-empty {
+  display: block;
+  margin-top: 20rpx;
+  color: var(--color-muted);
+  font-size: 22rpx;
+}
+
+.property-card__footer {
+  display: flex;
+  min-height: 56rpx;
+  margin-top: 20rpx;
+  align-items: flex-end;
+  justify-content: space-between;
+}
+
+.property-card__availability {
+  margin-right: 20rpx;
+  color: var(--color-muted);
+  font-size: 24rpx;
+}

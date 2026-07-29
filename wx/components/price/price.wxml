@@ -1,0 +1,7 @@
+<view class="price" aria-role="text">
+  <text wx:if="{{prefix}}" class="price__prefix">{{prefix}}</text>
+  <text wx:else class="price__prefix">每晚</text>
+  <text class="price__amount">{{formatted}}</text>
+  <text wx:if="{{suffix}}" class="price__suffix">{{suffix}}</text>
+  <text wx:else class="price__suffix">起</text>
+</view>
