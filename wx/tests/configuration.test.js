@@ -132,12 +132,9 @@ describe("WeChat location privacy configuration", () => {
     expect(listLogic).toContain('{ value: "HOMESTAY", label: "民宿" }');
     expect(script).toContain('"property-card"');
     expect(script).toContain('"HOMESTAY"');
-    expect(script).toMatch(/propertyList\.outerWxml\(\)/);
-    expect(script).toMatch(/miniprogram\.evaluate\(/);
-    expect(script).not.toMatch(
-      /page\.callMethod\(\s*"openProperty",\s*\{/,
+    expect(script).toMatch(
+      /propertyCard\.\$\(\s*PROPERTY_CARD_ACTION_SELECTOR\s*\)/,
     );
-    expect(script).not.toMatch(/propertyAction\.tap\(\)/);
     expect(script).toMatch(/withTimeout\(\s*"launch mini-program"/);
     expect(script).toMatch(/withTimeout\(\s*"close mini-program"/);
     expect(script).not.toMatch(

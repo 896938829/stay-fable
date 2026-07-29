@@ -55,8 +55,6 @@ const WINDOWS_NON_ELECTRON_EXECUTABLES = new Set([
   "wechatdevtools.exe",
 ]);
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
-const UUID_PATTERN =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const CATALOG_SEARCH_FIXTURE = Object.freeze({
   city: Object.freeze({
     id: "10000000-0000-4000-8000-000000000001",
@@ -1156,6 +1154,32 @@ async function capturePage(
   }
 }
 
+async function captureComponent(
+  component,
+  evidenceRoot,
+  name,
+  evidencePaths,
+  context,
+  options = {},
+) {
+  const cancellation = context || createCancellationContext();
+  const tree = await withTimeout(
+    `${name} component tree`,
+    () => component.wxml(),
+    options.timeoutMs ?? ACTION_TIMEOUT_MS,
+    cancellation,
+  );
+  cancellation.throwIfAborted();
+  await writeTree(
+    evidenceRoot,
+    options.evidenceParent || evidenceRoot,
+    name,
+    tree,
+    evidencePaths,
+    cancellation,
+  );
+}
+
 async function filterElement(page, type, context) {
   const filters = await runInteraction(context, "catalog filters", () =>
     page.$$(FILTER_SELECTOR),
@@ -1171,99 +1195,6 @@ async function filterElement(page, type, context) {
     }
   }
   return null;
-}
-
-async function openFirstProperty(
-  miniprogram,
-  page,
-  items,
-  context,
-  options = {},
-) {
-  const propertyList = await requireElement(
-    page,
-    PROPERTY_LIST_SELECTOR,
-    context,
-  );
-  const tree = await runInteraction(
-    context,
-    "property card rendering evidence",
-    () => propertyList.outerWxml(),
-  );
-  const propertyCardTag =
-    `<components/${PROPERTY_CARD_SELECTOR}/${PROPERTY_CARD_SELECTOR}`;
-  const propertyCardCount = tree.split(propertyCardTag).length - 1;
-  const actionLabels = [
-    ...tree.matchAll(
-      /<button class="property-card__tap-target" aria-label="([^"]*)"/g,
-    ),
-  ].map((match) => match[1]);
-  assert.ok(
-    Array.isArray(items) &&
-      items.length > 0 &&
-      propertyCardCount === items.length &&
-      tree.includes(
-        `class="${PROPERTY_CARD_ACTION_SELECTOR.slice(1)}"`,
-      ) &&
-      actionLabels.length === items.length &&
-      items.every(
-        (item, index) =>
-          item &&
-          typeof item.name === "string" &&
-          actionLabels[index] === `查看${item.name}`,
-      ),
-    "property card rendering evidence is invalid",
-  );
-  if (typeof options.capture === "function") {
-    await options.capture();
-  }
-
-  const propertyId = items?.[0]?.id;
-  assert.ok(
-    typeof propertyId === "string" && UUID_PATTERN.test(propertyId),
-    "first property id is invalid",
-  );
-  const serializedPayload = JSON.stringify({ id: propertyId });
-  try {
-    const result = await runInteraction(context, "open property", () =>
-      miniprogram.evaluate((serializedAction) => {
-        const payload = JSON.parse(serializedAction);
-        const payloadKeys =
-          payload && typeof payload === "object"
-            ? Object.keys(payload)
-            : [];
-        if (
-          payloadKeys.length !== 1 ||
-          payloadKeys[0] !== "id" ||
-          typeof payload.id !== "string" ||
-          !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
-            payload.id,
-          )
-        ) {
-          throw new Error("property action payload invalid");
-        }
-        const pages = getCurrentPages();
-        const runtimePage =
-          Array.isArray(pages) && pages.length > 0
-            ? pages[pages.length - 1]
-            : null;
-        if (
-          !runtimePage ||
-          runtimePage.route !== "pages/property-list/property-list"
-        ) {
-          throw new Error("property action route invalid");
-        }
-        if (typeof runtimePage.openProperty !== "function") {
-          throw new Error("property action handler unavailable");
-        }
-        runtimePage.openProperty({ detail: { id: payload.id } });
-        return "catalog-property-action-dispatched";
-      }, serializedPayload),
-    );
-    assert.equal(result, "catalog-property-action-dispatched");
-  } catch {
-    throw new Error("property action dispatch failed");
-  }
 }
 
 function safeSearchSnapshot(search) {
@@ -1413,24 +1344,27 @@ async function catalogWorkflow(
   );
   assertPropertyOnlyItems(current.data.items);
 
-  await openFirstProperty(
-    miniprogram,
-    current.page,
-    current.data.items,
+  const propertyCards = await runInteraction(context, "property cards", () =>
+    current.page.$$(PROPERTY_CARD_SELECTOR),
+  );
+  assert.ok(propertyCards.length > 0, "property card missing");
+  const propertyCard = propertyCards[0];
+  await captureComponent(
+    propertyCard,
+    evidenceRoot,
+    "04-first-property-card",
+    evidencePaths,
     context,
-    {
-      capture: () =>
-        capturePage(
-          miniprogram,
-          current.page,
-          PROPERTY_LIST_SELECTOR,
-          evidenceRoot,
-          "04-property-card-rendering",
-          evidencePaths,
-          context,
-          { evidenceParent },
-        ),
-    },
+    { evidenceParent },
+  );
+  const propertyAction = await runInteraction(
+    context,
+    "property card action",
+    () => propertyCard.$(PROPERTY_CARD_ACTION_SELECTOR),
+  );
+  assert.ok(propertyAction, "property card action missing");
+  await runInteraction(context, "open property", () =>
+    propertyAction.tap(),
   );
 
   stepTracker.enter("property-detail");
@@ -1851,7 +1785,6 @@ module.exports = {
   closeMiniProgram,
   createCancellationContext,
   launchMiniProgram,
-  openFirstProperty,
   parseCliArguments,
   prepareCatalogHome,
   restoreCatalogSearch,

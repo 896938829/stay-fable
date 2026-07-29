@@ -254,6 +254,108 @@ describe("catalog automator launch configuration", () => {
     expect(child.kill).not.toHaveBeenCalled();
     expect(child.unref).toHaveBeenCalledOnce();
   });
+
+  it.each([
+    { cliPath: "/opt/wechat-devtools/cli", platform: "linux" },
+    { cliPath: "C:\\tools\\wechat\\cli.exe", platform: "win32" },
+  ])(
+    "keeps the official launch path for $platform $cliPath",
+    async ({ cliPath, platform }) => {
+      const miniProgram = {};
+      const automatorApi = {
+        connect: vi.fn(),
+        launch: vi.fn(async () => miniProgram),
+      };
+      const launchOptions = {
+        cliPath,
+        projectPath:
+          platform === "win32" ? "C:\\workspace\\wx" : "/workspace/wx",
+      };
+
+      const selectedApi = catalogAutomator.selectDefaultAutomatorApi(
+        automatorApi,
+        launchOptions,
+        { platform },
+      );
+
+      expect(selectedApi).toBe(automatorApi);
+      await expect(selectedApi.launch(launchOptions)).resolves.toBe(
+        miniProgram,
+      );
+      expect(automatorApi.connect).not.toHaveBeenCalled();
+    },
+  );
+
+  it("reports that the target window must be closed when the cold-start CLI exits cleanly", async () => {
+    const child = new EventEmitter();
+    child.kill = vi.fn();
+    child.unref = vi.fn();
+    const automatorApi = {
+      connect: vi.fn(async () => {
+        child.emit("exit", 0);
+        throw new Error("endpoint unavailable");
+      }),
+    };
+
+    await expect(
+      catalogAutomator.launchWindowsBatchMiniProgram(
+        automatorApi,
+        {
+          cliPath: "C:\\tools\\wechat\\cli.bat",
+          projectPath: "C:\\workspace\\wx",
+        },
+        {
+          allocatePort: vi.fn(async () => 45123),
+          exitGraceMs: 0,
+          resolveWindowsCliRuntime: vi.fn(async () => ({
+            cliEntryPath:
+              "C:\\tools\\wechat\\resources\\app.asar.unpacked\\js\\common\\cli\\index.js",
+            electronPath: "C:\\tools\\wechat\\微信开发者工具.exe",
+            installRoot: "C:\\tools\\wechat",
+          })),
+          sleep: vi.fn(async () => {}),
+          spawnProcess: vi.fn(() => child),
+        },
+      ),
+    ).rejects.toThrow(
+      "WeChat DevTools project window must be closed before automation launch",
+    );
+    expect(child.kill).not.toHaveBeenCalled();
+  });
+
+  it("kills the cold-start CLI process when the connection deadline expires", async () => {
+    const child = new EventEmitter();
+    child.kill = vi.fn();
+    child.unref = vi.fn();
+    const automatorApi = {
+      connect: vi.fn(async () => {
+        throw new Error("endpoint unavailable");
+      }),
+    };
+
+    await expect(
+      catalogAutomator.launchWindowsBatchMiniProgram(
+        automatorApi,
+        {
+          cliPath: "C:\\tools\\wechat\\cli.bat",
+          projectPath: "C:\\workspace\\wx",
+        },
+        {
+          allocatePort: vi.fn(async () => 45123),
+          connectTimeoutMs: 0,
+          resolveWindowsCliRuntime: vi.fn(async () => ({
+            cliEntryPath:
+              "C:\\tools\\wechat\\resources\\app.asar.unpacked\\js\\common\\cli\\index.js",
+            electronPath: "C:\\tools\\wechat\\微信开发者工具.exe",
+            installRoot: "C:\\tools\\wechat",
+          })),
+          sleep: vi.fn(async () => {}),
+          spawnProcess: vi.fn(() => child),
+        },
+      ),
+    ).rejects.toThrow("WeChat DevTools automation endpoint is unavailable");
+    expect(child.kill).toHaveBeenCalledOnce();
+  });
 });
 
 describe("catalog automator deterministic search fixture", () => {
@@ -520,7 +622,6 @@ describe("catalog automator runtime UI evidence", () => {
     content: "报价与预订将在下一开发切片开放",
     showCancel: false,
   };
-  const propertyId = "20000000-0000-4000-8000-000000000001";
 
   function createModalMiniProgram(confirmModal = vi.fn(async () => ({}))) {
     return {
@@ -530,231 +631,6 @@ describe("catalog automator runtime UI evidence", () => {
       native: vi.fn(() => ({ confirmModal })),
     };
   }
-
-  it("captures a real card, validates its visible action, then dispatches the page property handler inside the runtime", async () => {
-    const events = [];
-    const openProperty = vi.fn((event) => {
-      events.push(`handler:openProperty:${event.detail.id}`);
-    });
-    vi.stubGlobal("getCurrentPages", () => [
-      {
-        route: "pages/property-list/property-list",
-        openProperty,
-      },
-    ]);
-    const propertyRoot = {
-      outerWxml: vi.fn(async () => {
-        events.push("tree");
-        return [
-          '<view class="page-shell property-list-page">',
-          "<components/property-card/property-card>",
-          '<view class="property-card">',
-          '<button class="property-card__tap-target" aria-label="查看西湖云栖酒店"></button>',
-          "</view>",
-          "</components/property-card/property-card>",
-          "</view>",
-        ].join("");
-      }),
-    };
-    const page = {
-      $: vi.fn(async (selector) => {
-        events.push(`root:${selector}`);
-        return propertyRoot;
-      }),
-    };
-    const miniprogram = {
-      evaluate: vi.fn(async (callback, ...arguments_) => {
-        events.push(`evaluate:${arguments_[0]}`);
-        return callback(...arguments_);
-      }),
-    };
-    const capture = vi.fn(async () => {
-      events.push("capture");
-    });
-
-    await expect(
-      catalogAutomator.openFirstProperty(
-        miniprogram,
-        page,
-        [{ id: propertyId, name: "西湖云栖酒店" }],
-        catalogAutomator.createCancellationContext(),
-        { capture },
-      ),
-    ).resolves.toBeUndefined();
-
-    expect(events).toEqual([
-      "root:.property-list-page",
-      "tree",
-      "capture",
-      `evaluate:${JSON.stringify({ id: propertyId })}`,
-      `handler:openProperty:${propertyId}`,
-    ]);
-    expect(miniprogram.evaluate).toHaveBeenCalledOnce();
-    expect(miniprogram.evaluate.mock.calls[0]).toHaveLength(2);
-    expect(miniprogram.evaluate.mock.calls[0][1]).toBe(
-      JSON.stringify({ id: propertyId }),
-    );
-    expect(openProperty).toHaveBeenCalledWith({
-      detail: { id: propertyId },
-    });
-  });
-
-  it.each([
-    { items: [{ name: "西湖云栖酒店" }] },
-    {
-      items: [
-        { id: "not-a-property-id", name: "西湖云栖酒店" },
-      ],
-    },
-  ])("rejects a missing or invalid first property id: %#", async ({ items }) => {
-    const page = {
-      $: vi.fn(async () => ({
-        outerWxml: vi.fn(async () =>
-          [
-            "<components/property-card/property-card>",
-            '<button class="property-card__tap-target" aria-label="查看西湖云栖酒店"></button>',
-            "</components/property-card/property-card>",
-          ].join(""),
-        ),
-      })),
-    };
-    const miniprogram = { evaluate: vi.fn(async () => "unexpected") };
-
-    await expect(
-      catalogAutomator.openFirstProperty(
-        miniprogram,
-        page,
-        items,
-        catalogAutomator.createCancellationContext(),
-      ),
-    ).rejects.toThrow("first property id is invalid");
-    expect(miniprogram.evaluate).not.toHaveBeenCalled();
-  });
-
-  it.each([
-    {
-      label: "missing component",
-      tree:
-        '<view><button class="property-card__tap-target" aria-label="查看西湖云栖酒店"></button></view>',
-    },
-    {
-      label: "missing internal action",
-      tree:
-        "<components/property-card/property-card></components/property-card/property-card>",
-    },
-    {
-      label: "wrong action label",
-      tree: [
-        "<components/property-card/property-card>",
-        '<button class="property-card__tap-target" aria-label="查看其他旅店"></button>',
-        "</components/property-card/property-card>",
-      ].join(""),
-    },
-  ])("rejects $label rendering evidence", async ({ tree }) => {
-    const page = {
-      $: vi.fn(async () => ({
-        outerWxml: vi.fn(async () => tree),
-      })),
-    };
-    const miniprogram = { evaluate: vi.fn(async () => "unexpected") };
-
-    await expect(
-      catalogAutomator.openFirstProperty(
-        miniprogram,
-        page,
-        [{ id: propertyId, name: "西湖云栖酒店" }],
-        catalogAutomator.createCancellationContext(),
-      ),
-    ).rejects.toThrow("property card rendering evidence is invalid");
-    expect(miniprogram.evaluate).not.toHaveBeenCalled();
-  });
-
-  it.each([
-    {
-      label: "wrong route",
-      serializedPayload: JSON.stringify({ id: propertyId }),
-      runtimePage: {
-        route: "pages/home/home",
-        openProperty: vi.fn(),
-      },
-    },
-    {
-      label: "missing page handler",
-      serializedPayload: JSON.stringify({ id: propertyId }),
-      runtimePage: {
-        route: "pages/property-list/property-list",
-      },
-    },
-    {
-      label: "invalid runtime id",
-      serializedPayload: JSON.stringify({ id: "not-a-property-id" }),
-      runtimePage: {
-        route: "pages/property-list/property-list",
-        openProperty: vi.fn(),
-      },
-    },
-  ])(
-    "fails safely without invoking a handler for $label",
-    async ({ runtimePage, serializedPayload }) => {
-      vi.stubGlobal("getCurrentPages", () => [runtimePage]);
-      const page = {
-        $: vi.fn(async () => ({
-          outerWxml: vi.fn(async () =>
-            [
-              "<components/property-card/property-card>",
-              '<button class="property-card__tap-target" aria-label="查看西湖云栖酒店"></button>',
-              "</components/property-card/property-card>",
-            ].join(""),
-          ),
-        })),
-      };
-      const miniprogram = {
-        evaluate: vi.fn(async (callback) =>
-          callback(serializedPayload),
-        ),
-      };
-
-      await expect(
-        catalogAutomator.openFirstProperty(
-          miniprogram,
-          page,
-          [{ id: propertyId, name: "西湖云栖酒店" }],
-          catalogAutomator.createCancellationContext(),
-        ),
-      ).rejects.toThrow("property action dispatch failed");
-      if (runtimePage.openProperty) {
-        expect(runtimePage.openProperty).not.toHaveBeenCalled();
-      }
-    },
-  );
-
-  it("turns an Automator evaluate exception into a safe action failure", async () => {
-    const page = {
-      $: vi.fn(async () => ({
-        outerWxml: vi.fn(async () =>
-          [
-            "<components/property-card/property-card>",
-            '<button class="property-card__tap-target" aria-label="查看西湖云栖酒店"></button>',
-            "</components/property-card/property-card>",
-          ].join(""),
-        ),
-      })),
-    };
-    const miniprogram = {
-      evaluate: vi.fn(async () => {
-        throw new Error("Bearer private SDK failure");
-      }),
-    };
-
-    await expect(
-      catalogAutomator.openFirstProperty(
-        miniprogram,
-        page,
-        [{ id: propertyId, name: "西湖云栖酒店" }],
-        catalogAutomator.createCancellationContext(),
-      ),
-    ).rejects.toThrow("property action dispatch failed");
-  });
 
   it("polls until the nightly DOM count exactly matches page data", async () => {
     const row = {};
