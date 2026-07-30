@@ -5,12 +5,16 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { configureApplication, OPEN_API_CONFIG } from "../src/application-configuration.js";
 import { BookingActionsController } from "../src/booking/booking-actions.controller.js";
+import { BookingLifecycleRepository } from "../src/booking/booking-lifecycle.repository.js";
 import { BookingLifecycleService } from "../src/booking/booking-lifecycle.service.js";
 import { BookingModule } from "../src/booking/booking.module.js";
 import { BookingQueryController } from "../src/booking/booking-query.controller.js";
 import { BookingQueryService } from "../src/booking/booking-query.service.js";
 import { BookingsController } from "../src/booking/bookings.controller.js";
 import { BookingsService } from "../src/booking/bookings.service.js";
+import { DevPaymentsController } from "../src/booking/dev-payments.controller.js";
+import { MockPaymentService } from "../src/booking/mock-payment.service.js";
+import { PAYMENT_NUMBER_GENERATOR } from "../src/booking/payment-number.js";
 import { SessionAuthGuard } from "../src/identity/session-auth.guard.js";
 import { PricingModule } from "../src/pricing/pricing.module.js";
 import { QuotesController } from "../src/pricing/quotes.controller.js";
@@ -336,6 +340,70 @@ describe("Booking slice OpenAPI", () => {
     );
   });
 
+  it("documents the strict mock-payment contract only when its controller is registered", async () => {
+    const module = await Test.createTestingModule({
+      controllers: [DevPaymentsController],
+      providers: [{ provide: MockPaymentService, useValue: { simulate: vi.fn() } }],
+    })
+      .overrideGuard(SessionAuthGuard)
+      .useValue({ canActivate: () => true })
+      .compile();
+    app = module.createNestApplication();
+    configureApplication(app, "production");
+    await app.init();
+    const document = SwaggerModule.createDocument(app, OPEN_API_CONFIG) as unknown as Document;
+    const operation = document.paths["/api/v1/dev/payments/{bookingId}/simulate"]?.post;
+
+    expect(Object.keys(document.paths)).toEqual(["/api/v1/dev/payments/{bookingId}/simulate"]);
+    expect(operation?.security).toEqual([{ session: [] }]);
+    expect(operation?.parameters).toEqual([
+      {
+        in: "path",
+        name: "bookingId",
+        required: true,
+        schema: { format: "uuid", type: "string" },
+      },
+      {
+        in: "header",
+        name: "Idempotency-Key",
+        required: true,
+        schema: {
+          type: "string",
+          pattern: "^[A-Za-z0-9._~-]{32,80}$",
+          minLength: 32,
+          maxLength: 80,
+        },
+      },
+    ]);
+    expect(operation?.requestBody?.content?.["application/json"]?.schema).toEqual({
+      type: "object",
+      additionalProperties: false,
+      required: ["outcome"],
+      properties: {
+        outcome: { type: "string", enum: ["SUCCEED", "FAIL"] },
+      },
+    });
+    for (const status of ["200", "201"]) {
+      expect(operation?.responses?.[status]?.content?.["application/json"]?.schema).toEqual({
+        $ref: "#/components/schemas/BookingDetailEnvelopeDto",
+      });
+    }
+    for (const status of ["400", "401", "403", "404", "409", "503"]) {
+      expect(operation?.responses?.[status]?.content?.["application/json"]?.schema).toEqual({
+        $ref: "#/components/schemas/BookingLifecycleErrorEnvelopeDto",
+      });
+    }
+    expect(operation?.responses?.["429"]?.content?.["application/json"]?.schema).toEqual({
+      $ref: "#/components/schemas/BookingRateLimitErrorEnvelopeDto",
+    });
+    expect(
+      JSON.stringify({
+        operation,
+        schemas: document.components?.schemas,
+      }),
+    ).not.toMatch(/user_id|quote_id|idempotency_key|hold|inventory|actor_user/i);
+  });
+
   it("wires the booking module and exports its query service", async () => {
     const previousEnvironment = {
       DATABASE_URL: process.env.DATABASE_URL,
@@ -354,13 +422,26 @@ describe("Booking slice OpenAPI", () => {
       expect(appImports).toContain(BookingModule);
       expect(pricingControllers).toEqual([QuotesController]);
       const bookingExports = Reflect.getMetadata("exports", BookingModule) as unknown[];
+      const bookingProviders = Reflect.getMetadata("providers", BookingModule) as unknown[];
       expect(bookingControllers).toEqual([
         BookingsController,
         BookingQueryController,
         BookingActionsController,
       ]);
       expect(bookingExports).toContain(BookingQueryService);
+      expect(bookingExports).toContain(BookingLifecycleRepository);
       expect(bookingExports).toContain(BookingLifecycleService);
+      expect(bookingExports).toContain(MockPaymentService);
+      expect(bookingExports).toContain(PAYMENT_NUMBER_GENERATOR);
+      expect(bookingProviders).toContain(MockPaymentService);
+      expect(
+        bookingProviders.filter(
+          (provider) =>
+            typeof provider === "object" &&
+            provider !== null &&
+            Reflect.get(provider, "provide") === PAYMENT_NUMBER_GENERATOR,
+        ),
+      ).toHaveLength(1);
     } finally {
       for (const [key, value] of Object.entries(previousEnvironment)) {
         if (value === undefined) {

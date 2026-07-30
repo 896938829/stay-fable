@@ -8,6 +8,8 @@ import { BOOKING_NUMBER_GENERATOR, createBookingNumberGenerator } from "./bookin
 import { BookingActionsController } from "./booking-actions.controller.js";
 import { BookingLifecycleRepository } from "./booking-lifecycle.repository.js";
 import { BookingLifecycleService } from "./booking-lifecycle.service.js";
+import { MockPaymentService } from "./mock-payment.service.js";
+import { createPaymentNumberGenerator, PAYMENT_NUMBER_GENERATOR } from "./payment-number.js";
 import { BookingQueryController } from "./booking-query.controller.js";
 import { BookingQueryRepository } from "./booking-query.repository.js";
 import { BookingQueryService } from "./booking-query.service.js";
@@ -25,9 +27,18 @@ import { BookingsService } from "./bookings.service.js";
     BookingQueryService,
     BookingLifecycleRepository,
     BookingLifecycleService,
+    MockPaymentService,
     { provide: CLOCK, useValue: systemClock },
     { provide: BOOKING_NUMBER_GENERATOR, useFactory: createBookingNumberGenerator },
+    { provide: PAYMENT_NUMBER_GENERATOR, useFactory: createPaymentNumberGenerator },
   ],
-  exports: [BookingsService, BookingQueryService, BookingLifecycleService],
+  exports: [
+    BookingsService,
+    BookingQueryService,
+    BookingLifecycleRepository,
+    BookingLifecycleService,
+    MockPaymentService,
+    PAYMENT_NUMBER_GENERATOR,
+  ],
 })
 export class BookingModule {}

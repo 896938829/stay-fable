@@ -4,6 +4,7 @@ import { LoggerModule } from "nestjs-pino";
 
 import { validateRuntimeConfig } from "./config/runtime-config.js";
 import { BookingModule } from "./booking/booking.module.js";
+import { MockPaymentModule } from "./booking/mock-payment.module.js";
 import { CatalogModule } from "./catalog/catalog.module.js";
 import { DatabaseModule } from "./database/database.module.js";
 import { HealthController } from "./health/health.controller.js";
@@ -34,6 +35,7 @@ import { PricingModule } from "./pricing/pricing.module.js";
     CatalogModule,
     PricingModule,
     BookingModule,
+    MockPaymentModule.forRoot(process.env),
   ],
   controllers: [HealthController],
   providers: [HealthService],

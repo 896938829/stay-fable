@@ -24,6 +24,11 @@ const BOOKING_CANCELLATION_RATE_LIMIT: RateLimitConfig = {
   limit: 6,
   digestPrefix: "booking-cancellation\u0000",
 };
+const MOCK_PAYMENT_RATE_LIMIT: RateLimitConfig = {
+  scope: "bookings",
+  limit: 10,
+  digestPrefix: "mock-payment\u0000",
+};
 
 const unavailable = (): BusinessException =>
   new BusinessException(503, "BOOKING_SERVICE_UNAVAILABLE", "预订服务暂时不可用，请稍后重试");
@@ -82,6 +87,10 @@ export class WriteRateLimitService {
 
   async checkBookingCancellation(userId: string): Promise<void> {
     await this.check(userId, BOOKING_CANCELLATION_RATE_LIMIT);
+  }
+
+  async checkMockPayment(userId: string): Promise<void> {
+    await this.check(userId, MOCK_PAYMENT_RATE_LIMIT);
   }
 
   private async check(userId: string, config: RateLimitConfig): Promise<void> {
