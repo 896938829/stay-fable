@@ -1,47 +1,59 @@
 # 依赖审计证据
 
-审计日期：2026-07-29。执行命令：
+审计日期：2026-07-30。执行命令：
 
-Current audit summary: 2 CRITICAL, 11 HIGH
+Current audit summary: 0 CRITICAL, 3 HIGH, 2 MODERATE, 0 LOW
+Current production audit summary: 0 CRITICAL, 2 HIGH, 1 MODERATE, 0 LOW
 Current release conclusion: Blocked
 
-当前审计摘要：2 个严重、11 个高危
+当前完整审计摘要：0 个严重、3 个高危、2 个中危、0 个低危
+当前生产依赖审计摘要：0 个严重、2 个高危、1 个中危、0 个低危
 当前发布结论：阻断
 
 ```text
 pnpm audit --json
+pnpm audit --prod --json
 pnpm audit --audit-level high
+pnpm audit --prod --audit-level high
 ```
 
-## 结果与分类
+## Batch 1 工作区边界结果
 
-- 基线：30 项，含 2 个严重、11 个高危、15 个中危、2 个低危（机器字段保留为 2 CRITICAL、11 HIGH）。
-- 当前：29 项，含 2 个严重、11 个高危、14 个中危、2 个低危（机器字段保留为 2 CRITICAL、11 HIGH）。
-- 已修复：直接依赖 `yaml` 从 2.8.1 升至 2.8.3，消除对应的中危命中。
-- 直接依赖剩余：`webpack@5.91.0` 涉及 1 个中危、2 个低危。安全版本存在，但 Taro 4.2.1 的加载器、预构建器和运行器都把对等依赖精确限制为 5.91.0；试升 5.104.1 被 `strictPeerDependencies` 拒绝，因此不存在兼容修复。
-- 传递依赖剩余：2 个严重、11 个高危、13 个中危。严重和高危项均无可在父依赖声明范围内应用的兼容修复。
+- 历史基线（2026-07-27）：30 项，2 CRITICAL、11 HIGH、15 MODERATE、2 LOW。
+- 历史当前值（2026-07-29）：29 项，2 CRITICAL、11 HIGH、14 MODERATE、2 LOW。
+  当时直接依赖 `webpack` 仍受 Taro 精确 peer 约束；传递依赖从
+  `GHSA-hmx5-qpq5-p643` 开始，另含 `GHSA-mp2f-45pm-3cg9`、
+  `GHSA-8jmw-wjr8-2x66`、`GHSA-c96f-x56v-gq3h`、`GHSA-pm4m-ph32-ghv5` 和
+  `GHSA-mh99-v99m-4gvg`。其中 brace-expansion 命中 34 条路径（16 条非开发、18 条开发），
+  旧父依赖范围内无兼容修复。本段仅保留历史可审计基线，不是当前计数。
+- `apps/consumer-miniapp` 的冻结源码和 `package.json` 继续保留，但
+  `pnpm-workspace.yaml` 通过显式否定模式将其排除在活动 workspace 之外。
+- 重新执行 `pnpm install --lockfile-only` 后，`pnpm-lock.yaml` 不再包含
+  `apps/consumer-miniapp` importer、`@tarojs/*` 包或 `babel-preset-taro`。
+- 相对 2026-07-29 的旧锁文件证据，Taro 链带来的 2 个严重、8 个高危、12 个中危和
+  2 个低危公告已从活动依赖图移除。该变化是工作区边界收缩，不是删除冻结参考源码。
+- 本次完整审计实际返回 5 个公告：3 个高危、2 个中危；生产依赖审计实际返回
+  3 个公告：2 个高危、1 个中危。两次命令均因现存公告以非零状态退出。
 
-“修复可用性”分为“安全公告给出修复版本”和“当前父依赖范围内可兼容安装”。只有后者才允许直接升级或添加精确版本覆盖；不会关闭严格的对等依赖校验，也不会把新主版本强推给旧父包。
+“修复可用性”分为“安全公告给出修复版本”和“当前父依赖范围内可兼容安装”。只有后者才允许
+直接升级或添加精确版本覆盖；不会关闭严格的对等依赖校验，也不会把新主版本强推给旧父包。
 
-## 高危／严重精确阻断项
+## 当前高危精确阻断项
 
-| 安全公告                                     | 严重度   | 已安装路径                                                                                                                     | 公告修复／软件仓库状态                                 | 兼容修复可用性                                         | 建议                                                              |
-| -------------------------------------------- | -------- | ------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------ | ------------------------------------------------------ | ----------------------------------------------------------------- |
-| `GHSA-hmx5-qpq5-p643`                        | CRITICAL | `apps__consumer-miniapp>@tarojs/components>swiper@11.1.15`（另一路经 `@tarojs/taro`）                                          | `>=12.1.2`，已发布                                     | 无兼容修复；Taro 精确依赖 11.1.15，跨主版本            | 阻断发布；升级支持 Swiper 12 的 Taro 后重测三端                   |
-| `GHSA-mp2f-45pm-3cg9`                        | CRITICAL | `apps__consumer-miniapp>@tarojs/cli>download-git-repo>download>decompress@4.2.1`                                               | 公告称 `>=4.2.2`，软件仓库尚未发布 4.2.2               | 无兼容修复                                             | 跟踪上游发布；命令行工具不处理不可信归档                          |
-| `GHSA-8jmw-wjr8-2x66`                        | HIGH     | `apps__consumer-miniapp>@tarojs/cli>download-git-repo>git-clone@0.1.0`                                                         | 公告称 `>=0.2.1`，软件仓库尚未发布 0.2.1               | 无兼容修复；父包要求 `^0.1.0`                          | 禁止命令行工具克隆不可信地址；等待 Taro/下载器升级                |
-| `GHSA-rc47-6667-2j5j`                        | HIGH     | `apps__consumer-miniapp>@tarojs/cli>download-git-repo>download>got>cacheable-request>http-cache-semantics@3.8.1`               | `>=4.1.1`，已发布                                      | 无兼容修复；跨主版本                                   | 等待 download/got 链升级                                          |
-| `GHSA-pfq8-rq6v-vf5m`                        | HIGH     | `apps__consumer-miniapp>@tarojs/webpack5-runner>html-minifier@4.0.0`                                                           | 公告称 `>=4.0.1`，Registry 尚未发布 4.0.1              | 无兼容修复                                             | 避免构建不可信 HTML；跟踪 Taro runner                             |
-| `GHSA-5j98-mcp5-4vw2`                        | HIGH     | `apps__consumer-miniapp>@tarojs/cli>@tarojs/plugin-doctor>glob@10.2.6`                                                         | `>=10.5.0`，已发布                                     | 无兼容修复；plugin-doctor 精确依赖 10.2.6              | 不向 glob CLI 传入不可信 `--cmd`；等待上游                        |
-| `GHSA-5c6j-r48x-rmvq`                        | HIGH     | `apps__consumer-miniapp>@tarojs/webpack5-runner>{copy-webpack-plugin,css-minimizer-webpack-plugin}>serialize-javascript@6.0.2` | `>=7.0.3`，已发布                                      | 无兼容修复；跨主版本                                   | 构建只接受仓库内受审内容；等待 runner 升级                        |
-| `GHSA-xcpc-8h2w-3j85`                        | HIGH     | `apps__consumer-miniapp>@tarojs/cli>adm-zip@0.5.18`                                                                            | `>=0.6.0`，已发布                                      | 无兼容修复；父包要求 `^0.5.12`，0.x 次版本可能破坏兼容 | 禁止处理不可信 ZIP；等待 Taro CLI 升级                            |
-| `GHSA-6g55-p6wh-862q`、`GHSA-r28c-9q8g-f849` | HIGH     | `apps__consumer-miniapp>@tarojs/webpack5-runner>miniprogram-simulate>postcss@7.0.39`                                           | `>=8.5.18`，已发布                                     | 无兼容修复；跨主版本                                   | 测试/构建不处理不可信 CSS；升级模拟器链                           |
-| `GHSA-c96f-x56v-gq3h`                        | HIGH     | `apps__api-server>{@prisma/client>prisma,prisma}>@prisma/dev>find-my-way@9.6.0`                                                | 公告称 `>=9.6.1`；Registry 当前可用安全版为 9.7.0      | 无兼容修复；`@prisma/dev` 精确依赖 9.6.0               | 跟踪 Prisma 发布；该路径属于 Prisma 开发工具，不进入 API 运行入口 |
-| `GHSA-pm4m-ph32-ghv5`                        | HIGH     | `apps__api-server>@nestjs/swagger>js-yaml@5.2.1`                                                                               | `>=5.2.2`，已发布                                      | 无兼容修复；`@nestjs/swagger` 精确依赖 5.2.1           | 阻断发布或取得有时限例外；等待 Nest Swagger 升级                  |
-| `GHSA-mh99-v99m-4gvg`                        | HIGH     | 审计共 34 条路径：16 条非开发路径、18 条开发路径；集中于 `minimatch>brace-expansion@1.1.16/2.1.2`，涵盖 Nest 与 Taro 工具链    | `>=5.0.8`，已发布且 5.0.8 已安全安装，但旧主版本仍存在 | 无兼容修复；旧父包限定 1.x/2.x                         | 等待 Nest/Taro 工具链淘汰旧 minimatch/glob                        |
+| 安全公告              | 审计范围       | 已安装路径                                                                              | 公告修复／当前约束                                           | 建议                                                              |
+| --------------------- | -------------- | --------------------------------------------------------------------------------------- | ------------------------------------------------------------ | ----------------------------------------------------------------- |
+| `GHSA-c96f-x56v-gq3h` | 完整、生产依赖 | `apps__api-server>{@prisma/client>prisma,prisma}>@prisma/dev>find-my-way@9.6.0`         | 修复版本 `>=9.6.1`；`@prisma/dev` 精确依赖 9.6.0，无兼容修复 | 跟踪 Prisma 发布；确认开发工具为何进入生产依赖图并在 Batch 2 处理 |
+| `GHSA-pm4m-ph32-ghv5` | 完整、生产依赖 | `apps__api-server>@nestjs/swagger>js-yaml@5.2.1`                                        | 修复版本 `>=5.2.2`；`@nestjs/swagger` 精确依赖 5.2.1         | 阻断发布或取得有时限例外；在 Batch 4 升级 Nest Swagger            |
+| `GHSA-mh99-v99m-4gvg` | 仅完整审计     | `apps__api-server>@nestjs/cli>fork-ts-checker-webpack-plugin>minimatch>brace-expansion` | 修复版本 `>=5.0.8`；旧父链限制旧版本，无兼容修复             | 开发依赖仍计入 release 门禁；在 Batch 3 升级 Nest CLI 工具链      |
 
-完整机器可读路径以同一提交执行 `pnpm audit --json` 为准；上表保留所有高危和严重安全公告，并对多路径项记录路径数量和共同父链。
+完整机器可读路径以同一提交执行 `pnpm audit --json` 为准。完整审计另外保留两个中危公告：
+`phin`（经根级 `miniprogram-automator`，42 条路径）和 `valibot`（经 Prisma，2 条路径）；
+其中生产依赖审计仅保留 `valibot`。
 
 ## 发布结论
 
-`pnpm audit --audit-level high` 当前仍以非零状态退出，依赖安全门禁保持阻断。不得降低阈值或忽略退出码。下一步应优先升级 Taro、Nest Swagger 与 Prisma 上游版本；升级后必须重新运行三端小程序构建/运行契约、API/Prisma/Nest 测试和完整审计。
+`pnpm audit --audit-level high` 和 `pnpm audit --prod --audit-level high` 当前均以非零状态退出，
+依赖安全门禁保持阻断。不得降低阈值或忽略退出码。Batch 1 已消除冻结 Taro 工程对活动依赖图
+和默认验证图景的影响，但没有解除 API 工具链的 3 个高危公告；下一步依次在 Batch 2 处理
+Prisma、Batch 3 处理 Nest CLI、Batch 4 处理 Nest Swagger，并重新运行相应测试、完整审计和
+生产依赖审计。

@@ -359,17 +359,25 @@ function assertCompletionSummaryFacts(summary) {
 
 function assertDependencyAuditEvidenceConsistent(evidenceIndex, dependencyAudit) {
   const summaries = [
-    ...dependencyAudit.matchAll(/^Current audit summary: (\d+) CRITICAL, (\d+) HIGH$/gm),
+    ...dependencyAudit.matchAll(
+      /^Current audit summary: (\d+) CRITICAL, (\d+) HIGH, (\d+) MODERATE, (\d+) LOW$/gm,
+    ),
+  ];
+  const productionSummaries = [
+    ...dependencyAudit.matchAll(
+      /^Current production audit summary: (\d+) CRITICAL, (\d+) HIGH, (\d+) MODERATE, (\d+) LOW$/gm,
+    ),
   ];
   const conclusions = [
     ...dependencyAudit.matchAll(/^Current release conclusion: (Blocked|In review|Accepted)$/gm),
   ];
-  if (summaries.length !== 1 || conclusions.length !== 1) {
+  if (summaries.length !== 1 || productionSummaries.length !== 1 || conclusions.length !== 1) {
     throw new Error("dependency audit must contain one unique current summary and conclusion");
   }
 
-  const critical = Number(summaries[0][1]);
-  const high = Number(summaries[0][2]);
+  const fullCounts = summaries[0].slice(1).map(Number);
+  const productionCounts = productionSummaries[0].slice(1).map(Number);
+  const [critical, high] = fullCounts;
   const conclusion = conclusions[0][1];
   if ((critical > 0 || high > 0) && conclusion !== "Blocked") {
     throw new Error("current dependency severities require a Blocked release conclusion");
@@ -428,8 +436,21 @@ function assertDependencyAuditEvidenceConsistent(evidenceIndex, dependencyAudit)
   }
   const [{ cells, itemIndex, statusIndex }] = dependencyRows;
   const item = cells[itemIndex];
-  const itemSummary = /^Dependency audit: (\d+) critical and (\d+) high findings$/i.exec(item);
-  if (!itemSummary || Number(itemSummary[1]) !== critical || Number(itemSummary[2]) !== high) {
+  const itemSummary =
+    /^Dependency audit: full (\d+) critical, (\d+) high, (\d+) moderate, (\d+) low; production (\d+) critical, (\d+) high, (\d+) moderate, (\d+) low$/i.exec(
+      item,
+    );
+  if (
+    !itemSummary ||
+    !itemSummary
+      .slice(1, 5)
+      .map(Number)
+      .every((count, index) => count === fullCounts[index]) ||
+    !itemSummary
+      .slice(5, 9)
+      .map(Number)
+      .every((count, index) => count === productionCounts[index])
+  ) {
     throw new Error("dependency audit evidence counts must match the current audit summary");
   }
 
@@ -893,7 +914,8 @@ test("dependency audit evidence remains blocked while audit evidence reports blo
 test("dependency audit gate ignores historical severities and follows unique current fields", async () => {
   const audit = await readFile(path.join(root, "docs/operations/dependency-audit.md"), "utf8");
   assert.equal(
-    [...audit.matchAll(/^Current audit summary: \d+ CRITICAL, \d+ HIGH$/gm)].length,
+    [...audit.matchAll(/^Current audit summary: \d+ CRITICAL, \d+ HIGH, \d+ MODERATE, \d+ LOW$/gm)]
+      .length,
     1,
     "dependency audit must expose one current summary",
   );
@@ -905,18 +927,35 @@ test("dependency audit gate ignores historical severities and follows unique cur
 
   const historicalOnly = [
     "Historical baseline: 2 CRITICAL, 11 HIGH",
-    "Current audit summary: 0 CRITICAL, 0 HIGH",
+    "Current audit summary: 0 CRITICAL, 0 HIGH, 0 MODERATE, 0 LOW",
+    "Current production audit summary: 0 CRITICAL, 0 HIGH, 0 MODERATE, 0 LOW",
     "Current release conclusion: In review",
   ].join("\n");
   const currentEvidence = [
     "| Evidence item | Repository evidence | External evidence location | Status |",
     "| --- | --- | --- | --- |",
-    "| Dependency audit: 0 critical and 0 high findings | audit | evidence | In review |",
+    "| Dependency audit: full 0 critical, 0 high, 0 moderate, 0 low; production 0 critical, 0 high, 0 moderate, 0 low | audit | evidence | In review |",
   ].join("\n");
 
   assert.doesNotThrow(() =>
     assertDependencyAuditEvidenceConsistent(currentEvidence, historicalOnly),
   );
+});
+
+test("dependency audit remediation assigns each remaining high advisory to its planned batch", async () => {
+  const audit = await readFile(path.join(root, "docs/operations/dependency-audit.md"), "utf8");
+
+  for (const [advisory, batch] of [
+    ["GHSA-c96f-x56v-gq3h", "Batch 2"],
+    ["GHSA-mh99-v99m-4gvg", "Batch 3"],
+    ["GHSA-pm4m-ph32-ghv5", "Batch 4"],
+  ]) {
+    const row = audit
+      .split(/\r?\n/)
+      .find((line) => line.startsWith("|") && line.includes(advisory));
+    assert.ok(row, `dependency audit must retain the current ${advisory} row`);
+    assert.ok(row.includes(batch), `${advisory} must be assigned to ${batch}`);
+  }
 });
 
 test("runbooks preserve evidence and make destructive actions auditable", async () => {

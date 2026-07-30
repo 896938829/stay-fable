@@ -18,12 +18,15 @@
 
 - Modify: `pnpm-workspace.yaml`
 - Modify: `pnpm-lock.yaml`
+- Modify: `package.json`
 - Modify: `scripts/verify-workspace.test.mjs`
+- Modify: `scripts/check-phase-0-documents.test.mjs`
 - Modify: `scripts/verify-phase-0.test.mjs`
 - Modify: `scripts/verify-phase-0.mjs`
 - Modify: `scripts/smoke-frontend-artifacts.mjs`
 - Modify: `docs/operations/phase-0-verification.md`
 - Modify: `docs/operations/dependency-audit.md`
+- Modify: `docs/compliance/launch-evidence-index.md`
 
 ### RED
 
@@ -32,13 +35,14 @@
 - workspace 必须显式排除 `apps/consumer-miniapp`；
 - lockfile 不得包含该 importer 或 Taro 依赖图；
 - Phase 0 不运行冻结 Taro 的 build/filter；
+- 根级 build/lint/test/typecheck 不得过滤已排除 workspace 的冻结包；
 - 默认 smoke 只验证管理端产物，并保留冻结源码存在性检查。
 
 ### GREEN
 
-在 workspace packages 中加入 `!apps/consumer-miniapp`，移除默认 Phase 0 的 Taro 构建与
-产物 smoke，再使用 `corepack pnpm install --lockfile-only` 重建锁文件。不得删除冻结源码或
-其 `package.json`。
+在 workspace packages 中加入 `!apps/consumer-miniapp`，移除默认 Phase 0 的 Taro 构建、
+根级 build/lint/test/typecheck 对已排除包的过滤器及 Taro 产物 smoke，再使用
+`corepack pnpm install --lockfile-only` 重建锁文件。不得删除冻结源码或其 `package.json`。
 
 ### 门禁
 

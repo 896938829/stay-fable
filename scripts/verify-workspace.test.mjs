@@ -6,20 +6,33 @@ const rootUrl = new URL("../", import.meta.url);
 
 test("declares the root workspace contract", async () => {
   const root = JSON.parse(await readFile(new URL("package.json", rootUrl), "utf8"));
+  const management = JSON.parse(
+    await readFile(new URL("apps/management-web/package.json", rootUrl), "utf8"),
+  );
   const workspace = await readFile(new URL("pnpm-workspace.yaml", rootUrl), "utf8");
 
   assert.equal(root.private, true);
   assert.equal(root.packageManager, "pnpm@11.17.0");
+  assert.equal(
+    root.devDependencies["@types/react"],
+    management.devDependencies["@types/react"],
+    "the root must explicitly expose the active management React types without a frozen-Taro phantom hoist",
+  );
   assert.match(workspace, /^\s*-\s+["']?apps\/\*["']?\s*$/m);
+  assert.match(
+    workspace,
+    /^\s*-\s+["']?!apps\/consumer-miniapp["']?\s*$/m,
+    "the frozen Taro reference must be explicitly excluded from the workspace",
+  );
   assert.match(workspace, /^\s*-\s+["']?packages\/\*["']?\s*$/m);
   assert.equal(root.scripts.verify, "node scripts/verify-workspace.mjs");
   assert.equal(root.scripts["verify:phase-0"], "node scripts/verify-phase-0.mjs");
   const expectedScripts = {
-    build: "turbo run build --filter=!@stay-fable/consumer-miniapp",
-    dev: 'turbo run build --filter="./packages/*" && turbo run dev --parallel --filter=!@stay-fable/consumer-miniapp',
-    lint: "eslint eslint.config.mjs prettier.config.mjs scripts/*.mjs packages/eslint-config/index.mjs && turbo run lint --filter=!@stay-fable/consumer-miniapp",
-    test: "node --test scripts/*.test.mjs && turbo run test --filter=!@stay-fable/consumer-miniapp",
-    typecheck: "turbo run typecheck --filter=!@stay-fable/consumer-miniapp",
+    build: "turbo run build",
+    dev: 'turbo run build --filter="./packages/*" && turbo run dev --parallel',
+    lint: "eslint eslint.config.mjs prettier.config.mjs scripts/*.mjs packages/eslint-config/index.mjs && turbo run lint",
+    test: "node --test scripts/*.test.mjs && turbo run test",
+    typecheck: "turbo run typecheck",
     "prisma:generate": "pnpm --filter @stay-fable/api-server prisma:generate",
     "wx:check": "node scripts/check-wx-project.mjs",
     check:
@@ -27,6 +40,13 @@ test("declares the root workspace contract", async () => {
   };
   for (const [script, expected] of Object.entries(expectedScripts)) {
     assert.equal(root.scripts[script], expected, `${script} must match the approved command`);
+  }
+  for (const [script, command] of Object.entries(root.scripts)) {
+    assert.doesNotMatch(
+      command,
+      /@stay-fable\/consumer-miniapp/,
+      `${script} must not filter a package outside the workspace`,
+    );
   }
 
   assert.deepEqual(
@@ -131,10 +151,50 @@ test("activates reproducible pnpm project settings", async () => {
   assert.match(workspace, /^engineStrict:\s+true$/m);
   assert.match(workspace, /^injectWorkspacePackages:\s+true$/m);
   assert.match(workspace, /^strictPeerDependencies:\s+true$/m);
+  assert.doesNotMatch(
+    workspace,
+    /@tarojs|babel-preset-taro/,
+    "active install policy must not retain frozen Taro package names",
+  );
+  assert.deepEqual(
+    workspace.match(/^.*apps\/consumer-miniapp.*$/gm),
+    ['  - "!apps/consumer-miniapp"'],
+    "only the explicit negative workspace glob may name the frozen reference",
+  );
   assert.doesNotMatch(workspace, /frozenLockfile|frozen-lockfile/);
   await assert.rejects(() => readFile(new URL(".npmrc", rootUrl)), { code: "ENOENT" });
   assert.match(lockfile, /^\s+autoInstallPeers:\s+false$/m);
   assert.match(lockfile, /^\s+injectWorkspacePackages:\s+true$/m);
+});
+
+test("keeps the frozen Taro reference outside the release dependency graph", async () => {
+  const lockfile = await readFile(new URL("pnpm-lock.yaml", rootUrl), "utf8");
+  const miniappPackage = JSON.parse(
+    await readFile(new URL("apps/consumer-miniapp/package.json", rootUrl), "utf8"),
+  );
+
+  assert.equal(miniappPackage.name, "@stay-fable/consumer-miniapp");
+  assert.doesNotMatch(
+    lockfile,
+    /^\s{2}apps\/consumer-miniapp:\s*$/m,
+    "the frozen Taro reference must not remain a lockfile importer",
+  );
+  assert.doesNotMatch(
+    lockfile,
+    /(?:^|\n)\s{2,}'?@tarojs\/|(?:^|\n)\s{2,}babel-preset-taro@/m,
+    "the release lockfile must not retain the excluded Taro dependency graph",
+  );
+});
+
+test("smokes only management artifacts while preserving the frozen Taro source", async () => {
+  const smoke = await readFile(new URL("scripts/smoke-frontend-artifacts.mjs", rootUrl), "utf8");
+
+  assert.match(smoke, /apps\/management-web\/dist\/index\.html/);
+  assert.match(smoke, /apps\/consumer-miniapp\/package\.json/);
+  assert.match(smoke, /apps\/consumer-miniapp\/src\/app\.ts/);
+  assert.doesNotMatch(smoke, /apps\/consumer-miniapp\/dist/);
+  assert.doesNotMatch(smoke, /\b(?:alipay|weapp)\/app\.js|tt\/app\.js/);
+  assert.doesNotMatch(smoke, /\bvm\.(?:createContext|runInContext)\b/);
 });
 
 test("excludes only approved generated and frozen paths from Prettier", async () => {

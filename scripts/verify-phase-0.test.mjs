@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import process from "node:process";
 import test from "node:test";
 
@@ -58,8 +59,6 @@ test("runs the deterministic repository checks in the required order with audit 
       "Typecheck",
       "Tests",
       "Build",
-      "Build Alipay mini-program",
-      "Build Douyin mini-program",
       "Built API runtime smoke",
       "Built frontend artifact smoke",
       "Dependency audit",
@@ -91,8 +90,6 @@ test("runs every pnpm command through Corepack and verifies the exact pnpm versi
       "Typecheck",
       "Tests",
       "Build",
-      "Build Alipay mini-program",
-      "Build Douyin mini-program",
       "Dependency audit",
     ].includes(label),
   );
@@ -108,6 +105,24 @@ test("runs every pnpm command through Corepack and verifies the exact pnpm versi
   }
   assert.match(pnpmCommands[0].arguments.at(-1), /pnpm(?:\s+--version$|$)/);
   assert.equal(pnpmCommands[0].expectedOutput, "11.17.0");
+});
+
+test("keeps the frozen Taro reference outside default Phase 0 commands", () => {
+  for (const command of automatedRepositoryCommands) {
+    const serialized = JSON.stringify(command);
+    assert.doesNotMatch(serialized, /@stay-fable\/consumer-miniapp/);
+    assert.doesNotMatch(serialized, /\bbuild:(?:alipay|tt|weapp)\b/);
+  }
+});
+
+test("keeps root Phase 0 gate scripts free of filters for the frozen package", async () => {
+  const rootPackage = JSON.parse(
+    await readFile(new URL("../package.json", import.meta.url), "utf8"),
+  );
+
+  for (const script of ["build", "lint", "test", "typecheck"]) {
+    assert.doesNotMatch(rootPackage.scripts[script], /@stay-fable\/consumer-miniapp/);
+  }
 });
 
 test("rejects an unexpected Corepack pnpm version with both versions in the message", () => {

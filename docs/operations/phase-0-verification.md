@@ -34,7 +34,17 @@ Review cadence: At every Phase 0 verification run and weekly while any gate is b
 当前默认的 `pnpm check` 包含 `pnpm wx:check`，后者通过
 [`scripts/check-wx-project.mjs`](../../scripts/check-wx-project.mjs) 对唯一正式用户端 `/wx`
 执行原生项目静态验证，包括 `project.config.json`、`app.json` 和页面文件完整性。
-`apps/consumer-miniapp` 是冻结的 Taro 多平台参考工程，不进入默认检查、测试或构建。
+`apps/consumer-miniapp` 是冻结的 Taro 多平台参考工程。2026-07-31 完成的 Release dependency
+Batch 1 在 `pnpm-workspace.yaml` 中显式排除该目录；冻结源码和 `package.json` 仍保留，但
+lockfile 已无其 importer、`@tarojs/*` 或 `babel-preset-taro` 依赖图。默认 Phase 0 不再
+筛选或构建 Taro 多端产物，前端产物冒烟仅验证管理后台 HTTP／标题／根挂载节点，并静态确认
+冻结参考工程的包清单与 `src/app.ts` 仍存在。该工程不进入默认检查或构建；唯一正式用户端
+`/wx` 继续由微信专用门禁验证。
+
+Batch 1 后的实际审计结果为：完整审计 0 个严重、3 个高危、2 个中危、0 个低危；生产依赖
+审计 0 个严重、2 个高危、1 个中危、0 个低危。两个 high 门禁命令仍以非零状态退出，
+因此 Phase 0 状态继续为 **Blocked（阻断）**。精确公告和路径见
+[`dependency-audit.md`](dependency-audit.md)。
 
 当前状态：**official validation passed for Slice 1**。2026-07-29 已对当前 Slice 1
 工作树完成微信开发者工具的六项 WXML/WXSS 编译、整页打开、核心搜索上下文自动化和
@@ -83,7 +93,7 @@ HEAD 已完成微信开发者工具编译或官方预览的证据。
 | 管理后台产物冒烟测试             | 本地通过                         | [`smoke-frontend-artifacts.mjs`](../../scripts/smoke-frontend-artifacts.mjs) 通过临时本地 HTTP 服务提供构建产物，并检查状态码、标题和根挂载节点。                                    |
 | 小程序产物冒烟测试               | 2026-07-27 历史通过（Taro 三端） | 同一脚本检查三个平台产物，并在虚拟机环境加载微信产物，确认只发生一次 App 注册；这是历史 Taro 证据，官方厂商 GUI 预览仍处于阻断状态。                                                 |
 | `pnpm verify:phase-0`            | **按设计阻断**                   | 所有仓库检查按确定顺序执行，最后的依赖审计以非零状态退出；验证器随即停止并返回非零，绝不会报告 Phase 0 已通过。                                                                      |
-| `pnpm audit --audit-level high`  | **阻断：2 个严重、11 个高危**    | 当前机器可读且已复核的发现记录在 [`dependency-audit.md`](dependency-audit.md)。不得降低阈值或忽略退出码。                                                                            |
+| `pnpm audit --audit-level high`  | **当前阻断：0 个严重、3 个高危** | 2026-07-31 Batch 1 已将冻结 Taro 工程排除出活动依赖图；当前机器可读且已复核的发现记录在 [`dependency-audit.md`](dependency-audit.md)。不得降低阈值或忽略退出码。                     |
 
 静态契约测试有意安排在聚合的 `pnpm test` 之前：前置测试可在昂贵构建开始前快速失败，
 聚合测试则用于证明根级测试契约仍然包含这些测试。

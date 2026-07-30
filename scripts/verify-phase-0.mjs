@@ -100,13 +100,6 @@ export const automatedRepositoryCommands = Object.freeze([
   pnpmCommand("Typecheck", "typecheck"),
   pnpmCommand("Tests", "test"),
   pnpmCommand("Build", "build"),
-  pnpmCommand(
-    "Build Alipay mini-program",
-    "--filter",
-    "@stay-fable/consumer-miniapp",
-    "build:alipay",
-  ),
-  pnpmCommand("Build Douyin mini-program", "--filter", "@stay-fable/consumer-miniapp", "build:tt"),
   {
     label: "Built API runtime smoke",
     executable: process.execPath,
