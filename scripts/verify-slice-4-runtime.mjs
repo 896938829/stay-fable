@@ -201,6 +201,113 @@ export async function runCleanupStages(stages) {
   }
 }
 
+export async function deleteRegisteredOwnerData({ client, ownerIds, query }) {
+  if (ownerIds.length === 0) return;
+  await query(
+    client,
+    `
+      SELECT booking.id::text AS booking_id
+      FROM booking
+      WHERE booking.user_id = ANY($1::uuid[])
+      ORDER BY booking.id
+      FOR UPDATE OF booking
+    `,
+    [ownerIds],
+  );
+  const lockedHolds = await query(
+    client,
+    `
+      SELECT hold.id::text AS hold_id, hold.room_type_id::text,
+             hold.business_date::text, hold.status::text
+      FROM inventory_hold hold
+      JOIN booking ON booking.id = hold.booking_id
+      WHERE booking.user_id = ANY($1::uuid[])
+      ORDER BY hold.room_type_id, hold.business_date, hold.id
+      FOR UPDATE OF hold
+    `,
+    [ownerIds],
+  );
+  const deltas = new Map();
+  for (const hold of lockedHolds.rows) {
+    if (hold.status !== "HELD" && hold.status !== "CONSUMED") continue;
+    const key = `${hold.room_type_id}\0${hold.business_date}`;
+    const delta = deltas.get(key) ?? {
+      businessDate: hold.business_date,
+      held: 0,
+      roomTypeId: hold.room_type_id,
+      sold: 0,
+    };
+    if (hold.status === "HELD") {
+      delta.held += 1;
+    } else {
+      delta.sold += 1;
+    }
+    deltas.set(key, delta);
+  }
+  for (const delta of [...deltas.values()].sort((left, right) =>
+    `${left.roomTypeId}\0${left.businessDate}`.localeCompare(
+      `${right.roomTypeId}\0${right.businessDate}`,
+    ),
+  )) {
+    const lockedInventory = await query(
+      client,
+      `
+        SELECT held_inventory, sold_inventory
+        FROM daily_inventory inventory
+        WHERE room_type_id = $1::uuid AND business_date = $2::date
+        FOR UPDATE OF inventory
+      `,
+      [delta.roomTypeId, delta.businessDate],
+    );
+    assert.equal(lockedInventory.rowCount, 1, "runtime owner inventory cleanup row missing");
+    const current = lockedInventory.rows[0];
+    assert.ok(current.held_inventory >= delta.held, "runtime owner held cleanup drift");
+    assert.ok(current.sold_inventory >= delta.sold, "runtime owner sold cleanup drift");
+    const adjusted = await query(
+      client,
+      `
+        UPDATE daily_inventory inventory
+        SET held_inventory = inventory.held_inventory - $3,
+            sold_inventory = inventory.sold_inventory - $4,
+            version = inventory.version + 1,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE room_type_id = $1::uuid AND business_date = $2::date
+          AND held_inventory = $5 AND sold_inventory = $6
+        RETURNING business_date
+      `,
+      [
+        delta.roomTypeId,
+        delta.businessDate,
+        delta.held,
+        delta.sold,
+        current.held_inventory,
+        current.sold_inventory,
+      ],
+    );
+    assert.equal(adjusted.rowCount, 1, "runtime owner inventory cleanup drift");
+  }
+  await query(
+    client,
+    `DELETE FROM payment USING booking
+     WHERE payment.booking_id = booking.id AND booking.user_id = ANY($1::uuid[])`,
+    [ownerIds],
+  );
+  await query(
+    client,
+    `DELETE FROM booking_status_history history USING booking
+     WHERE history.booking_id = booking.id AND booking.user_id = ANY($1::uuid[])`,
+    [ownerIds],
+  );
+  await query(
+    client,
+    `DELETE FROM inventory_hold hold USING booking
+     WHERE hold.booking_id = booking.id AND booking.user_id = ANY($1::uuid[])`,
+    [ownerIds],
+  );
+  await query(client, "DELETE FROM booking WHERE user_id = ANY($1::uuid[])", [ownerIds]);
+  await query(client, "DELETE FROM quote WHERE user_id = ANY($1::uuid[])", [ownerIds]);
+}
+
 async function loadDatabase(databaseUrl) {
   assert.equal(typeof databaseUrl, "string", "DATABASE_URL is required");
   const requireFromArtifact = createRequire("/app/package.json");
@@ -280,60 +387,7 @@ async function loadDatabase(databaseUrl) {
     assert.equal(result.rows[0]?.count, 0, "runtime fixture has foreign occupancy");
   };
 
-  const deleteOwnerData = async (client) => {
-    if (ownerIds.length === 0) return;
-    const inventoryDeltas = await query(
-      client,
-      `
-        SELECT hold.room_type_id::text, hold.business_date::text,
-               count(*) FILTER (WHERE hold.status = 'HELD')::integer AS held_count,
-               count(*) FILTER (WHERE hold.status = 'CONSUMED')::integer AS sold_count
-        FROM inventory_hold hold
-        JOIN booking ON booking.id = hold.booking_id
-        WHERE booking.user_id = ANY($1::uuid[])
-        GROUP BY hold.room_type_id, hold.business_date
-        ORDER BY hold.room_type_id, hold.business_date
-      `,
-      [ownerIds],
-    );
-    for (const delta of inventoryDeltas.rows) {
-      const adjusted = await query(
-        client,
-        `
-          UPDATE daily_inventory inventory
-          SET held_inventory = inventory.held_inventory - $3,
-              sold_inventory = inventory.sold_inventory - $4,
-              version = inventory.version + 1,
-              updated_at = CURRENT_TIMESTAMP
-          WHERE room_type_id = $1::uuid AND business_date = $2::date
-            AND held_inventory >= $3 AND sold_inventory >= $4
-          RETURNING business_date
-        `,
-        [delta.room_type_id, delta.business_date, delta.held_count, delta.sold_count],
-      );
-      assert.equal(adjusted.rowCount, 1, "runtime owner inventory cleanup drift");
-    }
-    await query(
-      client,
-      `DELETE FROM payment USING booking
-       WHERE payment.booking_id = booking.id AND booking.user_id = ANY($1::uuid[])`,
-      [ownerIds],
-    );
-    await query(
-      client,
-      `DELETE FROM booking_status_history history USING booking
-       WHERE history.booking_id = booking.id AND booking.user_id = ANY($1::uuid[])`,
-      [ownerIds],
-    );
-    await query(
-      client,
-      `DELETE FROM inventory_hold hold USING booking
-       WHERE hold.booking_id = booking.id AND booking.user_id = ANY($1::uuid[])`,
-      [ownerIds],
-    );
-    await query(client, "DELETE FROM booking WHERE user_id = ANY($1::uuid[])", [ownerIds]);
-    await query(client, "DELETE FROM quote WHERE user_id = ANY($1::uuid[])", [ownerIds]);
-  };
+  const deleteOwnerData = (client) => deleteRegisteredOwnerData({ client, ownerIds, query });
 
   const restoreSupply = async (client) => {
     if (snapshot === undefined) return;
