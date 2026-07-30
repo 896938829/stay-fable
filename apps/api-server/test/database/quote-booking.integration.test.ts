@@ -1670,12 +1670,12 @@ describeDatabase(suiteName, () => {
     expect(indexesByName.get("payment_booking_created_id_idx")).toContain(
       "(booking_id, created_at DESC, id DESC)",
     );
-    expect(indexesByName.get("payment_booking_success_key")).toMatch(
-      /CREATE UNIQUE INDEX .* \(booking_id\) WHERE \(status = 'SUCCEEDED'/,
+    expect(indexesByName.get("payment_booking_success_key")).toBe(
+      `CREATE UNIQUE INDEX payment_booking_success_key ON ${schema}.payment USING btree (booking_id) WHERE (status = 'SUCCEEDED'::PaymentStatus)`,
     );
   }, 25_000);
 
-  test("payment constraints reject duplicate, inconsistent, and unsafe records", async () => {
+  test("payment constraints preserve repeatable failures and reject unsafe records", async () => {
     await applyTargetMigration();
     const { bookingId, fixture } = await createPaymentBooking();
     const paymentNumber = nextPaymentNumber();
@@ -1698,6 +1698,62 @@ describeDatabase(suiteName, () => {
         paymentNumber,
       ]);
       expect(stored.rows).toEqual([{ currency: "CNY", provider: "MOCK" }]);
+
+      const failedPayments = [
+        {
+          amountCents: 15_000,
+          idempotencyKey: nextIdempotencyKey(),
+          paymentNumber: nextPaymentNumber(),
+        },
+        {
+          amountCents: 15_001,
+          idempotencyKey: nextIdempotencyKey(),
+          paymentNumber: nextPaymentNumber(),
+        },
+      ];
+      for (const failedPayment of failedPayments) {
+        await database().query(insertPaymentSql, [
+          bookingId,
+          failedPayment.paymentNumber,
+          "FAILED",
+          "FAIL",
+          failedPayment.amountCents,
+          failedPayment.idempotencyKey,
+          processedAt,
+        ]);
+      }
+      const storedFailedPayments = await database().query<{
+        amount_cents: number;
+        idempotency_key: string;
+        payment_number: string;
+        requested_outcome: string;
+        status: string;
+      }>(
+        `
+        SELECT payment_number, status::text, requested_outcome::text,
+               amount_cents, idempotency_key
+        FROM payment
+        WHERE booking_id = $1::uuid AND status = 'FAILED'
+        ORDER BY payment_number
+      `,
+        [bookingId],
+      );
+      expect(storedFailedPayments.rows).toEqual(
+        failedPayments
+          .map((failedPayment) => ({
+            amount_cents: failedPayment.amountCents,
+            idempotency_key: failedPayment.idempotencyKey,
+            payment_number: failedPayment.paymentNumber,
+            requested_outcome: "FAIL",
+            status: "FAILED",
+          }))
+          .sort((left, right) => left.payment_number.localeCompare(right.payment_number)),
+      );
+      const paymentCount = await database().query<{ count: number }>(
+        "SELECT COUNT(*)::integer AS count FROM payment WHERE booking_id = $1::uuid",
+        [bookingId],
+      );
+      expect(paymentCount.rows).toEqual([{ count: 3 }]);
 
       await expectDatabaseViolation(
         insertPaymentSql,
