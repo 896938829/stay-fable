@@ -1,0 +1,235 @@
+.booking-confirm-page {
+  min-height: 100vh;
+  padding-top: var(--space-3);
+  padding-bottom: calc(152rpx + env(safe-area-inset-bottom));
+}
+
+.confirmation,
+.changed-state,
+.created-state {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.summary-card,
+.price-card,
+.policy-card,
+.changed-card,
+.created-card {
+  padding: var(--space-4);
+}
+
+.summary-card__property,
+.summary-card__room,
+.policy-card__body,
+.policy-card__expiry,
+.policy-card__countdown,
+.changed-card__label,
+.changed-card__old,
+.changed-card__new,
+.changed-card__hint,
+.created-card text {
+  display: block;
+}
+
+.summary-card__property,
+.created-card__eyebrow {
+  color: var(--color-brand-dark);
+  font-size: 25rpx;
+  font-weight: 650;
+}
+
+.summary-card__room,
+.created-card__number {
+  margin-top: var(--space-2);
+  color: var(--color-text);
+  font-size: 40rpx;
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+
+.summary-card__facts {
+  display: flex;
+  margin-top: var(--space-3);
+  color: var(--color-muted);
+  flex-direction: column;
+  gap: var(--space-1);
+  font-size: 25rpx;
+}
+
+.nightly-list {
+  margin-top: var(--space-3);
+  border-top: 1rpx solid var(--color-border);
+}
+
+.nightly-list__item,
+.total-row {
+  display: flex;
+  min-height: 96rpx;
+  border-bottom: 1rpx solid var(--color-border);
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.nightly-list__date {
+  color: var(--color-text);
+  font-size: 26rpx;
+}
+
+.nightly-list__prices {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+}
+
+.nightly-list__rack {
+  color: var(--color-muted);
+  font-size: 22rpx;
+  text-decoration: line-through;
+}
+
+.nightly-list__sale,
+.total-row__amount,
+.changed-card__new,
+.created-card__total {
+  color: var(--color-brand-dark);
+  font-size: 30rpx;
+  font-weight: 700;
+}
+
+.total-row {
+  border-bottom: 0;
+  font-size: 28rpx;
+  font-weight: 650;
+}
+
+.total-row__amount,
+.created-card__total {
+  font-size: 38rpx;
+}
+
+.policy-card__body,
+.policy-card__expiry,
+.policy-card__countdown,
+.changed-card__hint,
+.created-card {
+  color: var(--color-muted);
+  font-size: 25rpx;
+  line-height: 1.7;
+}
+
+.policy-card__body {
+  margin-top: var(--space-3);
+  white-space: pre-wrap;
+}
+
+.policy-card__expiry {
+  margin-top: var(--space-3);
+}
+
+.policy-card__countdown {
+  margin-top: var(--space-1);
+  color: var(--color-brand-dark);
+  font-weight: 650;
+}
+
+.status-notice {
+  padding: var(--space-3);
+  border: 1rpx solid #d6aa96;
+  border-radius: var(--radius-medium);
+  background: #fff5ef;
+}
+
+.status-notice__title,
+.status-notice__message {
+  display: block;
+}
+
+.status-notice__title {
+  color: var(--color-brand-dark);
+  font-size: 28rpx;
+  font-weight: 700;
+}
+
+.status-notice__message {
+  margin-top: var(--space-1);
+  color: var(--color-text);
+  font-size: 24rpx;
+}
+
+.status-notice__action,
+.changed-card__action,
+.created-card__action {
+  width: 100%;
+  min-height: 88rpx;
+  margin-top: var(--space-3);
+}
+
+.action-bar {
+  position: fixed;
+  z-index: 5;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  padding: 20rpx 32rpx calc(20rpx + env(safe-area-inset-bottom));
+  border-top: 1rpx solid var(--color-border);
+  background: rgba(255, 253, 249, 0.96);
+}
+
+.action-bar__button {
+  width: 100%;
+  min-height: 88rpx;
+  margin: 0;
+  border: 1rpx solid var(--color-brand);
+}
+
+.changed-card__totals {
+  display: grid;
+  margin-top: var(--space-4);
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-3);
+}
+
+.changed-card__label {
+  color: var(--color-muted);
+  font-size: 23rpx;
+}
+
+.changed-card__old {
+  color: var(--color-muted);
+  font-size: 30rpx;
+  text-decoration: line-through;
+}
+
+.changed-card__new {
+  font-size: 36rpx;
+}
+
+.changed-card__hint {
+  margin-top: var(--space-3);
+}
+
+.created-card {
+  color: var(--color-text);
+}
+
+.created-card__status {
+  margin: var(--space-2) 0 var(--space-3);
+  color: var(--color-brand-dark);
+  font-weight: 700;
+}
+
+.created-card__total,
+.created-card__expiry,
+.created-card__notice {
+  margin-top: var(--space-3);
+}
+
+.created-card__notice {
+  padding: var(--space-3);
+  border-radius: var(--radius-medium);
+  background: #f4e7df;
+  color: var(--color-brand-dark);
+}

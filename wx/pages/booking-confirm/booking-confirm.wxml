@@ -1,0 +1,132 @@
+<navigation-bar
+  title="确认预订"
+  back="{{true}}"
+  color="#2f2925"
+  background="#f7f1eb"
+  loading="{{status === 'loading_quote' || status === 'submitting'}}"
+></navigation-bar>
+
+<view class="page-shell booking-confirm-page">
+  <loading-state
+    wx:if="{{status === 'loading_quote'}}"
+    text="正在获取实时报价"
+  ></loading-state>
+
+  <error-state
+    wx:elif="{{status === 'quote_error'}}"
+    title="暂时无法获取报价"
+    message="{{errorMessage}}"
+    action-text="重新获取报价"
+    bind:retry="retryQuote"
+  ></error-state>
+
+  <view
+    wx:elif="{{status === 'quote_ready' || status === 'submitting' || status === 'booking_error'}}"
+    class="confirmation"
+  >
+    <view wx:if="{{status === 'booking_error'}}" class="status-notice" aria-live="polite">
+      <text class="status-notice__title">订单尚未创建</text>
+      <text class="status-notice__message">{{errorMessage}}</text>
+      <button
+        wx:if="{{errorCode === 'QUOTE_EXPIRED' || errorCode === 'INVENTORY_UNAVAILABLE' || errorCode === 'QUOTE_ALREADY_USED'}}"
+        class="secondary-button status-notice__action"
+        bindtap="retryQuote"
+      >
+        重新获取报价
+      </button>
+    </view>
+
+    <view wx:if="{{quote}}" class="surface-card summary-card">
+      <text class="summary-card__property">{{quote.property.name}}</text>
+      <text class="summary-card__room">{{quote.roomType.name}}</text>
+      <view class="summary-card__facts">
+        <text>{{quote.checkin}} 至 {{quote.checkout}}</text>
+        <text>{{quote.nights}} 晚 · {{quote.guests}} 人</text>
+      </view>
+    </view>
+
+    <view wx:if="{{quote}}" class="surface-card price-card">
+      <text class="section-title">逐晚价格</text>
+      <view class="nightly-list">
+        <view
+          wx:for="{{quote.nightlyPrices}}"
+          wx:key="businessDate"
+          class="nightly-list__item"
+        >
+          <text class="nightly-list__date">{{item.businessDate}}</text>
+          <view class="nightly-list__prices">
+            <text class="nightly-list__rack">{{item.rackPriceLabel}}</text>
+            <text class="nightly-list__sale">{{item.salePriceLabel}}</text>
+          </view>
+        </view>
+      </view>
+      <view class="total-row">
+        <text>服务端报价总额</text>
+        <text class="total-row__amount">{{quote.totalPriceLabel}}</text>
+      </view>
+    </view>
+
+    <view wx:if="{{quote}}" class="surface-card policy-card">
+      <text class="section-title">预订政策</text>
+      <text class="policy-card__body">{{quote.bookingPolicy}}</text>
+      <text class="policy-card__expiry">报价截止：{{quote.expiresAt}}</text>
+      <text class="policy-card__countdown" aria-live="polite">
+        剩余 {{remainingSeconds}} 秒
+      </text>
+    </view>
+
+    <view wx:if="{{quote}}" class="action-bar safe-bottom">
+      <button
+        class="primary-button action-bar__button"
+        bindtap="confirmBooking"
+        disabled="{{submitDisabled}}"
+        aria-disabled="{{submitDisabled}}"
+        aria-pressed="{{submitPressed}}"
+        loading="{{status === 'submitting'}}"
+      >
+        {{status === 'submitting' ? '正在创建订单' : '确认下单'}}
+      </button>
+    </view>
+  </view>
+
+  <view wx:elif="{{status === 'quote_changed' && changed}}" class="changed-state">
+    <view class="surface-card changed-card" aria-live="polite">
+      <text class="section-title">价格已变化</text>
+      <view class="changed-card__totals">
+        <view>
+          <text class="changed-card__label">原总价</text>
+          <text class="changed-card__old">{{changed.previousTotalPriceLabel}}</text>
+        </view>
+        <view>
+          <text class="changed-card__label">新总价</text>
+          <text class="changed-card__new">{{changed.newTotalPriceLabel}}</text>
+        </view>
+      </view>
+      <text class="changed-card__hint">不会自动下单，请确认后继续。</text>
+      <button
+        class="primary-button changed-card__action"
+        bindtap="acceptChangedQuote"
+        aria-label="接受新价格并返回订单确认"
+      >
+        接受新价格
+      </button>
+    </view>
+  </view>
+
+  <view wx:elif="{{status === 'booking_created' && booking}}" class="created-state">
+    <view class="surface-card created-card" aria-live="polite">
+      <text class="created-card__eyebrow">待支付订单已创建</text>
+      <text class="created-card__number">{{booking.bookingNumber}}</text>
+      <text class="created-card__status">{{booking.status}}</text>
+      <text>{{booking.propertyName}} · {{booking.roomTypeName}}</text>
+      <text>{{booking.checkin}} 至 {{booking.checkout}}</text>
+      <text>{{booking.nights}} 晚 · {{booking.guests}} 人</text>
+      <text class="created-card__total">{{booking.totalPriceLabel}}</text>
+      <text class="created-card__expiry">付款截止：{{booking.expiresAt}}</text>
+      <text class="created-card__notice">支付与订单详情将在下一开发切片开放</text>
+      <button class="secondary-button created-card__action" bindtap="returnHome">
+        返回首页
+      </button>
+    </view>
+  </view>
+</view>
