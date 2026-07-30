@@ -1410,7 +1410,7 @@ describeDatabase(suiteName, () => {
         WHERE room_type_id = $1::uuid AND business_date = $2::date
       `,
       [roomId, businessDate],
-      "daily_inventory_available_check",
+      "daily_inventory_capacity_check",
     );
   });
 });
