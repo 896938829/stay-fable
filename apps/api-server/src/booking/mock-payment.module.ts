@@ -1,6 +1,7 @@
 import { type DynamicModule, Module } from "@nestjs/common";
 import { parseRuntimeEnvironment } from "@stay-fable/validation";
 
+import { DatabaseModule } from "../database/database.module.js";
 import { IdentityModule } from "../identity/identity.module.js";
 import { BookingModule } from "./booking.module.js";
 import { DevPaymentsController } from "./dev-payments.controller.js";
@@ -12,7 +13,7 @@ export class MockPaymentModule {
     const enabled = config.NODE_ENV !== "production" && config.ENABLE_MOCK_PAYMENT;
     return {
       module: MockPaymentModule,
-      imports: enabled ? [BookingModule, IdentityModule] : [],
+      imports: enabled ? [BookingModule, DatabaseModule, IdentityModule] : [],
       controllers: enabled ? [DevPaymentsController] : [],
     };
   }

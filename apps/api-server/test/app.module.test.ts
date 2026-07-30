@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import { BookingModule } from "../src/booking/booking.module.js";
 import { DevPaymentsController } from "../src/booking/dev-payments.controller.js";
 import { MockPaymentModule } from "../src/booking/mock-payment.module.js";
+import { DatabaseModule } from "../src/database/database.module.js";
 import { IdentityModule } from "../src/identity/identity.module.js";
 import { LOGGER_ROUTES } from "../src/logger-routes.js";
 
@@ -75,7 +76,7 @@ describe("AppModule logging middleware", () => {
 
     expect(disabled.imports).toEqual([]);
     expect(disabled.controllers).toEqual([]);
-    expect(enabled.imports).toEqual([BookingModule, IdentityModule]);
+    expect(enabled.imports).toEqual([BookingModule, DatabaseModule, IdentityModule]);
     expect(enabled.controllers).toEqual([DevPaymentsController]);
   });
 
