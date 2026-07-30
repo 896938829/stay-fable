@@ -17,6 +17,7 @@
     "typecheck": "turbo run typecheck --filter=!@stay-fable/consumer-miniapp",
     "verify": "node scripts/verify-workspace.mjs",
     "verify:phase-0": "node scripts/verify-phase-0.mjs",
+    "verify:slice5:candidate": "node scripts/verify-slice-5-candidate.mjs",
     "prisma:generate": "pnpm --filter @stay-fable/api-server prisma:generate",
     "wx:check": "node scripts/check-wx-project.mjs",
     "check": "pnpm verify && pnpm wx:check && pnpm format:check && pnpm lint && pnpm typecheck && pnpm test && pnpm build"
