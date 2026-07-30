@@ -2,6 +2,7 @@ import { type Job, Worker, type WorkerOptions } from "bullmq";
 import { Redis, type RedisOptions } from "ioredis";
 import pino, { type LoggerOptions } from "pino";
 
+import { createBookingExpirySweeper } from "./booking-expiry.sweeper.js";
 import { parseWorkerConfig } from "./config.js";
 import { createDatabasePool, type DatabasePool } from "./database.js";
 
@@ -81,10 +82,8 @@ const defaultDependencies: WorkerDependencies = {
   createConnection: (url, options) => new Redis(url, options),
   createLogger: (options) => pino(options),
   createPool: (databaseUrl) => createDatabasePool(databaseUrl),
-  createSweeper: () => ({
-    start: () => undefined,
-    stop: () => Promise.resolve(),
-  }),
+  createSweeper: (pool, pollMilliseconds, logger) =>
+    createBookingExpirySweeper(pool, pollMilliseconds, logger),
   createWorker: (queueName, processor, options) =>
     new Worker(queueName, processor, {
       ...options,
