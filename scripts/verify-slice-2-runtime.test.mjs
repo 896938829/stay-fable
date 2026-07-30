@@ -173,6 +173,67 @@ test("verifies the seeded catalog filters, pagination, hierarchy, and redaction"
   assert.doesNotMatch(renderedLogs, new RegExp(refreshToken));
 });
 
+test("uses explicit runtime dates without changing the fixed default search", async () => {
+  const harness = createHarness();
+
+  await verifySliceTwoRuntime({
+    baseUrl: "http://api:3000",
+    checkin: "2032-02-29",
+    checkout: "2032-03-02",
+    fetch: harness.fetch,
+    log: () => {},
+  });
+
+  for (const { url } of harness.calls.slice(1)) {
+    const parsed = new URL(url);
+    assert.equal(parsed.searchParams.get("checkin"), "2032-02-29");
+    assert.equal(parsed.searchParams.get("checkout"), "2032-03-02");
+  }
+});
+
+test("reads validated runtime dates from an explicit environment object", async () => {
+  const harness = createHarness();
+
+  await verifySliceTwoRuntime({
+    baseUrl: "http://api:3000",
+    environment: {
+      SLICE2_CHECKIN: "2030-01-15",
+      SLICE2_CHECKOUT: "2030-01-17",
+    },
+    fetch: harness.fetch,
+    log: () => {},
+  });
+
+  const firstCatalogUrl = new URL(harness.calls[1].url);
+  assert.equal(firstCatalogUrl.searchParams.get("checkin"), "2030-01-15");
+  assert.equal(firstCatalogUrl.searchParams.get("checkout"), "2030-01-17");
+});
+
+test("rejects malformed, impossible, and non-increasing runtime date ranges before login", async () => {
+  for (const [checkin, checkout] of [
+    ["2030-1-15", "2030-01-17"],
+    ["2030-02-29", "2030-03-02"],
+    ["2030-01-15", "2030-01-15"],
+    ["2030-01-16", "2030-01-15"],
+  ]) {
+    let fetchCalled = false;
+    await assert.rejects(
+      verifySliceTwoRuntime({
+        baseUrl: "http://api:3000",
+        checkin,
+        checkout,
+        fetch: async () => {
+          fetchCalled = true;
+          throw new Error("unexpected fetch");
+        },
+        log: () => {},
+      }),
+      /Slice 2 (?:checkin|checkout|date range)/,
+    );
+    assert.equal(fetchCalled, false);
+  }
+});
+
 test("fails quickly when fetch never settles", async () => {
   await rejectsBeforeGuard(
     verifySliceTwoRuntime({

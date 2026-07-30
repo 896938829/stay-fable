@@ -233,10 +233,27 @@ export const catalogRoomTypes: readonly CatalogRoomTypeSeed[] = catalogPropertie
   },
 );
 
-const catalogStartDate = Date.UTC(2026, 6, 30);
+const catalogDatePattern = /^(?!0000)(\d{4})-(\d{2})-(\d{2})$/;
 
-export const catalogDailySupply: readonly CatalogDailySupplySeed[] = catalogRoomTypes.flatMap(
-  (room) =>
+const parseCatalogStartDate = (startDate: string): number => {
+  if (!catalogDatePattern.test(startDate)) {
+    throw new Error("catalog supply start date must be a real YYYY-MM-DD date");
+  }
+  const instant = Date.parse(`${startDate}T00:00:00.000Z`);
+  if (!Number.isFinite(instant) || new Date(instant).toISOString().slice(0, 10) !== startDate) {
+    throw new Error("catalog supply start date must be a real YYYY-MM-DD date");
+  }
+  if (startDate > "9999-11-02") {
+    throw new Error(
+      "catalog supply start date must leave the full 60-day window within four-digit years",
+    );
+  }
+  return instant;
+};
+
+export const createCatalogDailySupply = (startDate: string): readonly CatalogDailySupplySeed[] => {
+  const catalogStartDate = parseCatalogStartDate(startDate);
+  return catalogRoomTypes.flatMap((room) =>
     Array.from({ length: 60 }, (_, offset) => {
       const businessDate = new Date(catalogStartDate + offset * 86_400_000)
         .toISOString()
@@ -250,4 +267,8 @@ export const catalogDailySupply: readonly CatalogDailySupplySeed[] = catalogRoom
         totalInventory: room.inventory,
       };
     }),
-);
+  );
+};
+
+export const catalogDailySupply: readonly CatalogDailySupplySeed[] =
+  createCatalogDailySupply("2026-07-30");

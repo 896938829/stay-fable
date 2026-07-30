@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { clearTimeout, setTimeout } from "node:timers";
 import { pathToFileURL, URLSearchParams } from "node:url";
 
-const search = {
+const defaultSearch = {
   city_id: "10000000-0000-4000-8000-000000000001",
   checkin: "2026-07-30",
   checkout: "2026-08-01",
@@ -15,6 +15,18 @@ const expectedHangzhouProperties = [
 ];
 const internalInventoryFields = ["total_inventory", "held_inventory", "sold_inventory", "version"];
 const uuidV4Pattern = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const calendarDatePattern = /^(?!0000)\d{4}-\d{2}-\d{2}$/;
+
+function parseCalendarDate(value, label) {
+  assert.equal(typeof value, "string", `${label} must be a real YYYY-MM-DD date`);
+  assert.match(value, calendarDatePattern, `${label} must be a real YYYY-MM-DD date`);
+  const instant = Date.parse(`${value}T00:00:00.000Z`);
+  assert.ok(
+    Number.isFinite(instant) && new Date(instant).toISOString().slice(0, 10) === value,
+    `${label} must be a real YYYY-MM-DD date`,
+  );
+  return { instant, value };
+}
 
 async function withTimeout(operation, timeoutMs, message) {
   let timeout;
@@ -124,6 +136,21 @@ export async function verifySliceTwoRuntime(options = {}) {
   const fetchImplementation = options.fetch || globalThis.fetch;
   const log = options.log || console.log;
   const requestTimeoutMs = options.requestTimeoutMs ?? 5_000;
+  const environment = options.environment ?? process.env;
+  const checkin = parseCalendarDate(
+    options.checkin ?? environment.SLICE2_CHECKIN ?? defaultSearch.checkin,
+    "Slice 2 checkin",
+  );
+  const checkout = parseCalendarDate(
+    options.checkout ?? environment.SLICE2_CHECKOUT ?? defaultSearch.checkout,
+    "Slice 2 checkout",
+  );
+  assert.ok(checkout.instant > checkin.instant, "Slice 2 date range must be increasing");
+  const search = {
+    ...defaultSearch,
+    checkin: checkin.value,
+    checkout: checkout.value,
+  };
 
   assert.equal(typeof baseUrl, "string", "API_BASE_URL is required");
   assert.equal(typeof fetchImplementation, "function", "fetch is required");

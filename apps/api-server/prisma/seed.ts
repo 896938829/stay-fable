@@ -9,6 +9,7 @@ import {
   catalogProperties,
   catalogPropertyMedia,
   catalogRoomTypes,
+  createCatalogDailySupply,
 } from "./catalog-seed-data.js";
 
 type SeedCity = {
@@ -60,7 +61,15 @@ const requireDatabaseUrl = (): string => {
   return databaseUrl;
 };
 
+export const resolveCatalogDailySupply = (
+  environment: Readonly<Record<string, string | undefined>> = process.env,
+) => {
+  const startDate = environment.STAY_FABLE_CATALOG_START_DATE;
+  return startDate === undefined ? catalogDailySupply : createCatalogDailySupply(startDate);
+};
+
 export async function runSeed(prisma: PrismaClient): Promise<void> {
+  const dailySupply = resolveCatalogDailySupply();
   await prisma.$transaction(async (transaction) => {
     await transaction.$queryRaw<Array<{ locked: boolean }>>(
       Prisma.sql`
@@ -434,7 +443,7 @@ export async function runSeed(prisma: PrismaClient): Promise<void> {
       );
     }
 
-    const dailySupplyJson = JSON.stringify(catalogDailySupply);
+    const dailySupplyJson = JSON.stringify(dailySupply);
     await transaction.$executeRaw(
       Prisma.sql`
         INSERT INTO "daily_price" (

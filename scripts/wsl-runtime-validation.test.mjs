@@ -13,6 +13,10 @@ const powershellScriptPath = decodeURIComponent(powershellPath.pathname).replace
 );
 const bashPath = new URL("./wsl-runtime-validation.sh", import.meta.url);
 const bootstrapPath = new URL("./wsl-database-bootstrap.ps1", import.meta.url);
+const bootstrapScriptPath = decodeURIComponent(bootstrapPath.pathname).replace(
+  /^\/([A-Za-z]:)/,
+  "$1",
+);
 const sliceThreeVerifierPath = new URL("./verify-slice-3-runtime.mjs", import.meta.url);
 const sliceFourVerifierPath = new URL("./verify-slice-4-runtime.mjs", import.meta.url);
 
@@ -226,6 +230,11 @@ test("uses the host Prisma engine and preserves the bounded Slice 2 runtime gate
   assert.match(bash, /pwsh\.exe/);
   assert.match(bootstrap, /prisma:migrate/);
   assert.match(bootstrap, /prisma:seed/);
+  assert.match(bootstrap, /\[string\]\$CatalogStartDate/);
+  assert.match(
+    bootstrap,
+    /\$env:STAY_FABLE_CATALOG_START_DATE = \$CatalogStartDate[\s\S]*prisma:seed/,
+  );
   assert.match(bootstrap, /127\.0\.0\.1/);
   assert.match(bash, /127\.0\.0\.1:3000:3000/);
   assert.match(bash, /verify-slice-1-runtime\.mjs/);
@@ -237,7 +246,15 @@ test("uses the host Prisma engine and preserves the bounded Slice 2 runtime gate
     bash,
     /-v "\$repo_root\/scripts\/verify-slice-2-runtime\.mjs:\/verify-slice-2-runtime\.mjs:ro"/,
   );
-  assert.match(bash, /node \/verify-slice-2-runtime\.mjs/);
+  assert.match(
+    bash,
+    /-e "SLICE2_CHECKIN=\$catalog_checkin"[\s\S]*-e "SLICE2_CHECKOUT=\$catalog_checkout"[\s\S]*node \/verify-slice-2-runtime\.mjs/,
+  );
+  assert.match(
+    bash,
+    /-CatalogStartDate "\$catalog_checkin"[\s\S]*SLICE2_CHECKIN=\$catalog_checkin/,
+  );
+  assert.doesNotMatch(bash, /verify-slice-2-runtime\.mjs[\s\S]{0,300}(?:2026-07-30|2026-08-01)/);
   assert.match(
     bash,
     /-v "\$repo_root\/scripts\/verify-slice-3-runtime\.mjs:\/verify-slice-3-runtime\.mjs:ro"/,
@@ -509,6 +526,130 @@ test("PowerShell exposes the optional stable gate to WSL without changing defaul
     bash,
     /SLICE2_RUNTIME_READY http:\/\/127\.0\.0\.1:3000[\s\S]*await_stable_window_gate[\s\S]*observe_worker_stability/,
   );
+});
+
+test("derives the rolling Slice 2 window from the Asia Shanghai calendar", async () => {
+  const bash = (await readFile(bashPath, "utf8")).replaceAll("\r\n", "\n");
+  const helper = bash.match(/set_catalog_runtime_dates\(\) \{[\s\S]*?\n\}/)?.[0];
+  assert.ok(helper, "catalog runtime date helper must be defined");
+  const script = `
+set -Eeuo pipefail
+${helper}
+date() {
+  if [ "\${TZ:-}" != 'Asia/Shanghai' ]; then
+    printf 'wrong timezone: %s\\n' "\${TZ:-unset}" >&2
+    return 91
+  fi
+  case "$*" in
+    '+%F') printf '%s\\n' '2032-02-29' ;;
+    '-d 2032-02-29 +2 days +%F') printf '%s\\n' '2032-03-02' ;;
+    *) printf 'unexpected date arguments: %s\\n' "$*" >&2; return 92 ;;
+  esac
+}
+set_catalog_runtime_dates
+printf 'CHECKIN=%s\\nCHECKOUT=%s\\n' "$catalog_checkin" "$catalog_checkout"
+`;
+  const execution = spawnSync("wsl.exe", ["-d", "Ubuntu-22.04", "--exec", "bash", "-s"], {
+    encoding: "utf8",
+    input: script,
+    timeout: 5_000,
+  });
+
+  assert.equal(execution.status, 0, execution.stderr);
+  assert.match(execution.stdout, /^CHECKIN=2032-02-29$/m);
+  assert.match(execution.stdout, /^CHECKOUT=2032-03-02$/m);
+});
+
+test("rejects a partially invalid rolling Slice 2 window", async () => {
+  const bash = (await readFile(bashPath, "utf8")).replaceAll("\r\n", "\n");
+  const helper = bash.match(/set_catalog_runtime_dates\(\) \{[\s\S]*?\n\}/)?.[0];
+  assert.ok(helper, "catalog runtime date helper must be defined");
+  const script = `
+set -Eeuo pipefail
+${helper}
+date() {
+  case "$*" in
+    '+%F') printf '%s\\n' '2032-02-29' ;;
+    '-d 2032-02-29 +2 days +%F') printf '%s\\n' 'not-a-date' ;;
+    *) return 92 ;;
+  esac
+}
+if set_catalog_runtime_dates; then
+  printf 'INVALID_WINDOW_ACCEPTED\\n'
+  exit 99
+fi
+`;
+  const execution = spawnSync("wsl.exe", ["-d", "Ubuntu-22.04", "--exec", "bash", "-s"], {
+    encoding: "utf8",
+    input: script,
+    timeout: 5_000,
+  });
+
+  assert.equal(execution.status, 0, execution.stderr);
+  assert.match(execution.stderr, /Unable to derive the bounded Slice 2 catalog window/);
+  assert.doesNotMatch(execution.stdout, /INVALID_WINDOW_ACCEPTED/);
+});
+
+test("bootstrap validates the seed date and precisely restores its prior environment state", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "stay-fable-bootstrap-date-"));
+  try {
+    const invocation = `
+$ErrorActionPreference = 'Stop'
+$repo = ${JSON.stringify(root)}
+$global:ObservedSeedDates = [System.Collections.Generic.List[string]]::new()
+function git {
+  $global:LASTEXITCODE = 0
+  return $repo
+}
+function corepack {
+  $global:LASTEXITCODE = 0
+  if ([string]$args[-1] -eq 'prisma:seed') {
+    $observedDate = if (Test-Path Env:STAY_FABLE_CATALOG_START_DATE) {
+      [string]$env:STAY_FABLE_CATALOG_START_DATE
+    } else {
+      '<ABSENT>'
+    }
+    $global:ObservedSeedDates.Add($observedDate)
+  }
+}
+$env:STAY_FABLE_CATALOG_START_DATE = '1999-12-31'
+& ${JSON.stringify(bootstrapScriptPath)} -RepoRoot $repo
+if ($env:STAY_FABLE_CATALOG_START_DATE -ne '1999-12-31') {
+  throw 'ambient catalog start date was not restored after default seed'
+}
+& ${JSON.stringify(bootstrapScriptPath)} -RepoRoot $repo -CatalogStartDate '2032-02-29'
+if ($env:STAY_FABLE_CATALOG_START_DATE -ne '1999-12-31') {
+  throw 'existing catalog start date was not restored'
+}
+Remove-Item Env:STAY_FABLE_CATALOG_START_DATE
+& ${JSON.stringify(bootstrapScriptPath)} -RepoRoot $repo -CatalogStartDate '2033-03-01'
+if (Test-Path Env:STAY_FABLE_CATALOG_START_DATE) {
+  throw 'previously absent catalog start date was not removed'
+}
+foreach ($invalidDate in @('2032-02-30', '9999-11-03', '9999-12-31')) {
+  try {
+    & ${JSON.stringify(bootstrapScriptPath)} -RepoRoot $repo -CatalogStartDate $invalidDate
+    throw "invalid catalog start date unexpectedly succeeded: $invalidDate"
+  }
+  catch {
+    if ($_.Exception.Message -like 'invalid catalog start date unexpectedly succeeded:*') {
+      throw
+    }
+    if ($_.Exception.Message -notmatch '(?:real YYYY-MM-DD|four-digit year)') { throw }
+  }
+}
+$global:ObservedSeedDates | ConvertTo-Json -Compress
+`;
+    const execution = spawnSync("powershell.exe", ["-NoProfile", "-Command", invocation], {
+      encoding: "utf8",
+      timeout: 10_000,
+    });
+
+    assert.equal(execution.status, 0, execution.stderr);
+    assert.deepEqual(JSON.parse(execution.stdout.trim()), ["<ABSENT>", "2032-02-29", "2033-03-01"]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 test(

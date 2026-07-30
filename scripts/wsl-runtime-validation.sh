@@ -12,6 +12,18 @@ expected_validation_root="$validation_root"
 compose_started=false
 validation_root_owned=false
 lock_owned=false
+catalog_checkin=''
+catalog_checkout=''
+
+set_catalog_runtime_dates() {
+  catalog_checkin="$(TZ=Asia/Shanghai date +%F)"
+  catalog_checkout="$(TZ=Asia/Shanghai date -d "$catalog_checkin +2 days" +%F)"
+  if ! [[ "$catalog_checkin" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] ||
+    ! [[ "$catalog_checkout" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]]; then
+    echo 'Unable to derive the bounded Slice 2 catalog window' >&2
+    return 1
+  fi
+}
 
 if [ -z "${VALIDATION_TOKEN:-}" ] || [ -z "${REPO_ROOT:-}" ]; then
   echo 'VALIDATION_TOKEN and REPO_ROOT are required' >&2
@@ -224,7 +236,11 @@ POSTGRES_PORT=55432 REDIS_PORT=56379 docker compose \
 pwsh_path="$(command -v pwsh.exe)"
 repo_windows="$(wslpath -w "$repo_root")"
 bootstrap_windows="$(wslpath -w "$repo_root/scripts/wsl-database-bootstrap.ps1")"
-"$pwsh_path" -NoProfile -File "$bootstrap_windows" -RepoRoot "$repo_windows" -Port 55432
+set_catalog_runtime_dates
+"$pwsh_path" -NoProfile -File "$bootstrap_windows" \
+  -RepoRoot "$repo_windows" \
+  -Port 55432 \
+  -CatalogStartDate "$catalog_checkin"
 
 database_url='postgresql://stay_fable:local_only_password@postgres:5432/stay_fable?schema=public&sslmode=disable'
 
@@ -303,6 +319,8 @@ docker run --rm \
   --user node --read-only --tmpfs /tmp \
   -v "$repo_root/scripts/verify-slice-2-runtime.mjs:/verify-slice-2-runtime.mjs:ro" \
   -e "API_BASE_URL=http://${api_container}:3000" \
+  -e "SLICE2_CHECKIN=$catalog_checkin" \
+  -e "SLICE2_CHECKOUT=$catalog_checkout" \
   "$node_image" node /verify-slice-2-runtime.mjs
 
 run_slice_three_runtime_validation() {

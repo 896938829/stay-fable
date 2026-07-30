@@ -1,4 +1,5 @@
 import { randomBytes } from "node:crypto";
+import { readFile } from "node:fs/promises";
 
 import { PrismaPg } from "@prisma/adapter-pg";
 import { Pool, type PoolClient } from "pg";
@@ -29,6 +30,21 @@ const expectedCatalogIdentityConflict =
   "Catalog seed identity conflict: existing id/business-key mapping does not match fixed reference data";
 const expectedCatalogInventoryCapacityConflict =
   "Catalog seed inventory capacity conflict: managed total is below occupied inventory";
+const migrationFiles = [
+  "../../prisma/migrations/202607290001_identity_location/migration.sql",
+  "../../prisma/migrations/202607290002_user_session_version/migration.sql",
+  "../../prisma/migrations/202607290003_session_version_monotonic/migration.sql",
+  "../../prisma/migrations/202607290004_catalog_supply/migration.sql",
+] as const;
+const expectedCatalogForeignKeys = [
+  "daily_inventory_room_type_id_fkey",
+  "daily_price_room_type_id_fkey",
+  "property_city_id_fkey",
+  "property_facility_facility_id_fkey",
+  "property_facility_property_id_fkey",
+  "property_media_property_id_fkey",
+  "room_type_property_id_fkey",
+] as const;
 
 const quoteGeneratedTestSchema = (schemaName: string): string => {
   if (!/^catalog_seed_test_[0-9a-f]{16}$/.test(schemaName)) {
@@ -58,6 +74,109 @@ const awaitWithin = async <T>(promise: Promise<T>, milliseconds: number): Promis
       },
     );
   });
+
+const normalizeFailure = (error: unknown, message: string): Error =>
+  error instanceof Error ? error : new Error(message, { cause: error });
+
+const finalizeIsolatedCatalogSeedTest = async ({
+  disconnect,
+  dropSchema,
+  testFailure,
+  timeoutMs = 3_000,
+}: {
+  disconnect: () => Promise<void>;
+  dropSchema: () => Promise<void>;
+  testFailure?: Error;
+  timeoutMs?: number;
+}): Promise<void> => {
+  const cleanupFailures: Error[] = [];
+  try {
+    await awaitWithin(
+      Promise.resolve().then(() => disconnect()),
+      timeoutMs,
+    );
+  } catch (error: unknown) {
+    cleanupFailures.push(
+      new Error("Isolated Prisma disconnect cleanup failed", {
+        cause: normalizeFailure(error, "Unknown disconnect cleanup failure"),
+      }),
+    );
+  }
+  try {
+    await awaitWithin(
+      Promise.resolve().then(() => dropSchema()),
+      timeoutMs,
+    );
+  } catch (error: unknown) {
+    cleanupFailures.push(
+      new Error("Isolated schema DROP cleanup failed", {
+        cause: normalizeFailure(error, "Unknown schema cleanup failure"),
+      }),
+    );
+  }
+
+  if (testFailure !== undefined) {
+    if (cleanupFailures.length > 0) {
+      throw new AggregateError(
+        [testFailure, ...cleanupFailures],
+        "Dynamic catalog seed test and cleanup failed",
+      );
+    }
+    throw testFailure;
+  }
+  if (cleanupFailures.length > 0) {
+    throw new AggregateError(cleanupFailures, "Dynamic catalog seed test cleanup failed");
+  }
+};
+
+test("isolated catalog cleanup bounds disconnect and DROP independently", async () => {
+  const source = await readFile(new URL(import.meta.url), "utf8");
+  const helper = source.match(
+    /^const finalizeIsolatedCatalogSeedTest = async \([\s\S]*?^\};$/m,
+  )?.[0];
+
+  expect(helper, "bounded isolated catalog cleanup helper must be defined").toBeTypeOf("string");
+  expect(helper).toMatch(/awaitWithin\([\s\S]*disconnect\(\)/);
+  expect(helper).toMatch(/awaitWithin\([\s\S]*dropSchema\(\)/);
+});
+
+test("pending isolated cleanup still attempts DROP and preserves every failure", async () => {
+  const primaryFailure = new Error("primary test failure");
+  let dropCalls = 0;
+  let disconnectAggregate: unknown;
+
+  try {
+    await finalizeIsolatedCatalogSeedTest({
+      testFailure: primaryFailure,
+      disconnect: async () => new Promise(() => {}),
+      dropSchema: () => {
+        dropCalls += 1;
+        return Promise.resolve();
+      },
+      timeoutMs: 20,
+    });
+  } catch (error: unknown) {
+    disconnectAggregate = error;
+  }
+
+  expect(dropCalls).toBe(1);
+  expect(disconnectAggregate).toBeInstanceOf(AggregateError);
+  expect((disconnectAggregate as AggregateError).errors[0]).toBe(primaryFailure);
+  expect((disconnectAggregate as AggregateError).errors[1]).toMatchObject({
+    message: "Isolated Prisma disconnect cleanup failed",
+  });
+
+  await expect(
+    finalizeIsolatedCatalogSeedTest({
+      disconnect: async () => {},
+      dropSchema: async () => new Promise(() => {}),
+      timeoutMs: 20,
+    }),
+  ).rejects.toMatchObject({
+    errors: [{ message: "Isolated schema DROP cleanup failed" }],
+    message: "Dynamic catalog seed test cleanup failed",
+  });
+});
 
 describeDatabase(suiteName, () => {
   let pool: Pool;
@@ -921,6 +1040,291 @@ describeDatabase(suiteName, () => {
       await pool.query(`DROP SCHEMA IF EXISTS ${quotedSchema} CASCADE`);
     }
   });
+
+  test("dynamic catalog windows are idempotent, overlap safely, and roll back capacity conflicts", async () => {
+    const schemaName = `catalog_seed_test_${randomBytes(8).toString("hex")}`;
+    const quotedSchema = quoteGeneratedTestSchema(schemaName);
+    const connectionUrl = new URL(requireSafeDatabaseIntegrationUrl(process.env.DATABASE_URL));
+    connectionUrl.searchParams.set("options", `-c search_path=${schemaName},public`);
+    const isolatedPrisma = new PrismaClient({
+      adapter: new PrismaPg({ connectionString: connectionUrl.toString() }),
+    });
+    const startDateWasPresent = Object.hasOwn(process.env, "STAY_FABLE_CATALOG_START_DATE");
+    const previousStartDate = process.env.STAY_FABLE_CATALOG_START_DATE;
+    const occupiedRoomId = "30000000-0000-4000-8000-000000000002";
+    const conflictRoomId = "30000000-0000-4000-8000-000000000001";
+    const wifiId = "40000000-0000-4000-8000-000000000001";
+    let testFailure: Error | undefined;
+
+    const readCoverage = async () => {
+      const result = await pool.query<{
+        first_day: string;
+        last_day: string;
+        row_count: number;
+      }>(`
+        SELECT
+          MIN(business_date)::text AS first_day,
+          MAX(business_date)::text AS last_day,
+          COUNT(*)::integer AS row_count
+        FROM ${quotedSchema}.daily_price
+      `);
+      return result.rows[0];
+    };
+    const readPriceKeys = async (): Promise<string[]> => {
+      const result = await pool.query<{ row_key: string }>(`
+        SELECT room_type_id::text || ':' || business_date::text AS row_key
+        FROM ${quotedSchema}.daily_price
+        ORDER BY room_type_id, business_date
+      `);
+      return result.rows.map(({ row_key: key }) => key);
+    };
+    const readPublicSnapshot = async (): Promise<unknown> => {
+      const result = await pool.query<{ snapshot: unknown }>(`
+        SELECT jsonb_build_object(
+          'counts', jsonb_build_object(
+            'city', (SELECT COUNT(*) FROM public.city),
+            'property', (SELECT COUNT(*) FROM public.property),
+            'property_media', (SELECT COUNT(*) FROM public.property_media),
+            'facility', (SELECT COUNT(*) FROM public.facility),
+            'property_facility', (SELECT COUNT(*) FROM public.property_facility),
+            'room_type', (SELECT COUNT(*) FROM public.room_type),
+            'daily_price', (SELECT COUNT(*) FROM public.daily_price),
+            'daily_inventory', (SELECT COUNT(*) FROM public.daily_inventory)
+          ),
+          'sentinels', jsonb_build_object(
+            'city_name', (
+              SELECT name_zh FROM public.city
+              WHERE id = '10000000-0000-4000-8000-000000000001'::uuid
+            ),
+            'facility_name', (
+              SELECT name_zh FROM public.facility
+              WHERE id = '40000000-0000-4000-8000-000000000001'::uuid
+            ),
+            'property_name', (
+              SELECT name_zh FROM public.property
+              WHERE id = '20000000-0000-4000-8000-000000000001'::uuid
+            ),
+            'room_name', (
+              SELECT name_zh FROM public.room_type
+              WHERE id = '30000000-0000-4000-8000-000000000001'::uuid
+            ),
+            'price', (
+              SELECT jsonb_build_object(
+                'sale', sale_price_cents,
+                'rack', rack_price_cents
+              )
+              FROM public.daily_price
+              WHERE room_type_id = '30000000-0000-4000-8000-000000000001'::uuid
+                AND business_date = DATE '2026-07-30'
+            ),
+            'inventory', (
+              SELECT jsonb_build_object(
+                'total', total_inventory,
+                'held', held_inventory,
+                'sold', sold_inventory,
+                'version', version
+              )
+              FROM public.daily_inventory
+              WHERE room_type_id = '30000000-0000-4000-8000-000000000001'::uuid
+                AND business_date = DATE '2026-07-30'
+            )
+          )
+        ) AS snapshot
+      `);
+      return result.rows[0]?.snapshot;
+    };
+
+    try {
+      const publicBefore = await readPublicSnapshot();
+      const setupClient = await pool.connect();
+      try {
+        await setupClient.query(`CREATE SCHEMA ${quotedSchema}`);
+        await setupClient.query(`SET search_path TO ${quotedSchema}, public`);
+        for (const migrationFile of migrationFiles) {
+          const migrationSql = await readFile(new URL(migrationFile, import.meta.url), "utf8");
+          await setupClient.query(migrationSql);
+        }
+      } finally {
+        setupClient.release();
+      }
+
+      const foreignKeys = await pool.query<{ constraint_name: string }>(
+        `
+          SELECT foreign_key.conname AS constraint_name
+          FROM pg_constraint foreign_key
+          JOIN pg_class child ON child.oid = foreign_key.conrelid
+          JOIN pg_namespace child_namespace ON child_namespace.oid = child.relnamespace
+          JOIN pg_class parent ON parent.oid = foreign_key.confrelid
+          JOIN pg_namespace parent_namespace ON parent_namespace.oid = parent.relnamespace
+          WHERE child_namespace.nspname = $1
+            AND parent_namespace.nspname = $1
+            AND child.relname IN (
+              'property',
+              'property_media',
+              'property_facility',
+              'room_type',
+              'daily_price',
+              'daily_inventory'
+            )
+            AND foreign_key.contype = 'f'
+          ORDER BY foreign_key.conname
+        `,
+        [schemaName],
+      );
+      expect(foreignKeys.rows.map(({ constraint_name: name }) => name)).toEqual(
+        expectedCatalogForeignKeys,
+      );
+
+      process.env.STAY_FABLE_CATALOG_START_DATE = "2032-02-29";
+      await runSeed(isolatedPrisma);
+      await runSeed(isolatedPrisma);
+
+      expect(await readCoverage()).toEqual({
+        first_day: "2032-02-29",
+        last_day: "2032-04-28",
+        row_count: 720,
+      });
+      const firstWindowKeys = await readPriceKeys();
+      expect(firstWindowKeys).toHaveLength(720);
+
+      await pool.query(
+        `
+          UPDATE ${quotedSchema}.daily_price
+          SET sale_price_cents = 1, rack_price_cents = 1
+          WHERE room_type_id = $1::uuid
+            AND business_date = DATE '2032-03-01'
+        `,
+        [occupiedRoomId],
+      );
+      await pool.query(
+        `
+          UPDATE ${quotedSchema}.daily_inventory
+          SET held_inventory = 1, sold_inventory = 1, version = 7
+          WHERE room_type_id = $1::uuid
+            AND business_date = DATE '2032-03-01'
+        `,
+        [occupiedRoomId],
+      );
+
+      process.env.STAY_FABLE_CATALOG_START_DATE = "2032-03-01";
+      await runSeed(isolatedPrisma);
+
+      expect(await readCoverage()).toEqual({
+        first_day: "2032-02-29",
+        last_day: "2032-04-29",
+        row_count: 732,
+      });
+      const secondWindowKeys = await readPriceKeys();
+      const firstWindowKeySet = new Set(firstWindowKeys);
+      const secondWindowKeySet = new Set(secondWindowKeys);
+      expect(firstWindowKeys.filter((key) => !secondWindowKeySet.has(key))).toEqual([]);
+      const addedBoundaryKeys = secondWindowKeys.filter((key) => !firstWindowKeySet.has(key));
+      expect(addedBoundaryKeys).toHaveLength(12);
+      expect(addedBoundaryKeys.every((key) => key.endsWith(":2032-04-29"))).toBe(true);
+
+      const occupiedOverlap = await pool.query<{
+        held_inventory: number;
+        rack_price_cents: number;
+        sale_price_cents: number;
+        sold_inventory: number;
+        version: number;
+      }>(
+        `
+          SELECT
+            inventory.held_inventory,
+            price.rack_price_cents,
+            price.sale_price_cents,
+            inventory.sold_inventory,
+            inventory.version
+          FROM ${quotedSchema}.daily_inventory inventory
+          JOIN ${quotedSchema}.daily_price price
+            USING (room_type_id, business_date)
+          WHERE inventory.room_type_id = $1::uuid
+            AND inventory.business_date = DATE '2032-03-01'
+        `,
+        [occupiedRoomId],
+      );
+      expect(occupiedOverlap.rows).toEqual([
+        {
+          held_inventory: 1,
+          rack_price_cents: 62_800,
+          sale_price_cents: 56_800,
+          sold_inventory: 1,
+          version: 7,
+        },
+      ]);
+      expect(await readPublicSnapshot()).toEqual(publicBefore);
+
+      await pool.query(
+        `UPDATE ${quotedSchema}.facility SET name_zh = '动态容量冲突回滚标记'
+         WHERE id = $1::uuid`,
+        [wifiId],
+      );
+      await pool.query(
+        `
+          UPDATE ${quotedSchema}.daily_inventory
+          SET total_inventory = 2, held_inventory = 2, sold_inventory = 0, version = 11
+          WHERE room_type_id = $1::uuid
+            AND business_date = DATE '2032-03-02'
+        `,
+        [conflictRoomId],
+      );
+
+      process.env.STAY_FABLE_CATALOG_START_DATE = "2032-03-02";
+      await expect(runSeed(isolatedPrisma)).rejects.toThrowError(
+        expectedCatalogInventoryCapacityConflict,
+      );
+
+      expect(await readCoverage()).toEqual({
+        first_day: "2032-02-29",
+        last_day: "2032-04-29",
+        row_count: 732,
+      });
+      const rolledBackFacility = await pool.query<{ name_zh: string }>(
+        `SELECT name_zh FROM ${quotedSchema}.facility WHERE id = $1::uuid`,
+        [wifiId],
+      );
+      expect(rolledBackFacility.rows).toEqual([{ name_zh: "动态容量冲突回滚标记" }]);
+      const conflictInventory = await pool.query<{
+        held_inventory: number;
+        sold_inventory: number;
+        total_inventory: number;
+        version: number;
+      }>(
+        `
+          SELECT total_inventory, held_inventory, sold_inventory, version
+          FROM ${quotedSchema}.daily_inventory
+          WHERE room_type_id = $1::uuid
+            AND business_date = DATE '2032-03-02'
+        `,
+        [conflictRoomId],
+      );
+      expect(conflictInventory.rows).toEqual([
+        {
+          held_inventory: 2,
+          sold_inventory: 0,
+          total_inventory: 2,
+          version: 11,
+        },
+      ]);
+      expect(await readPublicSnapshot()).toEqual(publicBefore);
+    } catch (error: unknown) {
+      testFailure = normalizeFailure(error, "Dynamic catalog seed test failed");
+    } finally {
+      if (startDateWasPresent) {
+        process.env.STAY_FABLE_CATALOG_START_DATE = previousStartDate;
+      } else {
+        delete process.env.STAY_FABLE_CATALOG_START_DATE;
+      }
+    }
+    await finalizeIsolatedCatalogSeedTest({
+      testFailure,
+      disconnect: () => isolatedPrisma.$disconnect(),
+      dropSchema: async () => {
+        await pool.query(`DROP SCHEMA IF EXISTS ${quotedSchema} CASCADE`);
+      },
+    });
+  }, 30_000);
 
   test("catalog database checks reject invalid price, room, and inventory values", async () => {
     const propertyId = "20000000-0000-4000-8000-000000000001";
