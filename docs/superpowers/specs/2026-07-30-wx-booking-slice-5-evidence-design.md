@@ -75,7 +75,7 @@ Slice 5 增加一个聚合 OpenAPI 测试，不替代各模块已有测试。它
 
 | 领域 | 路由 |
 | --- | --- |
-| 身份 | `/auth/wechat/login`、`/auth/refresh` |
+| 身份 | `/auth/wechat/login`、`/auth/session/refresh` |
 | 定位 | `/location/resolve` |
 | Catalog | `/properties`、`/properties/{id}`、`/room-types/{id}` |
 | 报价与下单 | `/quotes`、`/bookings` |
