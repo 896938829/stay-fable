@@ -150,13 +150,14 @@ docker run -d --name "$api_container" \
   --workdir /app \
   -v "$validation_root/api:/app:ro" \
   -v "$repo_root/scripts/verify-slice-3-runtime.mjs:/verify-slice-3-runtime.mjs:ro" \
+  -v "$repo_root/scripts/verify-slice-4-runtime.mjs:/verify-slice-4-runtime.mjs:ro" \
   -p 127.0.0.1:3000:3000 \
   -e NODE_ENV=development \
   -e PORT=3000 \
   -e "DATABASE_URL=$database_url" \
   -e REDIS_URL=redis://redis:6379 \
   -e IDENTITY_PROVIDER=mock \
-  -e ENABLE_MOCK_PAYMENT=false \
+  -e ENABLE_MOCK_PAYMENT=true \
   -e SESSION_ACCESS_TTL_SECONDS=7200 \
   -e SESSION_REFRESH_TTL_SECONDS=2592000 \
   -e LOCATION_MAX_DISTANCE_METERS=100000 \
@@ -169,7 +170,9 @@ docker run -d --name "$worker_container" \
   --workdir /app \
   -v "$validation_root/worker:/app:ro" \
   -e NODE_ENV=development \
+  -e "DATABASE_URL=$database_url" \
   -e REDIS_URL=redis://redis:6379 \
+  -e BOOKING_EXPIRY_POLL_MS=1000 \
   "$node_image" node dist/main.js
 
 api_ready=false
@@ -243,6 +246,33 @@ run_slice_three_runtime_validation() {
 }
 
 run_slice_three_runtime_validation "$api_container" "$worker_container" "$database_url"
+
+run_slice_four_runtime_validation() {
+  local slice4_api_container="$1"
+  local slice4_worker_container="$2"
+  local slice4_database_url="$3"
+  local runtime_exit=0
+
+  docker exec \
+    --user node \
+    -e "API_BASE_URL=http://127.0.0.1:3000" \
+    -e "DATABASE_URL=$slice4_database_url" \
+    "$slice4_api_container" \
+    node /verify-slice-4-runtime.mjs || runtime_exit=$?
+  if [ "$runtime_exit" -eq 0 ]; then
+    return 0
+  fi
+
+  echo 'SLICE4_RUNTIME_DIAGNOSTICS' >&2
+  docker inspect \
+    --format 'name={{.Name}} status={{.State.Status}} running={{.State.Running}} exit={{.State.ExitCode}} oom={{.State.OOMKilled}} restarts={{.RestartCount}}' \
+    "$slice4_api_container" "$slice4_worker_container" >&2 || true
+  docker logs --tail 200 "$slice4_api_container" >&2 || true
+  docker logs --tail 200 "$slice4_worker_container" >&2 || true
+  return "$runtime_exit"
+}
+
+run_slice_four_runtime_validation "$api_container" "$worker_container" "$database_url"
 
 echo 'SLICE2_RUNTIME_READY http://127.0.0.1:3000'
 

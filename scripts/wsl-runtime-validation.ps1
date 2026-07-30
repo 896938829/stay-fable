@@ -22,6 +22,10 @@ try {
   if (Get-NetTCPConnection -LocalPort 3000 -State Listen -ErrorAction SilentlyContinue) {
     throw 'TCP port 3000 is already listening; refusing to displace another service'
   }
+  $sliceFourVerifier = Join-Path $repoRoot 'scripts/verify-slice-4-runtime.mjs'
+  if (-not (Test-Path -LiteralPath $sliceFourVerifier -PathType Leaf)) {
+    throw 'Slice 4 runtime verifier is missing'
+  }
 
   New-Item -ItemType Directory -Path $runtimeDir | Out-Null
   $runtimeOwned = $true
