@@ -98,6 +98,9 @@
 
 在 Ubuntu-22.04 Docker Engine 上使用唯一所有权令牌完成：
 
+- [脱敏 WSL2 runtime transcript](evidence/slice-5-booking-lifecycle/wsl-runtime-transcript-2026-07-31.md)
+- [transcript SHA-256 sidecar](evidence/slice-5-booking-lifecycle/wsl-runtime-transcript-2026-07-31.md.sha256)
+
 - 6 个 migration 全部应用；
 - PostgreSQL/PostGIS 3.5、Redis PONG；
 - `/health/live` 和 `/health/ready` 均为 HTTP 200；
