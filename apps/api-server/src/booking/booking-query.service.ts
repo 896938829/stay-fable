@@ -21,10 +21,8 @@ import {
 const UUID_PATTERN =
   /^(?:[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/;
 
-const invalidQuery = (): BusinessException =>
-  new BusinessException(400, "BOOKING_QUERY_INVALID", "订单查询参数无效");
-const invalidBookingId = (): BusinessException =>
-  new BusinessException(400, "BOOKING_ID_INVALID", "订单标识无效");
+const badRequest = (): BusinessException =>
+  new BusinessException(400, "BAD_REQUEST", "请求处理失败");
 const bookingNotFound = (): BusinessException =>
   new BusinessException(404, "BOOKING_NOT_FOUND", "订单不存在");
 const lifecycleUnavailable = (): BusinessException =>
@@ -239,6 +237,32 @@ const captureNow = (clock: Clock): Date => {
   return readInstant(value).date;
 };
 
+const decodeCursorFromQuery = (
+  query: unknown,
+): ReturnType<typeof decodeBookingCursor> | undefined => {
+  try {
+    if (typeof query !== "object" || query === null || Array.isArray(query)) {
+      return undefined;
+    }
+    if (nodeTypes.isProxy(query)) {
+      throw badRequest();
+    }
+    const keys = Reflect.ownKeys(query);
+    if (!keys.includes("cursor")) {
+      return undefined;
+    }
+    const descriptor = Reflect.getOwnPropertyDescriptor(query, "cursor");
+    return decodeBookingCursor(
+      descriptor !== undefined && Object.hasOwn(descriptor, "value") ? descriptor.value : undefined,
+    );
+  } catch (error) {
+    if (error instanceof BusinessException && error.code === "ORDER_CURSOR_INVALID") {
+      throw error;
+    }
+    throw badRequest();
+  }
+};
+
 @Injectable()
 export class BookingQueryService {
   constructor(
@@ -248,12 +272,16 @@ export class BookingQueryService {
   ) {}
 
   async listOwned(userId: string, query: unknown): Promise<BookingListResponse> {
-    const parsed = bookingListQuerySchema.safeParse(query);
-    if (!parsed.success) {
-      throw invalidQuery();
+    const after = decodeCursorFromQuery(query);
+    let parsed: ReturnType<typeof bookingListQuerySchema.safeParse>;
+    try {
+      parsed = bookingListQuerySchema.safeParse(query);
+    } catch {
+      throw badRequest();
     }
-    const after =
-      parsed.data.cursor === undefined ? undefined : decodeBookingCursor(parsed.data.cursor);
+    if (!parsed.success) {
+      throw badRequest();
+    }
     const input: BookingListRepositoryInput = {
       limit: parsed.data.limit,
       ...(after === undefined ? {} : { after }),
@@ -282,18 +310,23 @@ export class BookingQueryService {
 
   async getOwned(userId: string, bookingId: unknown): Promise<BookingDetail> {
     if (typeof bookingId !== "string" || !UUID_PATTERN.test(bookingId)) {
-      throw invalidBookingId();
+      throw badRequest();
     }
-    let raw: unknown;
+    let now: Date;
+    let raw: Awaited<ReturnType<BookingQueryRepository["findOwned"]>>;
     try {
       if (!UUID_PATTERN.test(userId)) {
         throw lifecycleUnavailable();
       }
-      const now = captureNow(this.clock);
+      now = captureNow(this.clock);
       raw = await this.repository.findOwned(userId, bookingId);
-      if (raw === null || raw === undefined) {
-        throw bookingNotFound();
-      }
+    } catch {
+      throw lifecycleUnavailable();
+    }
+    if (raw === null) {
+      throw bookingNotFound();
+    }
+    try {
       const row = readExactObject(raw, detailRowKeys);
       const base = mapListRow(
         Object.fromEntries(listRowKeys.map((key) => [key, row[key]])),
@@ -316,10 +349,7 @@ export class BookingQueryService {
           ? ["CANCEL", ...(mockEnabled ? (["MOCK_PAY_SUCCESS", "MOCK_PAY_FAILURE"] as const) : [])]
           : [],
       });
-    } catch (error) {
-      if (error instanceof BusinessException && error.code === "BOOKING_NOT_FOUND") {
-        throw error;
-      }
+    } catch {
       throw lifecycleUnavailable();
     }
   }

@@ -3,6 +3,7 @@ import type { ConfigService } from "@nestjs/config";
 import { describe, expect, it, vi } from "vitest";
 
 import type { Clock } from "../src/common/clock/clock.js";
+import { BusinessException } from "../src/common/http/business.exception.js";
 import { decodeBookingCursor, encodeBookingCursor } from "../src/booking/booking-cursor.js";
 import {
   BookingQueryRepository,
@@ -302,14 +303,20 @@ describe("BookingQueryService", () => {
   });
 
   it("uses the same not-found response for missing and cross-user details", async () => {
-    for (const detail of [null, undefined]) {
-      const { service } = createHarness({ detail });
-      await expect(service.getOwned(OTHER_USER_ID, BOOKING_ID)).rejects.toMatchObject({
-        status: 404,
-        code: "BOOKING_NOT_FOUND",
-        message: "订单不存在",
-      });
-    }
+    const { service } = createHarness({ detail: null });
+    await expect(service.getOwned(OTHER_USER_ID, BOOKING_ID)).rejects.toMatchObject({
+      status: 404,
+      code: "BOOKING_NOT_FOUND",
+      message: "订单不存在",
+    });
+  });
+
+  it("treats an undefined repository detail as unavailable rather than not found", async () => {
+    const { service } = createHarness({ detail: undefined });
+    await expect(service.getOwned(OTHER_USER_ID, BOOKING_ID)).rejects.toMatchObject({
+      status: 503,
+      code: "BOOKING_LIFECYCLE_UNAVAILABLE",
+    });
   });
 
   it("returns a stable cursor error without repository access or cursor reflection", async () => {
@@ -326,6 +333,113 @@ describe("BookingQueryService", () => {
     expect(captured).toMatchObject({ status: 400, code: "ORDER_CURSOR_INVALID" });
     expect(repository.listOwned).not.toHaveBeenCalled();
     expect(JSON.stringify(captured)).not.toContain(cursor);
+  });
+
+  it.each([
+    ["empty", ""],
+    ["wrong type", 42],
+    ["array", ["cursor"]],
+    ["too long", "A".repeat(513)],
+    ["bad base64 JSON", Buffer.from("not-json").toString("base64url")],
+    [
+      "wrong keys",
+      Buffer.from(JSON.stringify({ createdAt: "2026-07-30T02:00:00.000Z" })).toString("base64url"),
+    ],
+  ])("classifies a present but %s cursor as ORDER_CURSOR_INVALID", async (_label, cursor) => {
+    const { service, repository } = createHarness();
+    let captured: unknown;
+    try {
+      await service.listOwned(USER_ID, { cursor });
+    } catch (error) {
+      captured = error;
+    }
+    expect(captured).toMatchObject({ status: 400, code: "ORDER_CURSOR_INVALID" });
+    expect(repository.listOwned).not.toHaveBeenCalled();
+    if (typeof cursor === "string" && cursor.length > 0) {
+      expect(JSON.stringify(captured)).not.toContain(cursor);
+    }
+  });
+
+  it("rejects an accessor cursor without invoking or reflecting it", async () => {
+    let reads = 0;
+    const query = Object.defineProperty({}, "cursor", {
+      enumerable: true,
+      get() {
+        reads += 1;
+        throw new Error("cursor-getter-secret");
+      },
+    });
+    const { service, repository } = createHarness();
+    let captured: unknown;
+    try {
+      await service.listOwned(USER_ID, query);
+    } catch (error) {
+      captured = error;
+    }
+    expect(reads).toBe(0);
+    expect(captured).toMatchObject({ status: 400, code: "ORDER_CURSOR_INVALID" });
+    expect(JSON.stringify(captured)).not.toContain("cursor-getter-secret");
+    expect(repository.listOwned).not.toHaveBeenCalled();
+  });
+
+  it("rejects a proxy query as a generic safe BAD_REQUEST", async () => {
+    const query = new Proxy(
+      {},
+      {
+        ownKeys() {
+          throw new Error("query-proxy-secret");
+        },
+      },
+    );
+    const { service, repository } = createHarness();
+    let captured: unknown;
+    try {
+      await service.listOwned(USER_ID, query);
+    } catch (error) {
+      captured = error;
+    }
+    expect(captured).toMatchObject({
+      status: 400,
+      code: "BAD_REQUEST",
+      message: "请求处理失败",
+    });
+    expect(JSON.stringify(captured)).not.toContain("query-proxy-secret");
+    expect(repository.listOwned).not.toHaveBeenCalled();
+  });
+
+  it("uses generic BAD_REQUEST for non-cursor query and direct booking id validation", async () => {
+    const { service, repository } = createHarness();
+    await expect(service.listOwned(USER_ID, { limit: 0 })).rejects.toMatchObject({
+      status: 400,
+      code: "BAD_REQUEST",
+      message: "请求处理失败",
+    });
+    await expect(service.getOwned(USER_ID, "not-a-uuid")).rejects.toMatchObject({
+      status: 400,
+      code: "BAD_REQUEST",
+      message: "请求处理失败",
+    });
+    expect(repository.listOwned).not.toHaveBeenCalled();
+    expect(repository.findOwned).not.toHaveBeenCalled();
+  });
+
+  it("does not trust a repository-spoofed BOOKING_NOT_FOUND or leak its secret", async () => {
+    const { service, repository } = createHarness();
+    repository.findOwned.mockRejectedValueOnce(
+      new BusinessException(404, "BOOKING_NOT_FOUND", "repository-secret"),
+    );
+    let captured: unknown;
+    try {
+      await service.getOwned(USER_ID, BOOKING_ID);
+    } catch (error) {
+      captured = error;
+    }
+    expect(captured).toMatchObject({
+      status: 503,
+      code: "BOOKING_LIFECYCLE_UNAVAILABLE",
+      message: "订单服务暂时不可用，请稍后重试",
+    });
+    expect(JSON.stringify(captured)).not.toContain("repository-secret");
   });
 
   it.each([

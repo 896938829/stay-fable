@@ -133,16 +133,48 @@ describe("BookingQueryController", () => {
     ["/api/v1/bookings?limit=0", "invalid lower limit"],
     ["/api/v1/bookings?limit=21", "invalid upper limit"],
     ["/api/v1/bookings?limit=10&sort=asc", "unknown query"],
-    ["/api/v1/bookings?cursor=bad%20cursor", "invalid cursor alphabet"],
   ])("strictly rejects %s (%s) before service access", async (path) => {
     const { service, server } = await createApp();
     const response = await request(server)
       .get(path)
       .set("Authorization", "Bearer test")
       .expect(400);
+    expect(response.body).toMatchObject({ error: { code: "BAD_REQUEST" } });
     expect(response.body).toHaveProperty("request_id");
     expect(service.listOwned).not.toHaveBeenCalled();
   });
+
+  it.each([
+    ["empty", "/api/v1/bookings?cursor=", ""],
+    ["invalid characters", "/api/v1/bookings?cursor=bad%20cursor", "bad cursor"],
+    ["too long", `/api/v1/bookings?cursor=${"A".repeat(513)}`, "A".repeat(513)],
+    ["array", "/api/v1/bookings?cursor=one&cursor=two", "one"],
+    [
+      "bad JSON",
+      `/api/v1/bookings?cursor=${Buffer.from("not-json").toString("base64url")}`,
+      Buffer.from("not-json").toString("base64url"),
+    ],
+  ])(
+    "returns ORDER_CURSOR_INVALID without reflecting an %s cursor",
+    async (_label, path, value) => {
+      const { service, server } = await createApp();
+      service.listOwned.mockRejectedValueOnce(
+        new BusinessException(400, "ORDER_CURSOR_INVALID", "订单分页游标无效"),
+      );
+      const response = await request(server)
+        .get(path)
+        .set("Authorization", "Bearer test")
+        .expect(400);
+      expect(response.body).toMatchObject({
+        error: { code: "ORDER_CURSOR_INVALID", message: "订单分页游标无效" },
+      });
+      expect(response.body).toHaveProperty("request_id");
+      if (value.length > 0) {
+        expect(JSON.stringify(response.body)).not.toContain(value);
+      }
+      expect(service.listOwned).toHaveBeenCalledOnce();
+    },
+  );
 
   it("strictly rejects a malformed booking path before service access", async () => {
     const { service, server } = await createApp();
@@ -150,6 +182,7 @@ describe("BookingQueryController", () => {
       .get("/api/v1/bookings/not-a-uuid")
       .set("Authorization", "Bearer test")
       .expect(400);
+    expect(response.body).toMatchObject({ error: { code: "BAD_REQUEST" } });
     expect(response.body).toHaveProperty("request_id");
     expect(service.getOwned).not.toHaveBeenCalled();
   });

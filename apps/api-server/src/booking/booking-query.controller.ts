@@ -17,7 +17,7 @@ import type {
   BookingListResponse,
 } from "@stay-fable/api-contracts/booking-lifecycle";
 import { Type } from "class-transformer";
-import { IsInt, IsOptional, IsString, Length, Matches, Max, Min } from "class-validator";
+import { Allow, IsInt, IsOptional, Max, Min } from "class-validator";
 
 import { CurrentUser, type AuthenticatedUser } from "../identity/current-user.js";
 import { SessionAuthGuard } from "../identity/session-auth.guard.js";
@@ -38,15 +38,13 @@ class BookingListQueryDto {
   limit = 10;
 
   @ApiPropertyOptional({
+    type: String,
     minLength: 1,
     maxLength: 512,
     pattern: "^[A-Za-z0-9_-]+$",
   })
-  @IsOptional()
-  @IsString()
-  @Length(1, 512)
-  @Matches(/^[A-Za-z0-9_-]+$/)
-  cursor?: string;
+  @Allow()
+  cursor?: unknown;
 }
 
 @ApiTags("booking")

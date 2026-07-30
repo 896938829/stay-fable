@@ -77,7 +77,7 @@ export const encodeBookingCursor = (value: BookingCursor): string => {
   }
 };
 
-export const decodeBookingCursor = (value: string): BookingCursor => {
+export const decodeBookingCursor = (value: unknown): BookingCursor => {
   try {
     if (
       typeof value !== "string" ||
