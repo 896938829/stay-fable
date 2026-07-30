@@ -363,6 +363,17 @@ describe("booking service", () => {
         ),
         expectedCode: "AUTH_SESSION_EXPIRED",
       },
+      {
+        dependencyError: Object.assign(
+          new Error("internal lifecycle details"),
+          {
+            code: "BOOKING_LIFECYCLE_UNAVAILABLE",
+            statusCode: 503,
+            requestId: "request_lifecycle",
+          },
+        ),
+        expectedCode: "BOOKING_LIFECYCLE_UNAVAILABLE",
+      },
     ]) {
       const { service } = serviceWith(async () => {
         throw dependencyError;

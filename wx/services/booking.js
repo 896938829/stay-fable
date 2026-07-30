@@ -18,6 +18,7 @@ const SAFE_ERROR_MESSAGES = Object.freeze({
   AUTH_SESSION_OPERATION_CANCELLED: "Authentication operation cancelled",
   AUTH_SESSION_SERVICE_UNAVAILABLE: "Authentication service unavailable",
   AUTH_USER_DISABLED: "Authentication account unavailable",
+  BOOKING_LIFECYCLE_UNAVAILABLE: "Booking lifecycle unavailable",
   BOOKING_REQUEST_INVALID: "Booking request invalid",
   BOOKING_SERVICE_UNAVAILABLE: "Booking service unavailable",
   IDEMPOTENCY_KEY_INVALID: "Idempotency key invalid",
