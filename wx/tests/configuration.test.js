@@ -31,6 +31,10 @@ const sliceFivePreflightUrl = new URL(
   "../automator/slice-5-preflight.js",
   import.meta.url,
 );
+const sliceFiveLifecycleUrl = new URL(
+  "../automator/slice-5-booking-lifecycle.js",
+  import.meta.url,
+);
 
 describe("WeChat location privacy configuration", () => {
   it("registers the nine user-flow pages in order and statically validates every page file", async () => {
@@ -219,5 +223,75 @@ describe("WeChat location privacy configuration", () => {
       "readBaseline",
     ]);
     expect(Object.isFrozen(preflight.READ_ONLY_ADAPTER_METHODS)).toBe(true);
+  });
+
+  it("keeps the Slice 5 lifecycle on formal physical elements without navigation fallbacks", async () => {
+    const [script, appConfig, ...wxml] = await Promise.all([
+      readFile(sliceFiveLifecycleUrl, "utf8"),
+      readFile(appConfigUrl, "utf8"),
+      readFile(new URL("../pages/home/home.wxml", import.meta.url), "utf8"),
+      readFile(
+        new URL("../pages/date-guest-select/date-guest-select.wxml", import.meta.url),
+        "utf8",
+      ),
+      readFile(
+        new URL("../components/property-card/property-card.wxml", import.meta.url),
+        "utf8",
+      ),
+      readFile(
+        new URL("../pages/property-detail/property-detail.wxml", import.meta.url),
+        "utf8",
+      ),
+      readFile(
+        new URL("../pages/room-detail/room-detail.wxml", import.meta.url),
+        "utf8",
+      ),
+      readFile(
+        new URL("../pages/booking-confirm/booking-confirm.wxml", import.meta.url),
+        "utf8",
+      ),
+      readFile(
+        new URL("../pages/order-list/order-list.wxml", import.meta.url),
+        "utf8",
+      ),
+      readFile(
+        new URL("../pages/order-detail/order-detail.wxml", import.meta.url),
+        "utf8",
+      ),
+    ]);
+    const lifecycle = require(fileURLToPath(sliceFiveLifecycleUrl));
+    const source = wxml.join("\n");
+
+    expect(() => new vm.Script(script)).not.toThrow();
+    expect(Object.keys(lifecycle)).toEqual([
+      "runBookingLifecycle",
+      "writeSafeEvidence",
+    ]);
+    for (const selector of [
+      ".field-row",
+      ".save-button",
+      ".search-button",
+      ".property-card__tap-target",
+      ".room-card__action",
+      ".selection-bar__action",
+      ".created-card__action--primary",
+      ".order-row__action",
+      ".action-notice",
+      ".summary-card__status",
+    ]) {
+      expect(source).toContain(selector.slice(1));
+      expect(script).toContain(`"${selector}"`);
+    }
+    expect(script).toContain('"picker"');
+    expect(script).toContain('\'[data-action="MOCK_PAY_FAILURE"]\'');
+    expect(script).toContain('\'[data-action="MOCK_PAY_SUCCESS"]\'');
+    expect(script).toContain('\'[data-action="CANCEL"]\'');
+    expect(appConfig).toContain('"text": "首页"');
+    expect(appConfig).toContain('"text": "订单"');
+    expect(script).toContain("nativeController.switchTab({ url })");
+    expect(script).not.toMatch(
+      /callMethod|callWxMethod|evaluate|navigateTo|redirectTo|reLaunch|navigateBack/,
+    );
+    expect(script).not.toMatch(/miniProgram\.switchTab/);
   });
 });
