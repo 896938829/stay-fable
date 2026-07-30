@@ -112,6 +112,40 @@ test("models Prisma generation as an API package Turbo prerequisite", async () =
   }
 });
 
+test("builds and watches the API without the vulnerable Nest CLI toolchain", async () => {
+  const apiPackage = JSON.parse(
+    await readFile(new URL("apps/api-server/package.json", rootUrl), "utf8"),
+  );
+  const lockfile = await readFile(new URL("pnpm-lock.yaml", rootUrl), "utf8");
+
+  assert.equal(
+    apiPackage.scripts.build,
+    "node ../../scripts/clean-api-dist.mjs && tsc -p tsconfig.build.json",
+  );
+  assert.equal(apiPackage.scripts.dev, "tsx watch src/main.ts");
+  assert.equal(apiPackage.devDependencies["@nestjs/cli"], undefined);
+  for (const command of Object.values(apiPackage.scripts)) {
+    assert.doesNotMatch(command, /(?:^|\s)nest(?:\s|$)/);
+  }
+  assert.doesNotMatch(lockfile, /(?:^|\n)\s{2,}'?@nestjs\/cli@/m);
+  await assert.rejects(() => readFile(new URL("apps/api-server/nest-cli.json", rootUrl)), {
+    code: "ENOENT",
+  });
+});
+
+test("runs the built-artifact smoke with explicit test-only providers", async () => {
+  const smoke = await readFile(new URL("scripts/smoke-api-runtime.mjs", rootUrl), "utf8");
+
+  assert.match(smoke, /NODE_ENV:\s*"test"/);
+  assert.match(smoke, /IDENTITY_PROVIDER:\s*"mock"/);
+  assert.match(smoke, /ENABLE_MOCK_PAYMENT:\s*"false"/);
+  assert.doesNotMatch(
+    smoke,
+    /NODE_ENV:\s*"production"/,
+    "the artifact smoke cannot claim production identity while code2session remains deferred",
+  );
+});
+
 test("keeps all Prisma packages on one patched exact version", async () => {
   const apiPackage = JSON.parse(
     await readFile(new URL("apps/api-server/package.json", rootUrl), "utf8"),
