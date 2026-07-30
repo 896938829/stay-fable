@@ -1,0 +1,227 @@
+.order-detail-page {
+  min-height: 100vh;
+  padding-top: var(--space-3);
+  padding-bottom: calc(220rpx + env(safe-area-inset-bottom));
+}
+
+.order-detail {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.summary-card,
+.price-card,
+.payment-card,
+.policy-card,
+.history-card {
+  padding: var(--space-4);
+}
+
+.summary-card__heading,
+.total-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.summary-card__number {
+  min-width: 0;
+  color: var(--color-muted);
+  font-size: 23rpx;
+  overflow-wrap: anywhere;
+}
+
+.summary-card__status {
+  flex: none;
+  color: var(--color-brand-dark);
+  font-size: 27rpx;
+  font-weight: 700;
+}
+
+.summary-card__property,
+.summary-card__room,
+.summary-card__expiry,
+.policy-card__body,
+.payment-card__status,
+.payment-card__number,
+.payment-card__time,
+.history-list__status,
+.history-list__reason,
+.history-list__time {
+  display: block;
+}
+
+.summary-card__property {
+  margin-top: var(--space-3);
+  color: var(--color-text);
+  font-size: 38rpx;
+  font-weight: 700;
+}
+
+.summary-card__room {
+  margin-top: var(--space-1);
+  color: var(--color-brand-dark);
+  font-size: 27rpx;
+  font-weight: 650;
+}
+
+.summary-card__facts {
+  display: flex;
+  margin-top: var(--space-3);
+  color: var(--color-muted);
+  flex-direction: column;
+  gap: var(--space-1);
+  font-size: 25rpx;
+  line-height: 1.6;
+}
+
+.summary-card__expiry,
+.payment-card__number,
+.payment-card__time,
+.history-list__reason,
+.history-list__time {
+  color: var(--color-muted);
+  font-size: 23rpx;
+  line-height: 1.6;
+}
+
+.summary-card__expiry {
+  margin-top: var(--space-3);
+}
+
+.nightly-list {
+  margin-top: var(--space-3);
+  border-top: 1rpx solid var(--color-border);
+}
+
+.nightly-list__item,
+.total-row {
+  display: flex;
+  min-height: 92rpx;
+  border-bottom: 1rpx solid var(--color-border);
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.nightly-list__date {
+  color: var(--color-text);
+  font-size: 25rpx;
+}
+
+.nightly-list__prices {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+}
+
+.nightly-list__rack {
+  color: var(--color-muted);
+  font-size: 22rpx;
+  text-decoration: line-through;
+}
+
+.nightly-list__sale,
+.total-row__amount,
+.payment-card__status {
+  color: var(--color-brand-dark);
+  font-size: 30rpx;
+  font-weight: 700;
+}
+
+.total-row {
+  border-bottom: 0;
+  font-size: 28rpx;
+  font-weight: 650;
+}
+
+.total-row__amount {
+  font-size: 38rpx;
+}
+
+.payment-card__status,
+.policy-card__body {
+  margin-top: var(--space-3);
+}
+
+.policy-card__body {
+  color: var(--color-muted);
+  font-size: 25rpx;
+  line-height: 1.7;
+  white-space: pre-wrap;
+}
+
+.history-list {
+  margin-top: var(--space-3);
+}
+
+.history-list__item {
+  display: flex;
+  min-height: 104rpx;
+  gap: var(--space-3);
+}
+
+.history-list__marker {
+  width: 16rpx;
+  height: 16rpx;
+  margin-top: 12rpx;
+  border-radius: 50%;
+  background: var(--color-brand);
+  box-shadow: 0 0 0 8rpx #f4e7df;
+}
+
+.history-list__content {
+  flex: 1;
+  padding-bottom: var(--space-3);
+  border-bottom: 1rpx solid var(--color-border);
+}
+
+.history-list__status {
+  color: var(--color-text);
+  font-size: 27rpx;
+  font-weight: 650;
+}
+
+.action-notice {
+  padding: var(--space-3);
+  border: 1rpx solid #d6aa96;
+  border-radius: var(--radius-medium);
+  background: #fff5ef;
+  color: var(--color-brand-dark);
+  font-size: 25rpx;
+  line-height: 1.6;
+}
+
+.action-notice--uncertain {
+  border-color: #d49a42;
+  background: #fff8e8;
+}
+
+.action-bar {
+  position: fixed;
+  z-index: 5;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  display: flex;
+  padding: 20rpx 32rpx calc(20rpx + env(safe-area-inset-bottom));
+  border-top: 1rpx solid var(--color-border);
+  background: rgba(255, 253, 249, 0.96);
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.action-bar__button {
+  min-width: 0;
+  min-height: 88rpx;
+  margin: 0;
+  flex: 1 1 calc(50% - var(--space-1));
+  font-size: 25rpx;
+  line-height: 88rpx;
+}
+
+.action-bar__button--cancel {
+  flex-basis: 100%;
+}

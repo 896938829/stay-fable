@@ -1,0 +1,124 @@
+<navigation-bar
+  title="订单详情"
+  back="{{true}}"
+  color="#2f2925"
+  background="#f7f1eb"
+  loading="{{status === 'loading' || status === 'refreshing' || status === 'action_pending'}}"
+></navigation-bar>
+
+<view class="page-shell order-detail-page">
+  <loading-state
+    wx:if="{{status === 'loading'}}"
+    text="正在加载订单详情"
+  ></loading-state>
+
+  <error-state
+    wx:elif="{{status === 'error' && errorCode === 'INVALID_BOOKING_LINK'}}"
+    title="订单链接无效"
+    message="{{errorMessage}}"
+    action-text="返回订单列表"
+    bind:retry="returnBack"
+  ></error-state>
+
+  <error-state
+    wx:elif="{{status === 'error'}}"
+    title="暂时无法加载订单"
+    message="{{errorMessage}}"
+    action-text="重新加载"
+    bind:retry="retry"
+  ></error-state>
+
+  <view wx:elif="{{booking}}" class="order-detail">
+    <view
+      wx:if="{{actionMessage}}"
+      class="action-notice {{status === 'action_uncertain' ? 'action-notice--uncertain' : ''}}"
+      aria-live="polite"
+    >
+      <text>{{actionMessage}}</text>
+    </view>
+
+    <view class="surface-card summary-card">
+      <view class="summary-card__heading">
+        <text class="summary-card__number">{{booking.bookingNumber}}</text>
+        <text class="summary-card__status">{{booking.statusLabel}}</text>
+      </view>
+      <text class="summary-card__property">{{booking.propertyName}}</text>
+      <text class="summary-card__room">{{booking.roomTypeName}}</text>
+      <view class="summary-card__facts">
+        <text>{{booking.checkin}} 至 {{booking.checkout}}</text>
+        <text>{{booking.nights}} 晚 · {{booking.guests}} 人</text>
+      </view>
+      <text class="summary-card__expiry">付款截止：{{booking.expiresAt}}</text>
+    </view>
+
+    <view class="surface-card price-card">
+      <text class="section-title">逐晚价格</text>
+      <view class="nightly-list">
+        <view
+          wx:for="{{booking.nightlyPrices}}"
+          wx:key="businessDate"
+          class="nightly-list__item"
+        >
+          <text class="nightly-list__date">{{item.businessDate}}</text>
+          <view class="nightly-list__prices">
+            <text class="nightly-list__rack">{{item.rackPriceLabel}}</text>
+            <text class="nightly-list__sale">{{item.salePriceLabel}}</text>
+          </view>
+        </view>
+      </view>
+      <view class="total-row">
+        <text>订单总额</text>
+        <text class="total-row__amount">{{booking.totalPriceLabel}}</text>
+      </view>
+    </view>
+
+    <view wx:if="{{booking.latestPayment}}" class="surface-card payment-card">
+      <text class="section-title">最近支付</text>
+      <text class="payment-card__status">{{booking.latestPayment.statusLabel}}</text>
+      <text class="payment-card__number">{{booking.latestPayment.paymentNumber}}</text>
+      <text class="payment-card__time">{{booking.latestPayment.processedAt}}</text>
+    </view>
+
+    <view class="surface-card policy-card">
+      <text class="section-title">预订政策</text>
+      <text class="policy-card__body">{{booking.bookingPolicy}}</text>
+    </view>
+
+    <view class="surface-card history-card">
+      <text class="section-title">订单进度</text>
+      <view class="history-list">
+        <view
+          wx:for="{{booking.statusHistory}}"
+          wx:key="historyKey"
+          class="history-list__item"
+        >
+          <view class="history-list__marker"></view>
+          <view class="history-list__content">
+            <text class="history-list__status">{{item.toStatusLabel}}</text>
+            <text wx:if="{{item.reasonLabel}}" class="history-list__reason">
+              {{item.reasonLabel}}
+            </text>
+            <text class="history-list__time">{{item.createdAt}}</text>
+          </view>
+        </view>
+      </view>
+    </view>
+
+    <view
+      wx:if="{{booking.actions.length > 0}}"
+      class="action-bar safe-bottom"
+    >
+      <button
+        wx:for="{{booking.actions}}"
+        wx:key="code"
+        class="{{item.code === 'CANCEL' ? 'secondary-button action-bar__button--cancel' : 'primary-button'}} action-bar__button"
+        data-action="{{item.code}}"
+        bindtap="performAction"
+        disabled="{{status === 'refreshing' || status === 'action_pending' || (status === 'action_uncertain' && item.code !== uncertainAction)}}"
+        loading="{{status === 'action_pending'}}"
+      >
+        {{item.label}}
+      </button>
+    </view>
+  </view>
+</view>
