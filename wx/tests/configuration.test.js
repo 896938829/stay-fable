@@ -1,4 +1,5 @@
 import { readFile } from "node:fs/promises";
+import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import vm from "node:vm";
 
@@ -6,6 +7,7 @@ import { describe, expect, it } from "vitest";
 
 import { validateWxProject } from "../../scripts/check-wx-project.mjs";
 
+const require = createRequire(import.meta.url);
 const appConfigUrl = new URL("../app.json", import.meta.url);
 const bookingPageConfigUrl = new URL(
   "../pages/booking-confirm/booking-confirm.json",
@@ -23,6 +25,10 @@ const taskEightUrl = new URL(
 const cityPageUrl = new URL("../pages/city-select/city-select.wxml", import.meta.url);
 const catalogAutomatorUrl = new URL(
   "../automator/slice-2-catalog.js",
+  import.meta.url,
+);
+const sliceFivePreflightUrl = new URL(
+  "../automator/slice-5-preflight.js",
   import.meta.url,
 );
 
@@ -192,5 +198,26 @@ describe("WeChat location privacy configuration", () => {
     expect(script).not.toMatch(
       /access_token|refresh_token|appid|longitude|latitude|pageX|pageY|clientX|clientY/i,
     );
+  });
+
+  it("keeps the Slice 5 preflight executable and strictly read-only", async () => {
+    const script = await readFile(sliceFivePreflightUrl, "utf8");
+    const preflight = require(fileURLToPath(sliceFivePreflightUrl));
+
+    expect(() => new vm.Script(script)).not.toThrow();
+    expect(Object.keys(preflight)).toEqual([
+      "READ_ONLY_ADAPTER_METHODS",
+      "runPreflight",
+    ]);
+    expect(preflight.READ_ONLY_ADAPTER_METHODS).toEqual([
+      "readCandidate",
+      "readWechatIde",
+      "readTestAccountCount",
+      "readApiHealth",
+      "readClockDate",
+      "readSeedWindow",
+      "readBaseline",
+    ]);
+    expect(Object.isFrozen(preflight.READ_ONLY_ADAPTER_METHODS)).toBe(true);
   });
 });
