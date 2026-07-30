@@ -184,6 +184,10 @@ corepack pnpm test:wx
 corepack pnpm wx:check
 ```
 
+生产 `miniprogram-automator@0.12.1` 不支持物理操作原生日期 picker 时，CLI 必须在 launch 前
+固定输出 `PICKER_PHYSICAL_UNAVAILABLE`，不得执行 `trigger("change")`。fake 的 10 步 GREEN
+只证明 runner 状态机，不得写成真实物理 PASS。
+
 ### Step 5：提交
 
 ```powershell
@@ -224,6 +228,11 @@ SLICE5_CLEANUP_COMPLETE
 ```
 
 任何 blocker 都不得输出 `SLICE5_AUTOMATOR_COMPLETE`。
+
+协调器还必须拥有 POST ledger producer：以临时文件写完、fsync/close 后原子 rename 发布，
+schema 绑定 candidate commit/tree、execution date、单调 revision、total/unknown 和五类写
+计数。Task 4 consumer 只能读取该 owned 路径；producer 未启动或 picker 能力不满足时，不得
+启动 Automator。
 
 ### Step 3：提交
 

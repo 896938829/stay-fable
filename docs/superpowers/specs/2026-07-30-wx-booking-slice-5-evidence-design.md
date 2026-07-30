@@ -151,6 +151,12 @@ Automator 脚本只能使用正式页面的物理导航和元素 tap/input：
 - 在支付结果未知时生成新幂等键；
 - 为证据关闭域名/TLS 校验。
 
+`miniprogram-automator@0.12.1` 只能给 `input`/`textarea` 执行 `input()`，不能物理选择原生
+`<picker mode="date">`。生产 CLI 必须在启动开发工具前做能力预检；该版本固定返回
+`BLOCKED_AUTOMATOR_RC/PICKER_PHYSICAL_UNAVAILABLE` 且 tap/write/launch 均为 0。不得用
+`trigger("change")`、`callMethod` 或运行时求值伪装日期选择。真实闭环只能由具备原生控件
+物理操作能力的 WechatIDE 自动化或手机人工在 Task 6 解阻。
+
 ### 7.1 写请求计数
 
 每个写动作在操作前后记录脱敏计数：
@@ -163,6 +169,11 @@ Automator 脚本只能使用正式页面的物理导航和元素 tap/input：
 
 快速连续点击时每个动作的 POST 增量必须恰为 1。GET 刷新时 POST 增量必须为 0。原始 URL、
 header 和 body 不进入证据。
+
+计数由 Task 5 的 WSL 协调器原子发布，Task 4 只消费 exact ledger。ledger 必须绑定候选
+commit/tree 与执行日，revision 单调递增，并同时包含 total、unknown 和五类允许写计数；
+`unknown > 0`、总数不相等、revision 回退、候选不匹配或 partial JSON 均立即终止。支付重试
+只保存 outcome、attempts、same-scope/same-credential 布尔观察，不保存 key。
 
 ### 7.2 证据产物
 
