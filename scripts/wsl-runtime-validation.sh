@@ -217,12 +217,32 @@ docker run --rm \
   -e "API_BASE_URL=http://${api_container}:3000" \
   "$node_image" node /verify-slice-2-runtime.mjs
 
-docker exec \
-  --user node \
-  -e "API_BASE_URL=http://127.0.0.1:3000" \
-  -e "DATABASE_URL=$database_url" \
-  "$api_container" \
-  node /verify-slice-3-runtime.mjs
+run_slice_three_runtime_validation() {
+  local slice3_api_container="$1"
+  local slice3_worker_container="$2"
+  local slice3_database_url="$3"
+  local runtime_exit=0
+
+  docker exec \
+    --user node \
+    -e "API_BASE_URL=http://127.0.0.1:3000" \
+    -e "DATABASE_URL=$slice3_database_url" \
+    "$slice3_api_container" \
+    node /verify-slice-3-runtime.mjs || runtime_exit=$?
+  if [ "$runtime_exit" -eq 0 ]; then
+    return 0
+  fi
+
+  echo 'SLICE3_RUNTIME_DIAGNOSTICS' >&2
+  docker inspect \
+    --format 'name={{.Name}} status={{.State.Status}} running={{.State.Running}} exit={{.State.ExitCode}} oom={{.State.OOMKilled}} restarts={{.RestartCount}}' \
+    "$slice3_api_container" "$slice3_worker_container" >&2 || true
+  docker logs --tail 200 "$slice3_api_container" >&2 || true
+  docker logs --tail 200 "$slice3_worker_container" >&2 || true
+  return "$runtime_exit"
+}
+
+run_slice_three_runtime_validation "$api_container" "$worker_container" "$database_url"
 
 echo 'SLICE2_RUNTIME_READY http://127.0.0.1:3000'
 

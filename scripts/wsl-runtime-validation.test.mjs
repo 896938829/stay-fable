@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
@@ -6,6 +7,64 @@ const powershellPath = new URL("./wsl-runtime-validation.ps1", import.meta.url);
 const bashPath = new URL("./wsl-runtime-validation.sh", import.meta.url);
 const bootstrapPath = new URL("./wsl-database-bootstrap.ps1", import.meta.url);
 const sliceThreeVerifierPath = new URL("./verify-slice-3-runtime.mjs", import.meta.url);
+
+const sliceThreeRuntimeHelper = async () => {
+  const bash = (await readFile(bashPath, "utf8")).replaceAll("\r\n", "\n");
+  const helper = bash.match(/run_slice_three_runtime_validation\(\) \{[\s\S]*?\n\}/)?.[0];
+  assert.ok(helper, "Slice 3 runtime helper must be defined");
+  return helper;
+};
+
+const runSliceThreeRuntimeHelper = async ({ diagnosticExit = 0, execExit }) => {
+  const helper = await sliceThreeRuntimeHelper();
+  const script = `
+set -Eeuo pipefail
+${helper}
+docker() {
+  printf 'DOCKER_CALL:%s\\n' "$*" >&2
+  case "$1" in
+    exec) return ${execExit} ;;
+    inspect|logs) return ${diagnosticExit} ;;
+    *) return 0 ;;
+  esac
+}
+run_slice_three_runtime_validation api-container worker-container database-url
+`;
+  const command =
+    process.platform === "win32"
+      ? { file: "wsl.exe", arguments: ["-d", "Ubuntu-22.04", "--", "bash", "-s"] }
+      : { file: "bash", arguments: ["-s"] };
+  return spawnSync(command.file, command.arguments, {
+    encoding: "utf8",
+    input: script,
+  });
+};
+
+test("prints diagnostics only when Slice 3 runtime validation fails", async () => {
+  const success = await runSliceThreeRuntimeHelper({ execExit: 0 });
+  assert.equal(success.status, 0, success.stderr);
+  assert.doesNotMatch(success.stderr, /SLICE3_RUNTIME_DIAGNOSTICS/);
+  assert.doesNotMatch(success.stderr, /DOCKER_CALL:(?:inspect|logs)/);
+
+  const failure = await runSliceThreeRuntimeHelper({ execExit: 125 });
+  assert.equal(failure.status, 125, failure.stderr);
+  assert.match(failure.stderr, /SLICE3_RUNTIME_DIAGNOSTICS/);
+  assert.match(failure.stderr, /DOCKER_CALL:inspect/);
+  assert.match(failure.stderr, /DOCKER_CALL:logs --tail 200 api-container/);
+  assert.match(failure.stderr, /DOCKER_CALL:logs --tail 200 worker-container/);
+});
+
+test("diagnostic failures do not mask the original Slice 3 runtime exit code", async () => {
+  const failure = await runSliceThreeRuntimeHelper({
+    diagnosticExit: 42,
+    execExit: 137,
+  });
+  assert.equal(failure.status, 137, failure.stderr);
+  assert.match(failure.stderr, /SLICE3_RUNTIME_DIAGNOSTICS/);
+  assert.match(failure.stderr, /DOCKER_CALL:inspect/);
+  assert.match(failure.stderr, /DOCKER_CALL:logs --tail 200 api-container/);
+  assert.match(failure.stderr, /DOCKER_CALL:logs --tail 200 worker-container/);
+});
 
 test("uses the host Prisma engine and preserves the bounded Slice 2 runtime gates", async () => {
   const [powershell, bash, bootstrap, sliceThreeVerifier] = await Promise.all([
@@ -44,6 +103,10 @@ test("uses the host Prisma engine and preserves the bounded Slice 2 runtime gate
   );
   assert.match(bash, /docker exec[\s\S]*node \/verify-slice-3-runtime\.mjs/);
   assert.match(bash, /docker exec[\s\S]*--user node[\s\S]*node \/verify-slice-3-runtime\.mjs/);
+  assert.match(bash, /SLICE3_RUNTIME_DIAGNOSTICS/);
+  assert.match(bash, /docker inspect[\s\S]*State\.Status[\s\S]*RestartCount/);
+  assert.match(bash, /docker logs --tail 200 "\$slice3_api_container"/);
+  assert.match(bash, /docker logs --tail 200 "\$slice3_worker_container"/);
   assert.match(bash, /-e "DATABASE_URL=\$database_url"/);
   assert.match(bash, /for minute in \$\(seq 1 10\)/);
   assert.match(bash, /SLICE2_RUNTIME_READY http:\/\/127\.0\.0\.1:3000/);
