@@ -88,7 +88,9 @@ Slice 5 增加一个聚合 OpenAPI 测试，不替代各模块已有测试。它
 - production 文档与 Nest route 均不出现开发支付路由；
 - booking 响应不泄露 user、hold、inventory 或内部 UUID；
 - 微信 `contracts.js` 的 exact-key 响应形状与 OpenAPI 字段一致；
-- 未知字段、危险对象、getter、Proxy 和非法游标继续被拒绝。
+- 未知字段、危险对象、getter、会触发异常的 Proxy 和非法游标继续被安全拒绝；
+- 原生小程序 JavaScript 无法在不执行陷阱的前提下可靠区分透明 Proxy 与普通对象，因此客户端
+  契约的可信输入边界是 `wx.request` 返回的 JSON 解析值，不声称拒绝任意透明 Proxy。
 
 不在 Slice 5 引入生成式客户端；原生微信仍使用手写严格契约。
 
