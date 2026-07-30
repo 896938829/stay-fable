@@ -10,7 +10,7 @@ import {
   type BookingQueryDatabase,
 } from "../src/booking/booking-query.repository.js";
 import { BookingQueryService } from "../src/booking/booking-query.service.js";
-import type { Prisma } from "../src/generated/prisma/client.js";
+import { Prisma } from "../src/generated/prisma/client.js";
 
 const USER_ID = "10000000-0000-4000-8000-000000000001";
 const OTHER_USER_ID = "10000000-0000-4000-8000-000000000002";
@@ -60,7 +60,7 @@ const detailRow = {
   bookingPolicy: "入住前一天 18:00 前可免费取消",
   latestPayment: {
     paymentNumber: "SFP20260730A1B2C3D4E5F6",
-    status: "SUCCEEDED",
+    status: "FAILED",
     processedAt: new Date("2026-07-30T02:02:00.000Z"),
   },
   statusHistory: [
@@ -120,6 +120,19 @@ describe("booking cursor", () => {
     expect(decodeBookingCursor(encodeBookingCursor(input))).toEqual(input);
   });
 
+  it("rejects year 0000 during both cursor encoding and decoding", () => {
+    const input = { createdAt: "0000-01-01T00:00:00.000Z", id: BOOKING_ID };
+    const encoded = Buffer.from(JSON.stringify(input)).toString("base64url");
+    for (const operation of [
+      () => encodeBookingCursor(input),
+      () => decodeBookingCursor(encoded),
+    ]) {
+      expect(operation).toThrowError(
+        expect.objectContaining({ status: 400, code: "ORDER_CURSOR_INVALID" }),
+      );
+    }
+  });
+
   it.each([
     ["not canonical base64url", "e30="],
     ["not JSON", Buffer.from("secret-cursor").toString("base64url")],
@@ -176,7 +189,7 @@ describe("BookingQueryRepository", () => {
     });
     const repository = new BookingQueryRepository({
       $queryRaw: queryRaw,
-    } as BookingQueryDatabase);
+    } as unknown as BookingQueryDatabase);
     await repository.listOwned(USER_ID, {
       limit: 2,
       after: { createdAt: "2026-07-30T02:00:00.000Z", id: BOOKING_ID },
@@ -197,25 +210,51 @@ describe("BookingQueryRepository", () => {
     expect(sql).not.toMatch(/idempotency|quote_id|inventory|hold|user\./i);
   });
 
-  it("looks up details by booking id and owner and caps history at 100", async () => {
-    const queryRaw = vi
+  it("reads all detail projections in one repeatable-read owner-bound snapshot", async () => {
+    const transactionQueryRaw = vi
       .fn()
       .mockResolvedValueOnce([baseRow])
       .mockResolvedValueOnce([])
       .mockResolvedValueOnce([]);
+    const outsideQueryRaw = vi.fn(() => {
+      throw new Error("detail query escaped transaction");
+    });
+    const transaction = vi.fn(
+      (
+        operation: (client: { $queryRaw: typeof transactionQueryRaw }) => Promise<unknown>,
+        options: { isolationLevel: string },
+      ) => {
+        void options;
+        return operation({ $queryRaw: transactionQueryRaw });
+      },
+    );
     const repository = new BookingQueryRepository({
-      $queryRaw: queryRaw,
+      $queryRaw: outsideQueryRaw,
+      $transaction: transaction,
     } as BookingQueryDatabase);
     await repository.findOwned(USER_ID, BOOKING_ID);
-    expect(queryRaw).toHaveBeenCalledTimes(3);
-    const [bookingSql, paymentSql, historySql] = queryRaw.mock.calls.map(([query]) =>
+    expect(transaction).toHaveBeenCalledOnce();
+    expect(transaction.mock.calls[0]?.[1]).toEqual({
+      isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead,
+    });
+    expect(outsideQueryRaw).not.toHaveBeenCalled();
+    expect(transactionQueryRaw).toHaveBeenCalledTimes(3);
+    const [bookingSql, paymentSql, historySql] = transactionQueryRaw.mock.calls.map(([query]) =>
       (query as Prisma.Sql).sql.replaceAll(/\s+/g, " "),
     );
     expect(bookingSql).toContain('booking."id" =');
     expect(bookingSql).toContain('booking."user_id" =');
     expect(paymentSql).toContain('ORDER BY payment."created_at" DESC, payment."id" DESC');
     expect(paymentSql).toContain("LIMIT 1");
+    expect(paymentSql).toContain("EXISTS");
+    expect(paymentSql).toContain('owned_booking."id" = payment."booking_id"');
+    expect(paymentSql).toContain('owned_booking."id" =');
+    expect(paymentSql).toContain('owned_booking."user_id" =');
     expect(historySql).toContain("LIMIT 100");
+    expect(historySql).toContain("EXISTS");
+    expect(historySql).toContain('owned_booking."id" = history."booking_id"');
+    expect(historySql).toContain('owned_booking."id" =');
+    expect(historySql).toContain('owned_booking."user_id" =');
     expect(`${bookingSql}${paymentSql}${historySql}`).not.toMatch(
       /idempotency|actor_user_id|inventory|hold|quote_id|JOIN "user"/i,
     );
@@ -268,7 +307,7 @@ describe("BookingQueryService", () => {
     expect(repository.findOwned).toHaveBeenCalledWith(USER_ID, BOOKING_ID);
     expect(result.latest_payment).toEqual({
       payment_number: "SFP20260730A1B2C3D4E5F6",
-      status: "SUCCEEDED",
+      status: "FAILED",
       processed_at: "2026-07-30T02:02:00.000Z",
     });
     expect(result.status_history).toEqual([
@@ -333,6 +372,18 @@ describe("BookingQueryService", () => {
     expect(captured).toMatchObject({ status: 400, code: "ORDER_CURSOR_INVALID" });
     expect(repository.listOwned).not.toHaveBeenCalled();
     expect(JSON.stringify(captured)).not.toContain(cursor);
+  });
+
+  it("rejects a year 0000 cursor before repository access", async () => {
+    const cursor = Buffer.from(
+      JSON.stringify({ createdAt: "0000-01-01T00:00:00.000Z", id: BOOKING_ID }),
+    ).toString("base64url");
+    const { service, repository } = createHarness();
+    await expect(service.listOwned(USER_ID, { cursor })).rejects.toMatchObject({
+      status: 400,
+      code: "ORDER_CURSOR_INVALID",
+    });
+    expect(repository.listOwned).not.toHaveBeenCalled();
   });
 
   it.each([

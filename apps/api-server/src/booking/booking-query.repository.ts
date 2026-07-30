@@ -3,8 +3,15 @@ import { Inject, Injectable } from "@nestjs/common";
 import { DatabaseService } from "../database/database.service.js";
 import { Prisma } from "../generated/prisma/client.js";
 
-export interface BookingQueryDatabase {
+export interface BookingQueryTransaction {
   $queryRaw<T = unknown>(query: Prisma.Sql): PromiseLike<T>;
+}
+
+export interface BookingQueryDatabase extends BookingQueryTransaction {
+  $transaction<T>(
+    operation: (transaction: BookingQueryTransaction) => Promise<T>,
+    options: { isolationLevel: Prisma.TransactionIsolationLevel },
+  ): Promise<T>;
 }
 
 export interface BookingListRepositoryInput {
@@ -82,60 +89,79 @@ export class BookingQueryRepository {
   }
 
   async findOwned(userId: string, bookingId: string): Promise<BookingDetailRepositoryRow | null> {
-    const bookings = await this.database.$queryRaw<
-      Array<BookingListRepositoryRow & { bookingPolicy: string; nightlyPrices: unknown }>
-    >(Prisma.sql`
-      SELECT
-        ${baseSelection},
-        booking."nightly_prices" AS "nightlyPrices",
-        booking."booking_policy_snapshot" AS "bookingPolicy"
-      FROM "booking" booking
-      WHERE booking."id" = ${bookingId}::uuid
-        AND booking."user_id" = ${userId}::uuid
-      LIMIT 1
-    `);
-    const booking = bookings[0];
-    if (booking === undefined) {
-      return null;
-    }
+    return this.database.$transaction(
+      async (transaction) => {
+        const bookings = await transaction.$queryRaw<
+          Array<BookingListRepositoryRow & { bookingPolicy: string; nightlyPrices: unknown }>
+        >(Prisma.sql`
+          SELECT
+            ${baseSelection},
+            booking."nightly_prices" AS "nightlyPrices",
+            booking."booking_policy_snapshot" AS "bookingPolicy"
+          FROM "booking" booking
+          WHERE booking."id" = ${bookingId}::uuid
+            AND booking."user_id" = ${userId}::uuid
+          LIMIT 1
+        `);
+        const booking = bookings[0];
+        if (booking === undefined) {
+          return null;
+        }
 
-    const payments = await this.database.$queryRaw<
-      Array<{ paymentNumber: string; processedAt: unknown; status: string }>
-    >(Prisma.sql`
-      SELECT
-        payment."payment_number" AS "paymentNumber",
-        payment."status"::text AS "status",
-        payment."processed_at" AS "processedAt"
-      FROM "payment" payment
-      WHERE payment."booking_id" = ${bookingId}::uuid
-      ORDER BY payment."created_at" DESC, payment."id" DESC
-      LIMIT 1
-    `);
-    const statusHistory = await this.database.$queryRaw<
-      Array<{
-        actorType: string;
-        createdAt: unknown;
-        fromStatus: string | null;
-        reason: string;
-        toStatus: string;
-      }>
-    >(Prisma.sql`
-      SELECT
-        history."from_status"::text AS "fromStatus",
-        history."to_status"::text AS "toStatus",
-        history."reason" AS "reason",
-        history."actor_type" AS "actorType",
-        history."created_at" AS "createdAt"
-      FROM "booking_status_history" history
-      WHERE history."booking_id" = ${bookingId}::uuid
-      ORDER BY history."created_at" ASC, history."id" ASC
-      LIMIT 100
-    `);
+        const payments = await transaction.$queryRaw<
+          Array<{ paymentNumber: string; processedAt: unknown; status: string }>
+        >(Prisma.sql`
+          SELECT
+            payment."payment_number" AS "paymentNumber",
+            payment."status"::text AS "status",
+            payment."processed_at" AS "processedAt"
+          FROM "payment" payment
+          WHERE payment."booking_id" = ${bookingId}::uuid
+            AND EXISTS (
+              SELECT 1
+              FROM "booking" owned_booking
+              WHERE owned_booking."id" = payment."booking_id"
+                AND owned_booking."id" = ${bookingId}::uuid
+                AND owned_booking."user_id" = ${userId}::uuid
+            )
+          ORDER BY payment."created_at" DESC, payment."id" DESC
+          LIMIT 1
+        `);
+        const statusHistory = await transaction.$queryRaw<
+          Array<{
+            actorType: string;
+            createdAt: unknown;
+            fromStatus: string | null;
+            reason: string;
+            toStatus: string;
+          }>
+        >(Prisma.sql`
+          SELECT
+            history."from_status"::text AS "fromStatus",
+            history."to_status"::text AS "toStatus",
+            history."reason" AS "reason",
+            history."actor_type" AS "actorType",
+            history."created_at" AS "createdAt"
+          FROM "booking_status_history" history
+          WHERE history."booking_id" = ${bookingId}::uuid
+            AND EXISTS (
+              SELECT 1
+              FROM "booking" owned_booking
+              WHERE owned_booking."id" = history."booking_id"
+                AND owned_booking."id" = ${bookingId}::uuid
+                AND owned_booking."user_id" = ${userId}::uuid
+            )
+          ORDER BY history."created_at" ASC, history."id" ASC
+          LIMIT 100
+        `);
 
-    return {
-      ...booking,
-      latestPayment: payments[0] ?? null,
-      statusHistory,
-    };
+        return {
+          ...booking,
+          latestPayment: payments[0] ?? null,
+          statusHistory,
+        };
+      },
+      { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead },
+    );
   }
 }
