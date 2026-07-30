@@ -47,12 +47,17 @@ describe("search store", () => {
     const { store, stored } = setup(initial);
     expect(store.initializeDefaults()).toEqual(initial);
     const result = store.set({
-      city: { ...city, longitude: 120.1, latitude: 30.2 },
+      city,
       guests: 3,
     });
     expect(result.city).toEqual(city);
     expect(stored()).toEqual(result);
     expect(JSON.stringify(stored())).not.toContain("longitude");
+    expect(() =>
+      store.set({
+        city: { ...city, longitude: 120.1, latitude: 30.2 },
+      }),
+    ).toThrowError(expect.objectContaining({ code: "SEARCH_CONTEXT_INVALID" }));
   });
 
   it.each([

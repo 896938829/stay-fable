@@ -59,16 +59,12 @@ describe("API contracts", () => {
   });
 
   it("validates the backend auth session fields", () => {
-    const value = assertAuthSession({
-      ...session,
-      code: "temporary-secret",
-      user: { ...session.user, secret: "private" },
-    });
+    const value = assertAuthSession(session);
     expect(value).toEqual(session);
     expect(value).not.toBe(session);
-    expect(JSON.stringify(value)).not.toContain("temporary-secret");
-    expect(JSON.stringify(value)).not.toContain("private");
     for (const invalid of [
+      { ...session, code: "temporary-secret" },
+      { ...session, user: { ...session.user, secret: "private" } },
       { ...session, access_token: "secret-short" },
       { ...session, access_expires_in: 0 },
       { ...session, refresh_expires_in: 1.5 },
@@ -79,17 +75,19 @@ describe("API contracts", () => {
   });
 
   it("validates cities and resolved locations", () => {
-    expect(assertCity({ ...city, longitude: 120, secret: "private" })).toEqual(city);
-    expect(
-      assertResolvedLocation({
-        city: { ...city, latitude: 30 },
-        distance_meters: 0,
-        secret: "private",
-      }),
-    ).toEqual({
+    expect(assertCity(city)).toEqual(city);
+    expect(assertResolvedLocation({ city, distance_meters: 0 })).toEqual({
       city,
       distance_meters: 0,
     });
+    expectInvalid(() => assertCity({ ...city, longitude: 120, secret: "private" }));
+    expectInvalid(() =>
+      assertResolvedLocation({
+        city,
+        distance_meters: 0,
+        secret: "private",
+      }),
+    );
     expectInvalid(() => assertCity({ ...city, name: "" }));
     expectInvalid(() => assertResolvedLocation({ city, distance_meters: -1 }));
     expectInvalid(() => assertResolvedLocation({ city }));
@@ -165,7 +163,7 @@ describe("contract-aware services", () => {
   });
 
   it("validates city and resolved-location response data", async () => {
-    const get = vi.fn(async () => [{ ...city, longitude: 120.1, secret: "private" }]);
+    const get = vi.fn(async () => [city]);
     const post = vi.fn(async (_path, data) => {
       expect(data).toEqual({ longitude: 120.1, latitude: 30.2 });
       return { city, distance_meters: 8 };

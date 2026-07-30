@@ -1,5 +1,7 @@
 "use strict";
 
+const CONTRACT_SHAPES = require("./contract-shapes");
+
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const REQUEST_ID_PATTERN = /^[A-Za-z0-9._:-]{1,128}$/;
@@ -27,6 +29,10 @@ const BOOKING_ACTIONS = [
   "MOCK_PAY_SUCCESS",
   "MOCK_PAY_FAILURE",
 ];
+
+function shapeFields(name) {
+  return CONTRACT_SHAPES[name].fields;
+}
 
 function invalidResponse() {
   const error = new Error("Invalid API response");
@@ -57,50 +63,69 @@ function assertRequestId(value) {
 }
 
 function assertEnvelope(value) {
-  if (!isObject(value) || !Object.prototype.hasOwnProperty.call(value, "data")) {
+  let snapshot;
+  try {
+    snapshot = readExactRecord(value, shapeFields("AuthSessionEnvelopeDto"));
+  } catch {
     throw invalidResponse();
   }
-  assertRequestId(value.request_id);
-  return value;
+  assertRequestId(snapshot.request_id);
+  return {
+    data: snapshot.data,
+    request_id: snapshot.request_id,
+  };
 }
 
 function assertAuthSession(value) {
-  if (
-    !isObject(value) ||
-    typeof value.access_token !== "string" ||
-    value.access_token.length < 32 ||
-    !isPositiveInteger(value.access_expires_in) ||
-    typeof value.refresh_token !== "string" ||
-    value.refresh_token.length < 32 ||
-    !isPositiveInteger(value.refresh_expires_in) ||
-    !isObject(value.user) ||
-    typeof value.user.id !== "string" ||
-    !UUID_PATTERN.test(value.user.id)
-  ) {
+  try {
+    const snapshot = readExactRecord(value, shapeFields("AuthSessionResponseDto"));
+    const user = readExactRecord(snapshot.user, shapeFields("AuthSessionUserDto"));
+    if (
+      typeof snapshot.access_token !== "string" ||
+      snapshot.access_token.length < 32 ||
+      !isPositiveInteger(snapshot.access_expires_in) ||
+      typeof snapshot.refresh_token !== "string" ||
+      snapshot.refresh_token.length < 32 ||
+      !isPositiveInteger(snapshot.refresh_expires_in) ||
+      typeof user.id !== "string" ||
+      !UUID_PATTERN.test(user.id)
+    ) {
+      throw invalidResponse();
+    }
+    return {
+      access_token: snapshot.access_token,
+      access_expires_in: snapshot.access_expires_in,
+      refresh_token: snapshot.refresh_token,
+      refresh_expires_in: snapshot.refresh_expires_in,
+      user: {
+        id: user.id,
+      },
+    };
+  } catch {
     throw invalidResponse();
   }
-  return {
-    access_token: value.access_token,
-    access_expires_in: value.access_expires_in,
-    refresh_token: value.refresh_token,
-    refresh_expires_in: value.refresh_expires_in,
-    user: {
-      id: value.user.id,
-    },
-  };
 }
 
 function canonicalCity(value, exact) {
   try {
-    if (
-      !isObject(value) ||
-      (exact && !hasExactKeys(value, ["id", "code", "name"]))
-    ) {
+    const snapshot = exact
+      ? readExactRecord(value, shapeFields("CatalogCityDto"))
+      : value;
+    if (!isObject(snapshot)) {
       throw invalidResponse();
     }
-    const id = value.id;
-    const code = value.code;
-    const name = value.name;
+    const descriptors = Object.getOwnPropertyDescriptors(snapshot);
+    for (const key of ["id", "code", "name"]) {
+      if (
+        descriptors[key] === undefined ||
+        !Object.hasOwn(descriptors[key], "value")
+      ) {
+        throw invalidResponse();
+      }
+    }
+    const id = descriptors.id.value;
+    const code = descriptors.code.value;
+    const name = descriptors.name.value;
     if (
       typeof id !== "string" ||
       !UUID_PATTERN.test(id) ||
@@ -116,22 +141,25 @@ function canonicalCity(value, exact) {
 }
 
 function assertCity(value) {
-  return canonicalCity(value, false);
+  return canonicalCity(value, true);
 }
 
 function assertResolvedLocation(value) {
-  if (
-    !isObject(value) ||
-    !Object.prototype.hasOwnProperty.call(value, "city") ||
-    !Number.isInteger(value.distance_meters) ||
-    value.distance_meters < 0
-  ) {
+  try {
+    const snapshot = readExactRecord(value, shapeFields("ResolvedLocationResponseDto"));
+    if (
+      !Number.isInteger(snapshot.distance_meters) ||
+      snapshot.distance_meters < 0
+    ) {
+      throw invalidResponse();
+    }
+    return {
+      city: assertCity(snapshot.city),
+      distance_meters: snapshot.distance_meters,
+    };
+  } catch {
     throw invalidResponse();
   }
-  return {
-    city: assertCity(value.city),
-    distance_meters: value.distance_meters,
-  };
 }
 
 function hasOnlyKeys(value, allowed) {
@@ -142,7 +170,7 @@ function hasExactKeys(value, allowed) {
   return Object.keys(value).length === allowed.length && hasOnlyKeys(value, allowed);
 }
 
-function readExactRecord(value, keys) {
+function readExactRecordUnsafe(value, keys) {
   if (
     value === null ||
     Array.isArray(value) ||
@@ -169,7 +197,53 @@ function readExactRecord(value, keys) {
   return snapshot;
 }
 
-function readExactArray(value, minimum, maximum) {
+function readExactRecord(value, keys) {
+  try {
+    return readExactRecordUnsafe(value, keys);
+  } catch {
+    throw invalidResponse();
+  }
+}
+
+function readRecordWithOptionalUnsafe(value, requiredKeys, optionalKeys) {
+  if (
+    value === null ||
+    Array.isArray(value) ||
+    typeof value !== "object" ||
+    ![Object.prototype, null].includes(Object.getPrototypeOf(value))
+  ) {
+    throw invalidResponse();
+  }
+  const descriptors = Object.getOwnPropertyDescriptors(value);
+  const actualKeys = Object.keys(descriptors);
+  const allowedKeys = [...requiredKeys, ...optionalKeys];
+  if (
+    Object.getOwnPropertySymbols(value).length !== 0 ||
+    !requiredKeys.every((key) => Object.hasOwn(descriptors, key)) ||
+    !actualKeys.every((key) => allowedKeys.includes(key))
+  ) {
+    throw invalidResponse();
+  }
+  const snapshot = Object.create(null);
+  for (const key of actualKeys) {
+    const descriptor = descriptors[key];
+    if (!descriptor || !Object.prototype.hasOwnProperty.call(descriptor, "value")) {
+      throw invalidResponse();
+    }
+    snapshot[key] = descriptor.value;
+  }
+  return snapshot;
+}
+
+function readRecordWithOptional(value, requiredKeys, optionalKeys) {
+  try {
+    return readRecordWithOptionalUnsafe(value, requiredKeys, optionalKeys);
+  } catch {
+    throw invalidResponse();
+  }
+}
+
+function readExactArrayUnsafe(value, minimum, maximum) {
   if (!Array.isArray(value) || Object.getPrototypeOf(value) !== Array.prototype) {
     throw invalidResponse();
   }
@@ -195,6 +269,14 @@ function readExactArray(value, minimum, maximum) {
   return snapshot;
 }
 
+function readExactArray(value, minimum, maximum) {
+  try {
+    return readExactArrayUnsafe(value, minimum, maximum);
+  } catch {
+    throw invalidResponse();
+  }
+}
+
 function assertBookingStatus(value) {
   if (!BOOKING_STATUSES.includes(value)) {
     throw invalidResponse();
@@ -203,23 +285,7 @@ function assertBookingStatus(value) {
 }
 
 function assertBookingListItem(value) {
-  const snapshot = readExactRecord(value, [
-    "booking_id",
-    "booking_number",
-    "status",
-    "property_name",
-    "room_type_name",
-    "checkin",
-    "checkout",
-    "nights",
-    "guests",
-    "total_price_cents",
-    "currency",
-    "expires_at",
-    "payment_deadline_passed",
-    "created_at",
-    "updated_at",
-  ]);
+  const snapshot = readExactRecord(value, shapeFields("BookingListItemDto"));
   const checkin = catalogDateOrdinal(snapshot.checkin);
   const checkout = catalogDateOrdinal(snapshot.checkout);
   if (
@@ -259,7 +325,7 @@ function assertBookingListItem(value) {
 
 function assertBookingListResponse(value) {
   try {
-    const snapshot = readExactRecord(value, ["items", "next_cursor"]);
+    const snapshot = readExactRecord(value, shapeFields("BookingListResponseDto"));
     const items = readExactArray(snapshot.items, 0, 20).map(
       assertBookingListItem,
     );
@@ -282,11 +348,7 @@ function assertBookingListResponse(value) {
 }
 
 function assertBookingPayment(value) {
-  const snapshot = readExactRecord(value, [
-    "payment_number",
-    "status",
-    "processed_at",
-  ]);
+  const snapshot = readExactRecord(value, shapeFields("BookingPaymentSummaryDto"));
   if (
     typeof snapshot.payment_number !== "string" ||
     !PAYMENT_NUMBER_PATTERN.test(snapshot.payment_number) ||
@@ -302,13 +364,7 @@ function assertBookingPayment(value) {
 }
 
 function assertBookingHistoryItem(value) {
-  const snapshot = readExactRecord(value, [
-    "from_status",
-    "to_status",
-    "reason",
-    "actor_type",
-    "created_at",
-  ]);
+  const snapshot = readExactRecord(value, shapeFields("BookingStatusHistoryItemDto"));
   const fromStatus =
     snapshot.from_status === null
       ? null
@@ -357,28 +413,7 @@ function assertBookingActions(value, status, deadlinePassed) {
 
 function assertBookingDetail(value) {
   try {
-    const snapshot = readExactRecord(value, [
-      "booking_id",
-      "booking_number",
-      "status",
-      "property_name",
-      "room_type_name",
-      "checkin",
-      "checkout",
-      "nights",
-      "guests",
-      "total_price_cents",
-      "currency",
-      "expires_at",
-      "payment_deadline_passed",
-      "created_at",
-      "updated_at",
-      "nightly_prices",
-      "booking_policy",
-      "latest_payment",
-      "status_history",
-      "allowed_actions",
-    ]);
+    const snapshot = readExactRecord(value, shapeFields("BookingDetailDto"));
     const summary = assertBookingListItem(
       Object.assign(Object.create(null), {
         booking_id: snapshot.booking_id,
@@ -616,200 +651,148 @@ function assertResource(value) {
 }
 
 function assertPropertyListItem(value) {
-  const keys = [
-    "id",
-    "type",
-    "name",
-    "city",
-    "cover_url",
-    "short_description",
-    "facility_highlights",
-    "from_nightly_price_cents",
-    "currency",
-    "available_room_type_count",
-  ];
+  const snapshot = readExactRecord(value, shapeFields("PropertyListItemDto"));
+  const facilityHighlights = readExactArray(snapshot.facility_highlights, 0, 4);
   if (
-    !isObject(value) ||
-    !hasExactKeys(value, keys) ||
-    typeof value.id !== "string" ||
-    !UUID_PATTERN.test(value.id) ||
-    !isBoundedString(value.name, 120) ||
-    !isBoundedString(value.short_description, 240) ||
-    !Array.isArray(value.facility_highlights) ||
-    value.facility_highlights.length > 4 ||
-    !value.facility_highlights.every((item) => isBoundedString(item, 80)) ||
-    !Number.isSafeInteger(value.available_room_type_count) ||
-    value.available_room_type_count <= 0
+    typeof snapshot.id !== "string" ||
+    !UUID_PATTERN.test(snapshot.id) ||
+    !isBoundedString(snapshot.name, 120) ||
+    !isBoundedString(snapshot.short_description, 240) ||
+    !facilityHighlights.every((item) => isBoundedString(item, 80)) ||
+    !Number.isSafeInteger(snapshot.available_room_type_count) ||
+    snapshot.available_room_type_count <= 0
   ) {
     throw invalidResponse();
   }
   return {
-    id: value.id,
-    type: assertPropertyType(value.type),
-    name: value.name,
-    city: assertExactCity(value.city),
-    cover_url: assertResource(value.cover_url),
-    short_description: value.short_description,
-    facility_highlights: value.facility_highlights.slice(),
+    id: snapshot.id,
+    type: assertPropertyType(snapshot.type),
+    name: snapshot.name,
+    city: assertExactCity(snapshot.city),
+    cover_url: assertResource(snapshot.cover_url),
+    short_description: snapshot.short_description,
+    facility_highlights: facilityHighlights,
     from_nightly_price_cents: assertMoneyCents(
-      value.from_nightly_price_cents,
+      snapshot.from_nightly_price_cents,
     ),
-    currency: assertCurrency(value.currency),
-    available_room_type_count: value.available_room_type_count,
+    currency: assertCurrency(snapshot.currency),
+    available_room_type_count: snapshot.available_room_type_count,
   };
 }
 
 function assertPropertyListResponse(value) {
+  const snapshot = readExactRecord(value, shapeFields("PropertyListResponseDto"));
+  const items = readExactArray(snapshot.items, 0, 20);
   if (
-    !isObject(value) ||
-    !hasExactKeys(value, ["items", "next_cursor"]) ||
-    !Array.isArray(value.items) ||
-    value.items.length > 20 ||
     !(
-      value.next_cursor === null ||
-      (typeof value.next_cursor === "string" &&
-        value.next_cursor.length >= 1 &&
-        value.next_cursor.length <= 256 &&
-        CATALOG_CURSOR_PATTERN.test(value.next_cursor))
+      snapshot.next_cursor === null ||
+      (typeof snapshot.next_cursor === "string" &&
+        snapshot.next_cursor.length >= 1 &&
+        snapshot.next_cursor.length <= 256 &&
+        CATALOG_CURSOR_PATTERN.test(snapshot.next_cursor))
     )
   ) {
     throw invalidResponse();
   }
   return {
-    items: value.items.map(assertPropertyListItem),
-    next_cursor: value.next_cursor,
+    items: items.map(assertPropertyListItem),
+    next_cursor: snapshot.next_cursor,
   };
 }
 
 function assertRoomTypeSummary(value) {
-  const keys = [
-    "id",
-    "name",
-    "bed_type",
-    "area_sqm",
-    "max_guests",
-    "cover_url",
-    "policy_summary",
-    "from_nightly_price_cents",
-    "currency",
-  ];
+  const snapshot = readExactRecord(value, shapeFields("RoomTypeSummaryDto"));
   if (
-    !isObject(value) ||
-    !hasExactKeys(value, keys) ||
-    typeof value.id !== "string" ||
-    !UUID_PATTERN.test(value.id) ||
-    !isBoundedString(value.name, 120) ||
-    !isBoundedString(value.bed_type, 120) ||
-    typeof value.area_sqm !== "number" ||
-    !Number.isFinite(value.area_sqm) ||
-    value.area_sqm <= 0 ||
-    !Number.isInteger(value.max_guests) ||
-    value.max_guests < 1 ||
-    value.max_guests > 10 ||
-    !isBoundedString(value.policy_summary, 500)
+    typeof snapshot.id !== "string" ||
+    !UUID_PATTERN.test(snapshot.id) ||
+    !isBoundedString(snapshot.name, 120) ||
+    !isBoundedString(snapshot.bed_type, 120) ||
+    typeof snapshot.area_sqm !== "number" ||
+    !Number.isFinite(snapshot.area_sqm) ||
+    snapshot.area_sqm <= 0 ||
+    !Number.isInteger(snapshot.max_guests) ||
+    snapshot.max_guests < 1 ||
+    snapshot.max_guests > 10 ||
+    !isBoundedString(snapshot.policy_summary, 500)
   ) {
     throw invalidResponse();
   }
   return {
-    id: value.id,
-    name: value.name,
-    bed_type: value.bed_type,
-    area_sqm: value.area_sqm,
-    max_guests: value.max_guests,
-    cover_url: assertResource(value.cover_url),
-    policy_summary: value.policy_summary,
+    id: snapshot.id,
+    name: snapshot.name,
+    bed_type: snapshot.bed_type,
+    area_sqm: snapshot.area_sqm,
+    max_guests: snapshot.max_guests,
+    cover_url: assertResource(snapshot.cover_url),
+    policy_summary: snapshot.policy_summary,
     from_nightly_price_cents: assertMoneyCents(
-      value.from_nightly_price_cents,
+      snapshot.from_nightly_price_cents,
     ),
-    currency: assertCurrency(value.currency),
+    currency: assertCurrency(snapshot.currency),
   };
 }
 
 function assertMedia(value) {
+  const snapshot = readExactRecord(value, shapeFields("CatalogMediaDto"));
   if (
-    !isObject(value) ||
-    !hasExactKeys(value, ["type", "url", "alt"]) ||
-    value.type !== "IMAGE" ||
-    !isBoundedString(value.alt, 120)
+    snapshot.type !== "IMAGE" ||
+    !isBoundedString(snapshot.alt, 120)
   ) {
     throw invalidResponse();
   }
   return {
-    type: value.type,
-    url: assertResource(value.url),
-    alt: value.alt,
+    type: snapshot.type,
+    url: assertResource(snapshot.url),
+    alt: snapshot.alt,
   };
 }
 
 function assertFacility(value) {
+  const snapshot = readExactRecord(value, shapeFields("CatalogFacilityDto"));
   if (
-    !isObject(value) ||
-    !hasExactKeys(value, ["code", "name"]) ||
-    !isBoundedString(value.code, 64) ||
-    !isBoundedString(value.name, 80)
+    !isBoundedString(snapshot.code, 64) ||
+    !isBoundedString(snapshot.name, 80)
   ) {
     throw invalidResponse();
   }
   return {
-    code: value.code,
-    name: value.name,
+    code: snapshot.code,
+    name: snapshot.name,
   };
 }
 
 function assertPropertyDetail(value) {
-  const keys = [
-    "id",
-    "type",
-    "name",
-    "city",
-    "address",
-    "description",
-    "policies",
-    "cover_url",
-    "media",
-    "facilities",
-    "room_types",
-  ];
+  const snapshot = readExactRecord(value, shapeFields("PropertyDetailResponseDto"));
+  const media = readExactArray(snapshot.media, 0, 20);
+  const facilities = readExactArray(snapshot.facilities, 0, 50);
+  const roomTypes = readExactArray(snapshot.room_types, 0, 50);
   if (
-    !isObject(value) ||
-    !hasExactKeys(value, keys) ||
-    typeof value.id !== "string" ||
-    !UUID_PATTERN.test(value.id) ||
-    !isBoundedString(value.name, 120) ||
-    !isBoundedString(value.address, 240) ||
-    !isBoundedString(value.description, 2000) ||
-    !isBoundedString(value.policies, 2000) ||
-    !Array.isArray(value.media) ||
-    value.media.length > 20 ||
-    !Array.isArray(value.facilities) ||
-    value.facilities.length > 50 ||
-    !Array.isArray(value.room_types) ||
-    value.room_types.length > 50
+    typeof snapshot.id !== "string" ||
+    !UUID_PATTERN.test(snapshot.id) ||
+    !isBoundedString(snapshot.name, 120) ||
+    !isBoundedString(snapshot.address, 240) ||
+    !isBoundedString(snapshot.description, 2000) ||
+    !isBoundedString(snapshot.policies, 2000)
   ) {
     throw invalidResponse();
   }
   return {
-    id: value.id,
-    type: assertPropertyType(value.type),
-    name: value.name,
-    city: assertExactCity(value.city),
-    address: value.address,
-    description: value.description,
-    policies: value.policies,
-    cover_url: assertResource(value.cover_url),
-    media: value.media.map(assertMedia),
-    facilities: value.facilities.map(assertFacility),
-    room_types: value.room_types.map(assertRoomTypeSummary),
+    id: snapshot.id,
+    type: assertPropertyType(snapshot.type),
+    name: snapshot.name,
+    city: assertExactCity(snapshot.city),
+    address: snapshot.address,
+    description: snapshot.description,
+    policies: snapshot.policies,
+    cover_url: assertResource(snapshot.cover_url),
+    media: media.map(assertMedia),
+    facilities: facilities.map(assertFacility),
+    room_types: roomTypes.map(assertRoomTypeSummary),
   };
 }
 
 function assertNightlyPrice(value) {
-  const snapshot = readExactRecord(value, [
-    "business_date",
-    "sale_price_cents",
-    "rack_price_cents",
-    "currency",
-  ]);
+  const snapshot = readExactRecord(value, shapeFields("NightlyPriceDto"));
   if (
     !isCatalogDate(snapshot.business_date)
   ) {
@@ -824,59 +807,43 @@ function assertNightlyPrice(value) {
 }
 
 function assertRoomTypeProperty(value) {
+  const snapshot = readExactRecord(value, shapeFields("RoomTypePropertySummaryDto"));
   if (
-    !isObject(value) ||
-    !hasExactKeys(value, ["id", "type", "name", "city"]) ||
-    typeof value.id !== "string" ||
-    !UUID_PATTERN.test(value.id) ||
-    !isBoundedString(value.name, 120)
+    typeof snapshot.id !== "string" ||
+    !UUID_PATTERN.test(snapshot.id) ||
+    !isBoundedString(snapshot.name, 120)
   ) {
     throw invalidResponse();
   }
   return {
-    id: value.id,
-    type: assertPropertyType(value.type),
-    name: value.name,
-    city: assertExactCity(value.city),
+    id: snapshot.id,
+    type: assertPropertyType(snapshot.type),
+    name: snapshot.name,
+    city: assertExactCity(snapshot.city),
   };
 }
 
 function assertRoomTypeDetail(value) {
-  const keys = [
-    "id",
-    "name",
-    "bed_type",
-    "area_sqm",
-    "max_guests",
-    "cover_url",
-    "currency",
-    "property",
-    "description",
-    "booking_policy",
-    "nightly_prices",
-  ];
+  const snapshot = readExactRecord(value, shapeFields("RoomTypeDetailResponseDto"));
+  const nightlyPrices = readExactArray(snapshot.nightly_prices, 1, 30).map(
+    assertNightlyPrice,
+  );
   if (
-    !isObject(value) ||
-    !hasExactKeys(value, keys) ||
-    typeof value.id !== "string" ||
-    !UUID_PATTERN.test(value.id) ||
-    !isBoundedString(value.name, 120) ||
-    !isBoundedString(value.bed_type, 120) ||
-    typeof value.area_sqm !== "number" ||
-    !Number.isFinite(value.area_sqm) ||
-    value.area_sqm <= 0 ||
-    !Number.isInteger(value.max_guests) ||
-    value.max_guests < 1 ||
-    value.max_guests > 10 ||
-    !isBoundedString(value.description, 2000) ||
-    !isBoundedString(value.booking_policy, 2000) ||
-    !Array.isArray(value.nightly_prices) ||
-    value.nightly_prices.length < 1 ||
-    value.nightly_prices.length > 30
+    typeof snapshot.id !== "string" ||
+    !UUID_PATTERN.test(snapshot.id) ||
+    !isBoundedString(snapshot.name, 120) ||
+    !isBoundedString(snapshot.bed_type, 120) ||
+    typeof snapshot.area_sqm !== "number" ||
+    !Number.isFinite(snapshot.area_sqm) ||
+    snapshot.area_sqm <= 0 ||
+    !Number.isInteger(snapshot.max_guests) ||
+    snapshot.max_guests < 1 ||
+    snapshot.max_guests > 10 ||
+    !isBoundedString(snapshot.description, 2000) ||
+    !isBoundedString(snapshot.booking_policy, 2000)
   ) {
     throw invalidResponse();
   }
-  const nightlyPrices = value.nightly_prices.map(assertNightlyPrice);
   for (let index = 1; index < nightlyPrices.length; index += 1) {
     if (
       nightlyPrices[index - 1].business_date >=
@@ -886,16 +853,16 @@ function assertRoomTypeDetail(value) {
     }
   }
   return {
-    id: value.id,
-    name: value.name,
-    bed_type: value.bed_type,
-    area_sqm: value.area_sqm,
-    max_guests: value.max_guests,
-    cover_url: assertResource(value.cover_url),
-    currency: assertCurrency(value.currency),
-    property: assertRoomTypeProperty(value.property),
-    description: value.description,
-    booking_policy: value.booking_policy,
+    id: snapshot.id,
+    name: snapshot.name,
+    bed_type: snapshot.bed_type,
+    area_sqm: snapshot.area_sqm,
+    max_guests: snapshot.max_guests,
+    cover_url: assertResource(snapshot.cover_url),
+    currency: assertCurrency(snapshot.currency),
+    property: assertRoomTypeProperty(snapshot.property),
+    description: snapshot.description,
+    booking_policy: snapshot.booking_policy,
     nightly_prices: nightlyPrices,
   };
 }
@@ -944,7 +911,7 @@ function assertUuid(value) {
 }
 
 function assertQuoteParty(value, roomType) {
-  const keys = roomType ? ["id", "name", "cover_url"] : ["id", "name"];
+  const keys = shapeFields(roomType ? "QuoteRoomTypeDto" : "QuotePropertyDto");
   const snapshot = readExactRecord(value, keys);
   if (!isBoundedString(snapshot.name, 120)) {
     throw invalidResponse();
@@ -959,21 +926,7 @@ function assertQuoteParty(value, roomType) {
 function assertQuoteResponse(value, requestedRoomTypeId) {
   try {
     assertUuid(requestedRoomTypeId);
-    const keys = [
-      "quote_id",
-      "property",
-      "room_type",
-      "checkin",
-      "checkout",
-      "nights",
-      "guests",
-      "nightly_prices",
-      "total_price_cents",
-      "currency",
-      "booking_policy",
-      "expires_at",
-    ];
-    const snapshot = readExactRecord(value, keys);
+    const snapshot = readExactRecord(value, shapeFields("QuoteResponseDto"));
     const property = assertQuoteParty(snapshot.property, false);
     const roomType = assertQuoteParty(snapshot.room_type, true);
     const checkinOrdinal = catalogDateOrdinal(snapshot.checkin);
@@ -1035,23 +988,7 @@ function assertQuoteResponse(value, requestedRoomTypeId) {
 function assertBookingResponse(value, requestedQuoteId) {
   try {
     assertUuid(requestedQuoteId);
-    const keys = [
-      "booking_id",
-      "quote_id",
-      "booking_number",
-      "status",
-      "property_name",
-      "room_type_name",
-      "checkin",
-      "checkout",
-      "nights",
-      "guests",
-      "total_price_cents",
-      "currency",
-      "expires_at",
-      "created_at",
-    ];
-    const snapshot = readExactRecord(value, keys);
+    const snapshot = readExactRecord(value, shapeFields("BookingResponseDto"));
     if (snapshot.quote_id !== requestedQuoteId) {
       throw invalidResponse();
     }
@@ -1147,17 +1084,18 @@ function assertQuoteChangedDetails(value, expectedQuote) {
 }
 
 function assertApiErrorResponse(value) {
-  if (
-    !isObject(value) ||
-    !hasOnlyKeys(value, ["error", "request_id"]) ||
-    !isObject(value.error) ||
-    !hasOnlyKeys(value.error, ["code", "message", "details"]) ||
-    !isNonemptyString(value.error.code) ||
-    !isNonemptyString(value.error.message)
-  ) {
+  let envelope;
+  let error;
+  try {
+    envelope = readExactRecord(value, ["error", "request_id"]);
+    error = readRecordWithOptional(envelope.error, ["code", "message"], ["details"]);
+  } catch {
     throw invalidResponse();
   }
-  assertRequestId(value.request_id);
+  if (!isNonemptyString(error.code) || !isNonemptyString(error.message)) {
+    throw invalidResponse();
+  }
+  assertRequestId(envelope.request_id);
   return value;
 }
 

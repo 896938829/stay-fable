@@ -83,20 +83,17 @@ describe("LocationController OpenAPI", () => {
     ).toEqual({ $ref: "#/components/schemas/ResolvedLocationEnvelopeDto" });
     expect(
       document.paths["/location/resolve"]?.post?.requestBody?.content?.["application/json"]?.schema,
-    ).toEqual({ $ref: "#/components/schemas/ResolveLocationDto" });
+    ).toEqual({
+      type: "object",
+      additionalProperties: false,
+      required: ["longitude", "latitude"],
+      properties: {
+        longitude: { type: "number", minimum: -180, maximum: 180 },
+        latitude: { type: "number", minimum: -90, maximum: 90 },
+      },
+    });
 
     const schemas = document.components?.schemas;
-    expect(schemas?.ResolveLocationDto?.required).toEqual(["longitude", "latitude"]);
-    expect(schemas?.ResolveLocationDto?.properties?.longitude).toMatchObject({
-      type: "number",
-      minimum: -180,
-      maximum: 180,
-    });
-    expect(schemas?.ResolveLocationDto?.properties?.latitude).toMatchObject({
-      type: "number",
-      minimum: -90,
-      maximum: 90,
-    });
     expect(schemas?.CitiesEnvelopeDto?.required).toEqual(["data", "request_id"]);
     expect(schemas?.CitiesEnvelopeDto?.properties?.data).toEqual({
       type: "array",

@@ -91,11 +91,7 @@ describe("session store", () => {
     );
     const next = makeSession("c");
     const authService = {
-      login: vi.fn(async () => ({
-        ...next,
-        code: "response-secret",
-        user: { ...next.user, secret: "private" },
-      })),
+      login: vi.fn(async () => next),
       refresh: vi.fn(),
     };
     const store = createSessionStore({ wxApi, authService, storageKey: "session" });
@@ -184,13 +180,13 @@ describe("session store", () => {
       expect.objectContaining({ code: "INVALID_API_RESPONSE" }),
     );
     const expected = makeSession("g");
-    expect(
+    expect(store.set(expected)).toEqual(expected);
+    expect(() =>
       store.set({
         ...expected,
         code: "temporary-secret",
-        user: { ...expected.user, secret: "private" },
       }),
-    ).toEqual(expected);
+    ).toThrowError(expect.objectContaining({ code: "INVALID_API_RESPONSE" }));
     expect(store.get()).toEqual(expected);
     store.clear();
     expect(store.get()).toBeNull();
