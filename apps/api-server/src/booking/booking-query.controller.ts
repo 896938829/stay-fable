@@ -77,7 +77,10 @@ export class BookingQueryController {
     @CurrentUser() user: AuthenticatedUser,
     @Query() query: BookingListQueryDto,
   ): Promise<BookingListResponse> {
-    return this.bookings.listOwned(user.id, query);
+    return this.bookings.listOwned(user.id, {
+      limit: query.limit,
+      ...(query.cursor === undefined ? {} : { cursor: query.cursor }),
+    });
   }
 
   @Get(":bookingId")

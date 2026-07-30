@@ -301,6 +301,12 @@ describe("BookingQueryService", () => {
     });
   });
 
+  it("treats an own undefined cursor as absent", async () => {
+    const { service, repository } = createHarness({ listRows: [] });
+    await service.listOwned(USER_ID, { limit: 10, cursor: undefined });
+    expect(repository.listOwned).toHaveBeenCalledWith(USER_ID, { limit: 10 });
+  });
+
   it("maps payment and history while preserving owner-only detail lookup", async () => {
     const { service, repository, clock } = createHarness({ mockEnabled: true });
     const result = await service.getOwned(USER_ID, BOOKING_ID);
@@ -430,6 +436,30 @@ describe("BookingQueryService", () => {
     expect(reads).toBe(0);
     expect(captured).toMatchObject({ status: 400, code: "ORDER_CURSOR_INVALID" });
     expect(JSON.stringify(captured)).not.toContain("cursor-getter-secret");
+    expect(repository.listOwned).not.toHaveBeenCalled();
+  });
+
+  it("rejects a non-ordinary query prototype without invoking inherited accessors", async () => {
+    let reads = 0;
+    const prototype = Object.defineProperty({}, "cursor", {
+      get() {
+        reads += 1;
+        throw new Error("inherited-cursor-secret");
+      },
+    });
+    const query = Object.assign(Object.create(prototype) as Record<string, unknown>, {
+      limit: 10,
+    });
+    const { service, repository } = createHarness();
+    let captured: unknown;
+    try {
+      await service.listOwned(USER_ID, query);
+    } catch (error) {
+      captured = error;
+    }
+    expect(reads).toBe(0);
+    expect(captured).toMatchObject({ status: 400, code: "BAD_REQUEST" });
+    expect(JSON.stringify(captured)).not.toContain("inherited-cursor-secret");
     expect(repository.listOwned).not.toHaveBeenCalled();
   });
 

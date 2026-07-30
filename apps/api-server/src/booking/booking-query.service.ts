@@ -237,6 +237,32 @@ const captureNow = (clock: Clock): Date => {
   return readInstant(value).date;
 };
 
+const omitUndefinedCursor = (query: unknown): unknown => {
+  try {
+    if (
+      typeof query !== "object" ||
+      query === null ||
+      Array.isArray(query) ||
+      nodeTypes.isProxy(query)
+    ) {
+      return query;
+    }
+    const prototype = Reflect.getPrototypeOf(query);
+    if (prototype !== Object.prototype && prototype !== null) {
+      return query;
+    }
+    const descriptors = Object.getOwnPropertyDescriptors(query);
+    const cursor = descriptors.cursor;
+    if (cursor === undefined || !Object.hasOwn(cursor, "value") || cursor.value !== undefined) {
+      return query;
+    }
+    delete descriptors.cursor;
+    return Object.defineProperties(Object.create(null) as object, descriptors);
+  } catch {
+    return query;
+  }
+};
+
 const decodeCursorFromQuery = (
   query: unknown,
 ): ReturnType<typeof decodeBookingCursor> | undefined => {
@@ -252,6 +278,13 @@ const decodeCursorFromQuery = (
       return undefined;
     }
     const descriptor = Reflect.getOwnPropertyDescriptor(query, "cursor");
+    if (
+      descriptor !== undefined &&
+      Object.hasOwn(descriptor, "value") &&
+      descriptor.value === undefined
+    ) {
+      return undefined;
+    }
     return decodeBookingCursor(
       descriptor !== undefined && Object.hasOwn(descriptor, "value") ? descriptor.value : undefined,
     );
@@ -272,10 +305,11 @@ export class BookingQueryService {
   ) {}
 
   async listOwned(userId: string, query: unknown): Promise<BookingListResponse> {
-    const after = decodeCursorFromQuery(query);
+    const normalizedQuery = omitUndefinedCursor(query);
+    const after = decodeCursorFromQuery(normalizedQuery);
     let parsed: ReturnType<typeof bookingListQuerySchema.safeParse>;
     try {
-      parsed = bookingListQuerySchema.safeParse(query);
+      parsed = bookingListQuerySchema.safeParse(normalizedQuery);
     } catch {
       throw badRequest();
     }

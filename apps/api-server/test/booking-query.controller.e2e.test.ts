@@ -1,11 +1,14 @@
 import type { CanActivate, ExecutionContext, INestApplication } from "@nestjs/common";
+import { ConfigService } from "@nestjs/config";
 import { Test } from "@nestjs/testing";
 import request from "supertest";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { configureApplication } from "../src/application-configuration.js";
 import { BookingQueryController } from "../src/booking/booking-query.controller.js";
+import { BookingQueryRepository } from "../src/booking/booking-query.repository.js";
 import { BookingQueryService } from "../src/booking/booking-query.service.js";
+import { CLOCK, type Clock } from "../src/common/clock/clock.js";
 import { BusinessException } from "../src/common/http/business.exception.js";
 import { SessionAuthGuard } from "../src/identity/session-auth.guard.js";
 
@@ -89,6 +92,48 @@ describe("BookingQueryController", () => {
     await app.init();
     return { service, server: app.getHttpServer() as Parameters<typeof request>[0] };
   };
+
+  const createRealListApp = async () => {
+    const repository = {
+      listOwned: vi.fn(() => Promise.resolve([])),
+      findOwned: vi.fn(),
+    };
+    const guard: CanActivate = {
+      canActivate(context: ExecutionContext) {
+        context.switchToHttp().getRequest<{ user?: { id: string } }>().user = { id: USER_ID };
+        return true;
+      },
+    };
+    const clock: Clock = { now: vi.fn(() => new Date("2026-07-30T02:05:00.000Z")) };
+    const module = await Test.createTestingModule({
+      controllers: [BookingQueryController],
+      providers: [
+        BookingQueryService,
+        { provide: BookingQueryRepository, useValue: repository },
+        { provide: CLOCK, useValue: clock },
+        { provide: ConfigService, useValue: {} },
+      ],
+    })
+      .overrideGuard(SessionAuthGuard)
+      .useValue(guard)
+      .compile();
+    app = module.createNestApplication();
+    configureApplication(app, "production");
+    await app.init();
+    return { repository, server: app.getHttpServer() as Parameters<typeof request>[0] };
+  };
+
+  it("treats an omitted cursor as absent after query DTO transformation", async () => {
+    const { repository, server } = await createRealListApp();
+    for (const [path, limit] of [
+      ["/api/v1/bookings", 10],
+      ["/api/v1/bookings?limit=10", 10],
+      ["/api/v1/bookings?limit=20", 20],
+    ] as const) {
+      await request(server).get(path).set("Authorization", "Bearer test").expect(200);
+      expect(repository.listOwned).toHaveBeenLastCalledWith(USER_ID, { limit });
+    }
+  });
 
   it("lists the authenticated user's bookings in the global envelope", async () => {
     const { service, server } = await createApp();
