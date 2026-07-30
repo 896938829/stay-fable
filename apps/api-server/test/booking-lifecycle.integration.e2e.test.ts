@@ -31,6 +31,11 @@ const INITIAL_HISTORY_AT = new Date("2030-01-01T00:00:00.000Z");
 const STARTING_HELD = 3;
 const STARTING_SOLD = 1;
 const STARTING_VERSION = 11;
+const STATEMENT_TIMEOUT_MS = 15_000;
+const LOCK_TIMEOUT_MS = 10_000;
+const IDLE_TRANSACTION_TIMEOUT_MS = 20_000;
+const CONNECTION_TIMEOUT_MS = 5_000;
+const QUERY_TIMEOUT_MS = 20_000;
 
 type EnvironmentSnapshot = { present: boolean; value?: string };
 
@@ -66,6 +71,12 @@ interface LifecycleState {
   }>;
 }
 
+interface DatabaseTimeoutSettings {
+  idleTransactionTimeout: string;
+  lockTimeout: string;
+  statementTimeout: string;
+}
+
 const snapshotEnvironment = (key: string): EnvironmentSnapshot =>
   Object.hasOwn(process.env, key) ? { present: true, value: process.env[key] } : { present: false };
 
@@ -76,6 +87,31 @@ const restoreEnvironment = (key: string, snapshot: EnvironmentSnapshot): void =>
     delete process.env[key];
   }
 };
+
+const databaseSessionOptions = (searchPath?: string): string =>
+  [
+    ...(searchPath === undefined ? [] : [`-c search_path=${searchPath},public`]),
+    `-c statement_timeout=${STATEMENT_TIMEOUT_MS}`,
+    `-c lock_timeout=${LOCK_TIMEOUT_MS}`,
+    `-c idle_in_transaction_session_timeout=${IDLE_TRANSACTION_TIMEOUT_MS}`,
+  ].join(" ");
+
+const boundedDatabaseUrl = (connectionString: string, searchPath?: string): string => {
+  const url = new URL(connectionString);
+  if (searchPath !== undefined) {
+    url.searchParams.set("schema", searchPath);
+  }
+  url.searchParams.set("options", databaseSessionOptions(searchPath));
+  return url.toString();
+};
+
+const boundedPool = (connectionString: string, max?: number): Pool =>
+  new Pool({
+    connectionString,
+    connectionTimeoutMillis: CONNECTION_TIMEOUT_MS,
+    query_timeout: QUERY_TIMEOUT_MS,
+    ...(max === undefined ? {} : { max }),
+  });
 
 const quoteSchema = (schemaName: string): string => {
   if (!/^booking_lifecycle_test_[0-9a-f]{16}$/.test(schemaName)) {
@@ -162,11 +198,56 @@ describeDatabase("booking lifecycle PostgreSQL races", () => {
     return database;
   };
 
+  const activeAdmin = (): Pool => {
+    if (adminPool === undefined) {
+      throw new Error("Lifecycle admin SQL pool was not initialized");
+    }
+    return adminPool;
+  };
+
   const activeSql = (): Pool => {
     if (sqlPool === undefined) {
       throw new Error("Lifecycle SQL pool was not initialized");
     }
     return sqlPool;
+  };
+
+  const expectBoundedDatabaseSessions = async (): Promise<void> => {
+    const settingsSql = `
+      SELECT
+        current_setting('statement_timeout') AS "statementTimeout",
+        current_setting('lock_timeout') AS "lockTimeout",
+        current_setting('idle_in_transaction_session_timeout') AS "idleTransactionTimeout"
+    `;
+    const [adminSettings, directSettings, prismaSettings] = await Promise.all([
+      activeAdmin().query<DatabaseTimeoutSettings>(settingsSql),
+      activeSql().query<DatabaseTimeoutSettings>(settingsSql),
+      activeDatabase().$queryRawUnsafe<DatabaseTimeoutSettings[]>(settingsSql),
+    ]);
+    const expectedSettings = {
+      statementTimeout: "15s",
+      lockTimeout: "10s",
+      idleTransactionTimeout: "20s",
+    };
+    expect(adminSettings.rows).toEqual([expectedSettings]);
+    expect(directSettings.rows).toEqual([expectedSettings]);
+    expect(prismaSettings).toEqual([expectedSettings]);
+
+    for (const pool of [activeAdmin(), activeSql()]) {
+      const options = pool.options as typeof pool.options & {
+        connectionTimeoutMillis: number;
+        query_timeout: number;
+      };
+      expect(options.connectionTimeoutMillis).toBe(CONNECTION_TIMEOUT_MS);
+      expect(options.query_timeout).toBe(QUERY_TIMEOUT_MS);
+    }
+
+    const runtimeUrl = new URL(requireSafeDatabaseIntegrationUrl(process.env.DATABASE_URL));
+    expect(runtimeUrl.searchParams.get("options")).toBe(
+      `-c search_path=${schemaName},public -c statement_timeout=${STATEMENT_TIMEOUT_MS}` +
+        ` -c lock_timeout=${LOCK_TIMEOUT_MS}` +
+        ` -c idle_in_transaction_session_timeout=${IDLE_TRANSACTION_TIMEOUT_MS}`,
+    );
   };
 
   const queryService = (
@@ -527,7 +608,7 @@ describeDatabase("booking lifecycle PostgreSQL races", () => {
   beforeAll(async () => {
     originalDatabaseUrl = snapshotEnvironment("DATABASE_URL");
     const connectionString = requireSafeDatabaseIntegrationUrl(process.env.DATABASE_URL);
-    adminPool = new Pool({ connectionString });
+    adminPool = boundedPool(boundedDatabaseUrl(connectionString));
     schemaName = `booking_lifecycle_test_${randomBytes(8).toString("hex")}`;
     const quoted = quoteSchema(schemaName);
     await adminPool.query(`CREATE SCHEMA ${quoted}`);
@@ -543,11 +624,9 @@ describeDatabase("booking lifecycle PostgreSQL races", () => {
         `CREATE TABLE ${quoted}."${table}" (LIKE public."${table}" INCLUDING ALL)`,
       );
     }
-    const scoped = new URL(connectionString);
-    scoped.searchParams.set("schema", schemaName);
-    scoped.searchParams.set("options", `-c search_path=${schemaName},public`);
-    process.env.DATABASE_URL = scoped.toString();
-    sqlPool = new Pool({ connectionString: scoped.toString(), max: 10 });
+    const scopedConnectionString = boundedDatabaseUrl(connectionString, schemaName);
+    process.env.DATABASE_URL = scopedConnectionString;
+    sqlPool = boundedPool(scopedConnectionString, 10);
     database = new DatabaseService();
     await database.check();
   }, 25_000);
@@ -598,6 +677,7 @@ describeDatabase("booking lifecycle PostgreSQL races", () => {
   });
 
   test("serializes successful payment against owner cancellation", async () => {
+    await expectBoundedDatabaseSessions();
     const fixture = await createPendingBooking();
     const concurrent = concurrentLifecycleDatabase(2);
     const repository = new BookingLifecycleRepository(concurrent.database);
