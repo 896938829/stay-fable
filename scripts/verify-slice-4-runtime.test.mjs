@@ -318,10 +318,17 @@ test("owner cleanup locks lifecycle rows before deriving inventory compensation"
         ],
       };
     }
-    if (/SELECT held_inventory, sold_inventory/.test(sql) && /FOR UPDATE/.test(sql)) {
+    if (/WITH requested/.test(sql) && /FOR UPDATE OF inventory/.test(sql)) {
       return {
         rowCount: 1,
-        rows: [{ held_inventory: state.heldInventory, sold_inventory: 0 }],
+        rows: [
+          {
+            business_date: "2026-08-14",
+            held_inventory: state.heldInventory,
+            room_type_id: "30000000-0000-4000-8000-000000000001",
+            sold_inventory: 0,
+          },
+        ],
       };
     }
     if (/UPDATE daily_inventory inventory/.test(sql)) {
@@ -349,7 +356,7 @@ test("owner cleanup locks lifecycle rows before deriving inventory compensation"
   const bookingLock = calls.findIndex(({ sql }) => /FOR UPDATE OF booking/.test(sql));
   const holdLock = calls.findIndex(({ sql }) => /FOR UPDATE OF hold/.test(sql));
   const inventoryLock = calls.findIndex(
-    ({ sql }) => /SELECT held_inventory, sold_inventory/.test(sql) && /FOR UPDATE/.test(sql),
+    ({ sql }) => /WITH requested/.test(sql) && /FOR UPDATE OF inventory/.test(sql),
   );
   const compensation = calls.findIndex(({ sql }) => /UPDATE daily_inventory inventory/.test(sql));
   const firstDelete = calls.findIndex(({ sql }) => /^DELETE FROM /.test(sql));
@@ -386,8 +393,18 @@ test("owner cleanup stops before FK deletion when conditional inventory compensa
         ],
       };
     }
-    if (/SELECT held_inventory, sold_inventory/.test(sql)) {
-      return { rowCount: 1, rows: [{ held_inventory: 2, sold_inventory: 0 }] };
+    if (/WITH requested/.test(sql) && /FOR UPDATE OF inventory/.test(sql)) {
+      return {
+        rowCount: 1,
+        rows: [
+          {
+            business_date: "2026-08-14",
+            held_inventory: 2,
+            room_type_id: "30000000-0000-4000-8000-000000000001",
+            sold_inventory: 0,
+          },
+        ],
+      };
     }
     if (/UPDATE daily_inventory inventory/.test(sql)) {
       return { rowCount: 0, rows: [] };
@@ -410,15 +427,21 @@ test("owner cleanup stops before FK deletion when conditional inventory compensa
   assert.equal(deletes, 0);
 });
 
-test("reset locks owner lifecycle before supply and rolls back foreign occupancy failure for fallback cleanup", async () => {
+test("reset locks merged inventory globally and rolls back foreign drift for fallback cleanup", async () => {
   const ownerIds = ["10000000-0000-4000-8000-000000000001"];
+  const roomTypeId = "30000000-0000-4000-8000-000000000001";
   const events = [];
+  let mergedInventoryLockQueries = 0;
   const state = {
     foreignBooking: true,
-    foreignHeld: 1,
-    heldInventory: 2,
+    inventory: {
+      "2026-08-12": { held: 1, sold: 0 },
+      "2026-08-14": { held: 2, sold: 0 },
+    },
     ownerBooking: true,
     ownerHoldStatus: "HELD",
+    workerOwnsEarly: true,
+    workerWaitsLate: false,
   };
   const transaction = async (operation) => {
     const snapshot = structuredClone(state);
@@ -449,24 +472,49 @@ test("reset locks owner lifecycle before supply and rolls back foreign occupancy
                 {
                   business_date: "2026-08-14",
                   hold_id: "hold-owner",
-                  room_type_id: "30000000-0000-4000-8000-000000000001",
+                  room_type_id: roomTypeId,
                   status: state.ownerHoldStatus,
                 },
               ],
       };
     }
-    if (/SELECT held_inventory, sold_inventory/.test(sql) && /FOR UPDATE/.test(sql)) {
-      events.push("lock:owner-inventory");
+    if (/WITH requested/.test(sql) && /FOR UPDATE OF inventory/.test(sql)) {
+      mergedInventoryLockQueries += 1;
+      assert.match(sql, /ORDER BY inventory\.room_type_id, inventory\.business_date/);
+      const [roomTypeIds, businessDates] = values;
+      assert.deepEqual(businessDates, [...businessDates].sort());
+      assert.deepEqual(
+        roomTypeIds,
+        businessDates.map(() => roomTypeId),
+      );
+      for (const businessDate of businessDates) {
+        events.push(`lock:inventory:${businessDate}`);
+        if (businessDate === "2026-08-12" && state.workerOwnsEarly) {
+          assert.equal(
+            state.workerWaitsLate,
+            false,
+            "cleanup must not own the late row while waiting",
+          );
+          events.push("worker:finish-and-release");
+          state.workerOwnsEarly = false;
+        }
+      }
       return {
-        rowCount: 1,
-        rows: [{ held_inventory: state.heldInventory, sold_inventory: 0 }],
+        rowCount: businessDates.length,
+        rows: businessDates.map((businessDate) => ({
+          business_date: businessDate,
+          held_inventory: state.inventory[businessDate].held,
+          room_type_id: roomTypeId,
+          sold_inventory: state.inventory[businessDate].sold,
+        })),
       };
     }
     if (/UPDATE daily_inventory inventory/.test(sql)) {
       const [, , heldDelta, soldDelta, expectedHeld, expectedSold] = values;
-      assert.equal(state.heldInventory, expectedHeld);
+      const businessDate = values[1];
+      assert.equal(state.inventory[businessDate].held, expectedHeld);
       assert.equal(expectedSold, 0);
-      state.heldInventory -= heldDelta;
+      state.inventory[businessDate].held -= heldDelta;
       assert.equal(soldDelta, 0);
       return { rowCount: 1, rows: [{ business_date: "2026-08-14" }] };
     }
@@ -483,10 +531,15 @@ test("reset locks owner lifecycle before supply and rolls back foreign occupancy
     }
     throw new Error(`unexpected fake SQL: ${sql}`);
   };
-  const deleteOwnerData = (client) =>
-    deleteRegisteredOwnerData({ client, ownerIds, query: fakeQuery });
-  const lockSupply = async () => {
-    events.push("lock:supply");
+  const legacyDeleteOwnerData = async () => {
+    events.push("legacy:lock-owner-inventory:2026-08-14");
+    state.workerWaitsLate = true;
+  };
+  const legacyLockSupply = async () => {
+    events.push("legacy:wait-supply-inventory:2026-08-12");
+    if (state.workerOwnsEarly && state.workerWaitsLate) {
+      throw new Error("simulated inventory deadlock");
+    }
   };
   const assertNoForeignOccupancy = async () => {
     events.push("assert:foreign-occupancy");
@@ -499,9 +552,15 @@ test("reset locks owner lifecycle before supply and rolls back foreign occupancy
   await assert.rejects(
     resetRegisteredOwnerFixture({
       assertNoForeignOccupancy,
-      deleteOwnerData,
-      lockSupply,
+      deleteOwnerData: legacyDeleteOwnerData,
+      lockSupply: legacyLockSupply,
+      ownerIds,
+      query: fakeQuery,
       restoreSupply,
+      supplyInventoryKeys: [
+        { businessDate: "2026-08-12", roomTypeId },
+        { businessDate: "2026-08-14", roomTypeId },
+      ],
       transaction,
     }),
     /runtime fixture has foreign occupancy/,
@@ -510,19 +569,27 @@ test("reset locks owner lifecycle before supply and rolls back foreign occupancy
   assert.deepEqual(events, [
     "lock:owner-booking",
     "lock:owner-holds",
-    "lock:owner-inventory",
-    "lock:supply",
+    "lock:inventory:2026-08-12",
+    "worker:finish-and-release",
+    "lock:inventory:2026-08-14",
     "assert:foreign-occupancy",
   ]);
   assert.equal(state.ownerBooking, true);
   assert.equal(state.ownerHoldStatus, "HELD");
-  assert.equal(state.heldInventory, 2);
+  assert.equal(mergedInventoryLockQueries, 1);
+  assert.deepEqual(state.inventory, {
+    "2026-08-12": { held: 1, sold: 0 },
+    "2026-08-14": { held: 2, sold: 0 },
+  });
   assert.equal(state.foreignBooking, true);
 
-  await transaction(deleteOwnerData);
+  await transaction((client) => deleteRegisteredOwnerData({ client, ownerIds, query: fakeQuery }));
 
   assert.equal(state.ownerBooking, false);
   assert.equal(state.ownerHoldStatus, null);
-  assert.equal(state.heldInventory, state.foreignHeld);
+  assert.deepEqual(state.inventory, {
+    "2026-08-12": { held: 1, sold: 0 },
+    "2026-08-14": { held: 1, sold: 0 },
+  });
   assert.equal(state.foreignBooking, true);
 });

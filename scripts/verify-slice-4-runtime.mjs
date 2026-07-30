@@ -203,21 +203,38 @@ export async function runCleanupStages(stages) {
 
 export async function resetRegisteredOwnerFixture({
   assertNoForeignOccupancy,
-  deleteOwnerData,
-  lockSupply,
+  ownerIds,
+  query,
   restoreSupply,
+  supplyInventoryKeys,
   transaction,
 }) {
   await transaction(async (client) => {
-    await deleteOwnerData(client);
-    await lockSupply(client);
+    const ownerDeltas = await lockRegisteredOwnerLifecycle({ client, ownerIds, query });
+    const lockedInventory = await lockDailyInventoryRows({
+      client,
+      inventoryKeys: [
+        ...supplyInventoryKeys,
+        ...ownerDeltas.map(({ businessDate, roomTypeId }) => ({ businessDate, roomTypeId })),
+      ],
+      query,
+    });
+    await compensateRegisteredOwnerInventory({
+      client,
+      lockedInventory,
+      ownerDeltas,
+      query,
+    });
     await assertNoForeignOccupancy(client);
     await restoreSupply(client);
+    await deleteRegisteredOwnerRows({ client, ownerIds, query });
   });
 }
 
-export async function deleteRegisteredOwnerData({ client, ownerIds, query }) {
-  if (ownerIds.length === 0) return;
+const inventoryKey = (roomTypeId, businessDate) => `${roomTypeId}\0${businessDate}`;
+
+async function lockRegisteredOwnerLifecycle({ client, ownerIds, query }) {
+  if (ownerIds.length === 0) return [];
   await query(
     client,
     `
@@ -245,7 +262,7 @@ export async function deleteRegisteredOwnerData({ client, ownerIds, query }) {
   const deltas = new Map();
   for (const hold of lockedHolds.rows) {
     if (hold.status !== "HELD" && hold.status !== "CONSUMED") continue;
-    const key = `${hold.room_type_id}\0${hold.business_date}`;
+    const key = inventoryKey(hold.room_type_id, hold.business_date);
     const delta = deltas.get(key) ?? {
       businessDate: hold.business_date,
       held: 0,
@@ -259,25 +276,60 @@ export async function deleteRegisteredOwnerData({ client, ownerIds, query }) {
     }
     deltas.set(key, delta);
   }
-  for (const delta of [...deltas.values()].sort((left, right) =>
-    `${left.roomTypeId}\0${left.businessDate}`.localeCompare(
-      `${right.roomTypeId}\0${right.businessDate}`,
+  return [...deltas.values()].sort((left, right) =>
+    inventoryKey(left.roomTypeId, left.businessDate).localeCompare(
+      inventoryKey(right.roomTypeId, right.businessDate),
     ),
-  )) {
-    const lockedInventory = await query(
-      client,
-      `
-        SELECT held_inventory, sold_inventory
-        FROM daily_inventory inventory
-        WHERE room_type_id = $1::uuid AND business_date = $2::date
-        FOR UPDATE OF inventory
-      `,
-      [delta.roomTypeId, delta.businessDate],
-    );
-    assert.equal(lockedInventory.rowCount, 1, "runtime owner inventory cleanup row missing");
-    const current = lockedInventory.rows[0];
-    assert.ok(current.held_inventory >= delta.held, "runtime owner held cleanup drift");
-    assert.ok(current.sold_inventory >= delta.sold, "runtime owner sold cleanup drift");
+  );
+}
+
+async function lockDailyInventoryRows({ client, inventoryKeys, query }) {
+  const uniqueKeys = new Map();
+  for (const key of inventoryKeys) {
+    uniqueKeys.set(inventoryKey(key.roomTypeId, key.businessDate), key);
+  }
+  const orderedKeys = [...uniqueKeys.values()].sort((left, right) =>
+    inventoryKey(left.roomTypeId, left.businessDate).localeCompare(
+      inventoryKey(right.roomTypeId, right.businessDate),
+    ),
+  );
+  if (orderedKeys.length === 0) return new Map();
+  const locked = await query(
+    client,
+    `
+      WITH requested(room_type_id, business_date) AS (
+        SELECT *
+        FROM unnest($1::uuid[], $2::date[])
+      )
+      SELECT inventory.room_type_id::text, inventory.business_date::text,
+             inventory.held_inventory, inventory.sold_inventory
+      FROM daily_inventory inventory
+      JOIN requested
+        ON requested.room_type_id = inventory.room_type_id
+       AND requested.business_date = inventory.business_date
+      ORDER BY inventory.room_type_id, inventory.business_date
+      FOR UPDATE OF inventory
+    `,
+    [
+      orderedKeys.map(({ roomTypeId }) => roomTypeId),
+      orderedKeys.map(({ businessDate }) => businessDate),
+    ],
+  );
+  assert.equal(locked.rowCount, orderedKeys.length, "runtime inventory lock row missing");
+  return new Map(
+    locked.rows.map((row) => [
+      inventoryKey(row.room_type_id, row.business_date),
+      { held: row.held_inventory, sold: row.sold_inventory },
+    ]),
+  );
+}
+
+async function compensateRegisteredOwnerInventory({ client, lockedInventory, ownerDeltas, query }) {
+  for (const delta of ownerDeltas) {
+    const current = lockedInventory.get(inventoryKey(delta.roomTypeId, delta.businessDate));
+    assert.ok(current, "runtime owner inventory cleanup row missing");
+    assert.ok(current.held >= delta.held, "runtime owner held cleanup drift");
+    assert.ok(current.sold >= delta.sold, "runtime owner sold cleanup drift");
     const adjusted = await query(
       client,
       `
@@ -290,17 +342,14 @@ export async function deleteRegisteredOwnerData({ client, ownerIds, query }) {
           AND held_inventory = $5 AND sold_inventory = $6
         RETURNING business_date
       `,
-      [
-        delta.roomTypeId,
-        delta.businessDate,
-        delta.held,
-        delta.sold,
-        current.held_inventory,
-        current.sold_inventory,
-      ],
+      [delta.roomTypeId, delta.businessDate, delta.held, delta.sold, current.held, current.sold],
     );
     assert.equal(adjusted.rowCount, 1, "runtime owner inventory cleanup drift");
   }
+}
+
+async function deleteRegisteredOwnerRows({ client, ownerIds, query }) {
+  if (ownerIds.length === 0) return;
   await query(
     client,
     `DELETE FROM payment USING booking
@@ -321,6 +370,25 @@ export async function deleteRegisteredOwnerData({ client, ownerIds, query }) {
   );
   await query(client, "DELETE FROM booking WHERE user_id = ANY($1::uuid[])", [ownerIds]);
   await query(client, "DELETE FROM quote WHERE user_id = ANY($1::uuid[])", [ownerIds]);
+}
+
+export async function deleteRegisteredOwnerData({ client, ownerIds, query }) {
+  const ownerDeltas = await lockRegisteredOwnerLifecycle({ client, ownerIds, query });
+  const lockedInventory = await lockDailyInventoryRows({
+    client,
+    inventoryKeys: ownerDeltas.map(({ businessDate, roomTypeId }) => ({
+      businessDate,
+      roomTypeId,
+    })),
+    query,
+  });
+  await compensateRegisteredOwnerInventory({
+    client,
+    lockedInventory,
+    ownerDeltas,
+    query,
+  });
+  await deleteRegisteredOwnerRows({ client, ownerIds, query });
 }
 
 async function loadDatabase(databaseUrl) {
@@ -505,9 +573,13 @@ async function loadDatabase(databaseUrl) {
     async reset() {
       await resetRegisteredOwnerFixture({
         assertNoForeignOccupancy,
-        deleteOwnerData,
-        lockSupply,
+        ownerIds,
+        query,
         restoreSupply,
+        supplyInventoryKeys: fixture.dates.map((businessDate) => ({
+          businessDate,
+          roomTypeId: fixture.roomTypeId,
+        })),
         transaction,
       });
     },
