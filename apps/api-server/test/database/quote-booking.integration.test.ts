@@ -19,6 +19,7 @@ import type { WriteRateLimitService } from "../../src/common/rate-limit/write-ra
 import { DatabaseService } from "../../src/database/database.service.js";
 import { Prisma } from "../../src/generated/prisma/client.js";
 import { createQuoteFingerprint } from "../../src/pricing/quote-fingerprint.js";
+import { QuoteRepository } from "../../src/pricing/quote.repository.js";
 import { requireSafeDatabaseIntegrationUrl } from "./database-integration-guard.js";
 
 const runDatabaseIntegration = process.env.RUN_DATABASE_INTEGRATION === "true";
@@ -1764,6 +1765,44 @@ describeDatabase(suiteName, () => {
         daily_inventory_count: 1,
       },
     ]);
+  }, 25_000);
+
+  test("returns exact date-only nightly prices across month boundaries in a non-UTC session", async () => {
+    await applyTargetMigration();
+    const fixture = await createScenarioFixture({
+      dates: ["2030-01-31", "2030-02-01"],
+      checkout: "2030-02-02",
+      totals: [2, 2],
+    });
+    const { lookup, sessionRows } = await activeRepositoryDatabase().$transaction(
+      async (transaction) => {
+        await transaction.$queryRaw(
+          Prisma.sql`SELECT set_config('TimeZone', 'Pacific/Auckland', true)`,
+        );
+        const scopedSessionRows = await transaction.$queryRaw<Array<{ timezone: string }>>(
+          Prisma.sql`SELECT current_setting('TimeZone') AS timezone`,
+        );
+        const scopedLookup = await new QuoteRepository(transaction).findQuoteInput(fixture.roomId, {
+          checkin: fixture.dates[0]!,
+          checkout: fixture.checkout,
+          nights: fixture.dates.length,
+          guests: 2,
+        });
+        return { lookup: scopedLookup, sessionRows: scopedSessionRows };
+      },
+    );
+    expect(sessionRows).toEqual([{ timezone: "Pacific/Auckland" }]);
+
+    expect(lookup.status).toBe("AVAILABLE");
+    if (lookup.status !== "AVAILABLE") {
+      throw new Error(`Expected an available quote lookup, received ${lookup.status}`);
+    }
+    const businessDates = lookup.nightlyPrices.map(({ businessDate }) => businessDate);
+    expect(businessDates).toEqual(fixture.dates);
+    for (const businessDate of businessDates) {
+      expect(businessDate).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+      expect(businessDate).not.toMatch(/[T+\s:]/);
+    }
   }, 25_000);
 
   test("serializes two users competing for one available room night", async () => {
