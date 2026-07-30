@@ -14,10 +14,16 @@ type WriteScope = "quotes" | "bookings";
 interface RateLimitConfig {
   scope: WriteScope;
   limit: number;
+  digestPrefix?: string;
 }
 
 const QUOTE_RATE_LIMIT: RateLimitConfig = { scope: "quotes", limit: 30 };
 const BOOKING_RATE_LIMIT: RateLimitConfig = { scope: "bookings", limit: 10 };
+const BOOKING_CANCELLATION_RATE_LIMIT: RateLimitConfig = {
+  scope: "bookings",
+  limit: 6,
+  digestPrefix: "booking-cancellation\u0000",
+};
 
 const unavailable = (): BusinessException =>
   new BusinessException(503, "BOOKING_SERVICE_UNAVAILABLE", "预订服务暂时不可用，请稍后重试");
@@ -74,6 +80,10 @@ export class WriteRateLimitService {
     await this.check(userId, BOOKING_RATE_LIMIT);
   }
 
+  async checkBookingCancellation(userId: string): Promise<void> {
+    await this.check(userId, BOOKING_CANCELLATION_RATE_LIMIT);
+  }
+
   private async check(userId: string, config: RateLimitConfig): Promise<void> {
     if (!isUserId(userId)) {
       throw unavailable();
@@ -81,7 +91,10 @@ export class WriteRateLimitService {
 
     let result: unknown;
     try {
-      const userHash = createHash("sha256").update(userId).digest("hex");
+      const userHash = createHash("sha256")
+        .update(config.digestPrefix ?? "")
+        .update(userId)
+        .digest("hex");
       result = await this.redis.executeRateLimit(
         `rate-limit:${config.scope}:${userHash}`,
         config.limit,

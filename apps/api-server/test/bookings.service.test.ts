@@ -11,6 +11,7 @@ import {
   BOOKING_NUMBER_GENERATOR,
   type BookingNumberGenerator,
 } from "../src/booking/booking-number.js";
+import { BookingActionsController } from "../src/booking/booking-actions.controller.js";
 import { BookingModule } from "../src/booking/booking.module.js";
 import { BookingQueryController } from "../src/booking/booking-query.controller.js";
 import { BookingsController } from "../src/booking/bookings.controller.js";
@@ -1369,6 +1370,10 @@ describe("BookingModule", () => {
       ]),
     );
     expect(providers).not.toContain(WriteRateLimitService);
-    expect(controllers ?? []).toEqual([BookingsController, BookingQueryController]);
+    expect(controllers ?? []).toEqual([
+      BookingsController,
+      BookingQueryController,
+      BookingActionsController,
+    ]);
   });
 });

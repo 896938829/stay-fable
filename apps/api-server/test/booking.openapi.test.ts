@@ -4,6 +4,8 @@ import { Test } from "@nestjs/testing";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { configureApplication, OPEN_API_CONFIG } from "../src/application-configuration.js";
+import { BookingActionsController } from "../src/booking/booking-actions.controller.js";
+import { BookingLifecycleService } from "../src/booking/booking-lifecycle.service.js";
 import { BookingModule } from "../src/booking/booking.module.js";
 import { BookingQueryController } from "../src/booking/booking-query.controller.js";
 import { BookingQueryService } from "../src/booking/booking-query.service.js";
@@ -54,7 +56,12 @@ describe("Booking slice OpenAPI", () => {
 
   it("documents only the authenticated strict quote and booking contracts", async () => {
     const module = await Test.createTestingModule({
-      controllers: [QuotesController, BookingsController, BookingQueryController],
+      controllers: [
+        QuotesController,
+        BookingsController,
+        BookingQueryController,
+        BookingActionsController,
+      ],
       providers: [
         { provide: QuotesService, useValue: { create: vi.fn() } },
         { provide: BookingsService, useValue: { create: vi.fn() } },
@@ -62,6 +69,7 @@ describe("Booking slice OpenAPI", () => {
           provide: BookingQueryService,
           useValue: { listOwned: vi.fn(), getOwned: vi.fn() },
         },
+        { provide: BookingLifecycleService, useValue: { cancel: vi.fn() } },
       ],
     })
       .overrideGuard(SessionAuthGuard)
@@ -74,6 +82,7 @@ describe("Booking slice OpenAPI", () => {
     expect(Object.keys(document.paths).sort()).toEqual([
       "/api/v1/bookings",
       "/api/v1/bookings/{bookingId}",
+      "/api/v1/bookings/{bookingId}/cancel",
       "/api/v1/quotes",
     ]);
     const operation = document.paths["/api/v1/quotes"]?.post;
@@ -250,6 +259,32 @@ describe("Booking slice OpenAPI", () => {
       $ref: "#/components/schemas/BookingLifecycleErrorEnvelopeDto",
     });
 
+    const cancelOperation = document.paths["/api/v1/bookings/{bookingId}/cancel"]?.post;
+    expect(cancelOperation?.security).toEqual([{ session: [] }]);
+    expect(cancelOperation?.parameters).toEqual([
+      {
+        in: "path",
+        name: "bookingId",
+        required: true,
+        schema: { format: "uuid", type: "string" },
+      },
+    ]);
+    expect(cancelOperation?.requestBody?.content?.["application/json"]?.schema).toEqual({
+      type: "object",
+      additionalProperties: false,
+    });
+    expect(cancelOperation?.responses?.["200"]?.content?.["application/json"]?.schema).toEqual({
+      $ref: "#/components/schemas/BookingDetailEnvelopeDto",
+    });
+    for (const status of ["400", "401", "403", "404", "409", "503"]) {
+      expect(cancelOperation?.responses?.[status]?.content?.["application/json"]?.schema).toEqual({
+        $ref: "#/components/schemas/BookingLifecycleErrorEnvelopeDto",
+      });
+    }
+    expect(cancelOperation?.responses?.["429"]?.content?.["application/json"]?.schema).toEqual({
+      $ref: "#/components/schemas/BookingRateLimitErrorEnvelopeDto",
+    });
+
     expect(schemas?.BookingListItemDto?.required).toEqual([
       "booking_id",
       "booking_number",
@@ -319,8 +354,13 @@ describe("Booking slice OpenAPI", () => {
       expect(appImports).toContain(BookingModule);
       expect(pricingControllers).toEqual([QuotesController]);
       const bookingExports = Reflect.getMetadata("exports", BookingModule) as unknown[];
-      expect(bookingControllers).toEqual([BookingsController, BookingQueryController]);
+      expect(bookingControllers).toEqual([
+        BookingsController,
+        BookingQueryController,
+        BookingActionsController,
+      ]);
       expect(bookingExports).toContain(BookingQueryService);
+      expect(bookingExports).toContain(BookingLifecycleService);
     } finally {
       for (const [key, value] of Object.entries(previousEnvironment)) {
         if (value === undefined) {

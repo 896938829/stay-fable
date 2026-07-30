@@ -11,6 +11,10 @@ const userId = "018f47b6-0f58-7f52-8a35-3f92a6f34762";
 const otherUserId = "018f47b6-0f58-7f52-8a35-3f92a6f34763";
 const hash = (value: string): string => createHash("sha256").update(value).digest("hex");
 const quoteKey = `rate-limit:quotes:${hash(userId)}`;
+const cancellationKey = `rate-limit:bookings:${hash(`booking-cancellation\u0000${userId}`)}`;
+const otherCancellationKey = `rate-limit:bookings:${hash(
+  `booking-cancellation\u0000${otherUserId}`,
+)}`;
 
 const createRedisClient = (): RedisClient => ({
   ping: vi.fn(() => Promise.resolve("PONG")),
@@ -282,6 +286,9 @@ describe("WriteRateLimitService", () => {
     try {
       await expect(service.checkQuotes(userId)).resolves.toBeUndefined();
       await expect(service.checkBookings(userId)).resolves.toBeUndefined();
+      await expect(service.checkBookingCancellation(userId)).resolves.toBeUndefined();
+      await expect(service.checkBookingCancellation(userId)).resolves.toBeUndefined();
+      await expect(service.checkBookingCancellation(otherUserId)).resolves.toBeUndefined();
       await expect(service.checkQuotes(otherUserId)).resolves.toBeUndefined();
     } finally {
       logSpy.mockRestore();
@@ -291,15 +298,20 @@ describe("WriteRateLimitService", () => {
     expect(keys).toEqual([
       `rate-limit:quotes:${hash(userId)}`,
       `rate-limit:bookings:${hash(userId)}`,
+      cancellationKey,
+      cancellationKey,
+      otherCancellationKey,
       `rate-limit:quotes:${hash(otherUserId)}`,
     ]);
-    expect(new Set(keys).size).toBe(3);
+    expect(new Set(keys).size).toBe(5);
     expect(JSON.stringify({ keys, logs: logSpy.mock.calls })).not.toContain(userId);
     expect(keys.every((key) => /^rate-limit:(quotes|bookings):[a-f0-9]{64}$/.test(key))).toBe(true);
     expect(vi.mocked(redis.executeRateLimit).mock.calls).toEqual(
       expect.arrayContaining([
         [`rate-limit:quotes:${hash(userId)}`, 30, 60_000],
         [`rate-limit:bookings:${hash(userId)}`, 10, 60_000],
+        [cancellationKey, 6, 60_000],
+        [otherCancellationKey, 6, 60_000],
       ]),
     );
   });
@@ -307,6 +319,7 @@ describe("WriteRateLimitService", () => {
   it.each([
     ["quotes", 30, 31, "checkQuotes"],
     ["bookings", 10, 11, "checkBookings"],
+    ["booking cancellations", 6, 7, "checkBookingCancellation"],
   ] as const)(
     "allows exactly the %s limit of %i and rejects count %i",
     async (_, limit, rejectedCount, method) => {
@@ -431,5 +444,18 @@ describe("WriteRateLimitService", () => {
     );
     vi.mocked(redis.executeRateLimit).mockResolvedValueOnce(hostileResult);
     await expectUnavailable(service.checkBookings(userId), [internalSecret, userId]);
+  });
+
+  it("fails booking cancellation closed on the first Redis failure without exposing its key", async () => {
+    const { redis, service } = createWriteRateLimitService();
+    vi.mocked(redis.executeRateLimit).mockRejectedValueOnce(
+      new Error(`redis-secret ${cancellationKey}`),
+    );
+    await expectUnavailable(service.checkBookingCancellation(userId), [
+      "redis-secret",
+      cancellationKey,
+      userId,
+    ]);
+    expect(redis.executeRateLimit).toHaveBeenCalledWith(cancellationKey, 6, 60_000);
   });
 });
