@@ -518,23 +518,22 @@ function assertPropertyDetail(value) {
 }
 
 function assertNightlyPrice(value) {
+  const snapshot = readExactRecord(value, [
+    "business_date",
+    "sale_price_cents",
+    "rack_price_cents",
+    "currency",
+  ]);
   if (
-    !isObject(value) ||
-    !hasExactKeys(value, [
-      "business_date",
-      "sale_price_cents",
-      "rack_price_cents",
-      "currency",
-    ]) ||
-    !isCatalogDate(value.business_date)
+    !isCatalogDate(snapshot.business_date)
   ) {
     throw invalidResponse();
   }
   return {
-    business_date: value.business_date,
-    sale_price_cents: assertMoneyCents(value.sale_price_cents),
-    rack_price_cents: assertMoneyCents(value.rack_price_cents),
-    currency: assertCurrency(value.currency),
+    business_date: snapshot.business_date,
+    sale_price_cents: assertMoneyCents(snapshot.sale_price_cents),
+    rack_price_cents: assertMoneyCents(snapshot.rack_price_cents),
+    currency: assertCurrency(snapshot.currency),
   };
 }
 
@@ -752,6 +751,7 @@ function assertBookingResponse(value, requestedQuoteId) {
     assertUuid(requestedQuoteId);
     const keys = [
       "booking_id",
+      "quote_id",
       "booking_number",
       "status",
       "property_name",
@@ -766,6 +766,9 @@ function assertBookingResponse(value, requestedQuoteId) {
       "created_at",
     ];
     const snapshot = readExactRecord(value, keys);
+    if (snapshot.quote_id !== requestedQuoteId) {
+      throw invalidResponse();
+    }
     const nights =
       catalogDateOrdinal(snapshot.checkout) - catalogDateOrdinal(snapshot.checkin);
     if (
@@ -786,6 +789,7 @@ function assertBookingResponse(value, requestedQuoteId) {
     }
     return {
       booking_id: assertUuid(snapshot.booking_id),
+      quote_id: assertUuid(snapshot.quote_id),
       booking_number: snapshot.booking_number,
       status: snapshot.status,
       property_name: snapshot.property_name,

@@ -161,6 +161,7 @@ describe("Booking slice OpenAPI", () => {
     expect(schemas?.BookingEnvelopeDto?.required).toEqual(["data", "request_id"]);
     expect(schemas?.BookingResponseDto?.required).toEqual([
       "booking_id",
+      "quote_id",
       "booking_number",
       "status",
       "property_name",

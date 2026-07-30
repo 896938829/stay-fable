@@ -16,6 +16,7 @@ const IDEMPOTENCY_KEY = "booking-key-1234567890_ABCDEFGHIJ";
 const body = { quote_id: QUOTE_ID };
 const booking = {
   booking_id: "30000000-0000-4000-8000-000000000001",
+  quote_id: QUOTE_ID,
   booking_number: "SF20260730A1B2C3D4E5F6",
   status: "PENDING_PAYMENT",
   property_name: "西湖云栖酒店",

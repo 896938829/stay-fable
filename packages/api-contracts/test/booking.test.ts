@@ -46,6 +46,7 @@ const quote = {
 
 const booking = {
   booking_id: "40000000-0000-4000-8000-000000000001",
+  quote_id: quote.quote_id,
   booking_number: "SF20260730A1B2C3D4E5F6",
   status: "PENDING_PAYMENT",
   property_name: quote.property.name,

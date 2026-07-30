@@ -77,7 +77,7 @@ export class BookingsService {
         }
         throw unavailable();
       }
-      return this.mapResult(result);
+      return this.mapResult(result, parsedBody.data.quote_id);
     }
     throw unavailable();
   }
@@ -108,10 +108,10 @@ export class BookingsService {
     }
   }
 
-  private mapResult(result: CreateBookingResult): BookingCreationResult {
+  private mapResult(result: CreateBookingResult, requestedQuoteId: string): BookingCreationResult {
     if (result.kind === "CREATED" || result.kind === "REPLAYED") {
       const booking = bookingSummarySchema.safeParse(result.booking);
-      if (!booking.success) {
+      if (!booking.success || booking.data.quote_id !== requestedQuoteId) {
         throw unavailable();
       }
       return { replayed: result.kind === "REPLAYED", booking: booking.data };

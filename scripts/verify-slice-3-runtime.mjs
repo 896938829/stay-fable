@@ -29,6 +29,7 @@ const instantPattern =
   /^(\d{4}-\d{2}-\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/;
 const bookingSummaryFields = [
   "booking_id",
+  "quote_id",
   "booking_number",
   "status",
   "property_name",
@@ -78,6 +79,8 @@ export function assertBookingSummary(value, expected) {
     assert.ok(isPlainObject(value));
     assert.deepEqual(Object.keys(value).sort(), bookingSummaryFields);
     assert.match(value.booking_id, uuidPattern);
+    assert.match(value.quote_id, uuidPattern);
+    assert.equal(value.quote_id, expected.quoteId);
     assert.match(value.booking_number, bookingNumberPattern);
     assert.equal(value.status, "PENDING_PAYMENT");
     assert.equal(typeof value.property_name, "string");
@@ -294,6 +297,7 @@ function expectedBookingFromQuote(quote, dates) {
     );
     assert.equal(quote.currency, "CNY");
     return {
+      quoteId: quote.quote_id,
       checkin: requested.checkin,
       checkout: requested.checkout,
       guests: requested.guests,

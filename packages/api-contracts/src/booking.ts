@@ -292,6 +292,7 @@ export const createBookingRequestSchema = snapshotJsonLikeSchemaInput(
 const bookingSummaryObjectSchema = z
   .object({
     booking_id: z.uuid(),
+    quote_id: z.uuid(),
     booking_number: z.string().regex(/^SF[0-9]{8}[A-F0-9]{12}$/),
     status: z.literal("PENDING_PAYMENT"),
     property_name: nonblankString(120),

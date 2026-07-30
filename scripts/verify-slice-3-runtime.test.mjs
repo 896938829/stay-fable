@@ -27,6 +27,7 @@ const response = (status, body) => ({
 
 const booking = (suffix, overrides = {}) => ({
   booking_id: `90000000-0000-4000-8000-${String(suffix).padStart(12, "0")}`,
+  quote_id: quoteIds[0],
   booking_number: `SF20260730${String(suffix).padStart(12, "A")}`,
   status: "PENDING_PAYMENT",
   property_name: "西湖云栖酒店",
@@ -43,6 +44,7 @@ const booking = (suffix, overrides = {}) => ({
 });
 
 const expectedBooking = {
+  quoteId: quoteIds[0],
   checkin: "2026-08-02",
   checkout: "2026-08-03",
   guests: 1,
@@ -66,6 +68,7 @@ test("rejects empty, unknown, and malformed booking summary data", () => {
   for (const malformed of [
     {},
     { ...booking(1), user_id: users[0] },
+    { ...booking(1), quote_id: quoteIds[1] },
     { ...booking(1), booking_number: "" },
     { ...booking(1), status: "PAID" },
     { ...booking(1), nights: 2 },
@@ -262,6 +265,7 @@ function createFetch() {
           const quote = quotes.get(body.quote_id);
           return response(201, {
             data: booking(2, {
+              quote_id: body.quote_id,
               checkin: quote.checkin,
               checkout: quote.checkout,
               nights: quote.nights,

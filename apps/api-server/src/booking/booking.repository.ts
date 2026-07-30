@@ -180,6 +180,7 @@ const materializeInput = (input: CreateBookingInput): CreateBookingInput => {
 
 const bookingRowKeys = [
   "id",
+  "quoteId",
   "bookingNumber",
   "status",
   "propertyName",
@@ -201,6 +202,7 @@ const materializeBooking = (value: unknown): BookingSummary => {
   }
   const parsed = bookingSummarySchema.safeParse({
     booking_id: row.id,
+    quote_id: row.quoteId,
     booking_number: row.bookingNumber,
     status: row.status,
     property_name: row.propertyName,
@@ -965,6 +967,7 @@ export class BookingRepository {
         )
         RETURNING
           "id"::text AS "id",
+          "quote_id"::text AS "quoteId",
           "booking_number" AS "bookingNumber",
           "status"::text AS "status",
           ("property_snapshot" ->> 'name') AS "propertyName",
@@ -1042,6 +1045,7 @@ export class BookingRepository {
     return Prisma.sql`
       SELECT
         booking."id"::text AS "id",
+        booking."quote_id"::text AS "quoteId",
         booking."booking_number" AS "bookingNumber",
         booking."status"::text AS "status",
         (booking."property_snapshot" ->> 'name') AS "propertyName",

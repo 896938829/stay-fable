@@ -45,6 +45,7 @@ const quote = {
 
 const booking = {
   booking_id: IDS.booking,
+  quote_id: IDS.quote,
   booking_number: "SF20260730A1B2C3D4E5F6",
   status: "PENDING_PAYMENT",
   property_name: quote.property.name,
@@ -107,6 +108,9 @@ describe("booking response contracts", () => {
     expectInvalid(() =>
       assertQuoteResponse(quote, "20000000-0000-4000-8000-000000000002"),
     );
+    expectInvalid(() =>
+      assertBookingResponse(booking, "30000000-0000-4000-8000-000000000002"),
+    );
     expectInvalid(() => assertBookingResponse(booking, "not-a-quote-id"));
   });
 
@@ -128,7 +132,6 @@ describe("booking response contracts", () => {
       { ...booking, held_inventory: 1 },
       { ...booking, history: [] },
       { ...booking, version: 1 },
-      { ...booking, quote_id: IDS.quote },
     ];
 
     for (const value of quoteCases) {
@@ -238,6 +241,42 @@ describe("booking response contracts", () => {
     expectInvalid(() => assertQuoteResponse(inherited, IDS.roomType));
     expectInvalid(() => assertQuoteResponse(getter, IDS.roomType));
     expectInvalid(() => assertQuoteResponse(nestedGetter, IDS.roomType));
+    expect(reads).toBe(0);
+  });
+
+  it("rejects hostile nightly row descriptors without invoking accessors", () => {
+    let reads = 0;
+    const getterRow = { ...quote.nightly_prices[0] };
+    Object.defineProperty(getterRow, "sale_price_cents", {
+      enumerable: true,
+      get() {
+        reads += 1;
+        throw new Error("private nightly getter");
+      },
+    });
+    const symbolRow = {
+      ...quote.nightly_prices[0],
+      [Symbol("inventory")]: 1,
+    };
+    const prototypeRow = Object.assign(
+      Object.create({ version: 1 }),
+      quote.nightly_prices[0],
+    );
+    const cases = [getterRow, symbolRow, prototypeRow];
+
+    for (const row of cases) {
+      const hostileQuote = {
+        ...quote,
+        nightly_prices: [row, quote.nightly_prices[1]],
+      };
+      expectInvalid(() => assertQuoteResponse(hostileQuote, IDS.roomType));
+      expectInvalid(() =>
+        assertQuoteChangedDetails({
+          previous_total_price_cents: quote.total_price_cents,
+          replacement_quote: hostileQuote,
+        }),
+      );
+    }
     expect(reads).toBe(0);
   });
 });

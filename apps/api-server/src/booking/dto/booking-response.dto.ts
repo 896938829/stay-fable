@@ -8,6 +8,9 @@ export class BookingResponseDto {
   @ApiProperty({ format: "uuid" })
   booking_id!: string;
 
+  @ApiProperty({ format: "uuid" })
+  quote_id!: string;
+
   @ApiProperty({ pattern: "^SF[0-9]{8}[A-F0-9]{12}$" })
   booking_number!: string;
 

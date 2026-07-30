@@ -44,6 +44,7 @@ class FixedClock implements Clock {
 
 const booking = {
   booking_id: BOOKING_ID,
+  quote_id: QUOTE_ID,
   booking_number: "SF20260730A1B2C3D4E5F6",
   status: "PENDING_PAYMENT" as const,
   property_name: "西湖云栖酒店",
@@ -186,6 +187,27 @@ describe("BookingsService", () => {
       bookingNumber: "SF20260730A1B2C3D4E5F6",
       now: NOW,
     });
+  });
+
+  it("rejects a repository booking that is bound to another quote", async () => {
+    const service = new BookingsService(
+      createRepository({
+        kind: "CREATED",
+        booking: {
+          ...booking,
+          quote_id: "20000000-0000-4000-8000-000000000002",
+        },
+      }) as unknown as BookingRepository,
+      createRateLimit() as unknown as WriteRateLimitService,
+      { now: () => NOW },
+      createGenerator("SF20260730A1B2C3D4E5F6"),
+    );
+
+    const error = await captureBusinessError(
+      service.create(USER_ID, IDEMPOTENCY_KEY, { quote_id: QUOTE_ID }),
+    );
+    expect(error.getStatus()).toBe(503);
+    expect(error.code).toBe("BOOKING_SERVICE_UNAVAILABLE");
   });
 
   it.each([
@@ -420,6 +442,7 @@ const inventoryRows = nightlyPrices.map((night) => ({
 }));
 const bookingRecord = {
   id: BOOKING_ID,
+  quoteId: QUOTE_ID,
   bookingNumber: booking.booking_number,
   status: "PENDING_PAYMENT",
   propertyName: propertySnapshot.name,
