@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { parseRuntimeEnvironment } from "../src/environment.js";
+import { parseRuntimeEnvironment, validateDatabaseUrlPolicy } from "../src/environment.js";
 
 const productionEnvironment = (databaseUrl: string, redisUrl = "rediss://localhost:6380") => ({
   NODE_ENV: "production",
@@ -219,5 +219,60 @@ describe("parseRuntimeEnvironment", () => {
     ],
   ])("rejects production TLS when %s", (_scenario, databaseUrl) => {
     expectTlsError(databaseUrl);
+  });
+});
+
+describe("validateDatabaseUrlPolicy", () => {
+  it.each(["postgres:", "postgresql:"])(
+    "accepts the %s protocol outside production",
+    (protocol) => {
+      const databaseUrl = `${protocol}//user:secret@localhost:5432/stay_fable?sslmode=disable`;
+
+      expect(validateDatabaseUrlPolicy("development", databaseUrl)).toBe(databaseUrl);
+    },
+  );
+
+  it("requires exactly one sslmode=require value in production", () => {
+    const databaseUrl = "postgresql://user:secret@localhost:5432/stay_fable?sslmode=require";
+
+    expect(validateDatabaseUrlPolicy("production", databaseUrl)).toBe(databaseUrl);
+  });
+
+  it.each([
+    "postgresql://user:secret@localhost:5432/stay_fable",
+    "postgresql://user:secret@localhost:5432/stay_fable?sslmode=disable",
+    "postgresql://user:secret@localhost:5432/stay_fable?sslmode=require&sslmode=require",
+    "postgresql://user:secret@localhost:5432/stay_fable?sslmode=require&sslmode=disable",
+  ])("rejects an unsafe production TLS policy without exposing the URL: %s", (databaseUrl) => {
+    let thrown: unknown;
+
+    try {
+      validateDatabaseUrlPolicy("production", databaseUrl);
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toBeInstanceOf(Error);
+    expect((thrown as Error).message).toBe("Production DATABASE_URL must require TLS");
+    expect((thrown as Error).message).not.toMatch(/user|secret|localhost/);
+  });
+
+  it.each([
+    ["invalid syntax", "not a database url"],
+    ["wrong protocol", "https://user:secret@database.example.test/stay_fable"],
+  ])("rejects %s with a safe protocol message", (_scenario, databaseUrl) => {
+    let thrown: unknown;
+
+    try {
+      validateDatabaseUrlPolicy("development", databaseUrl);
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toBeInstanceOf(Error);
+    expect((thrown as Error).message).toBe(
+      "DATABASE_URL must use postgres: or postgresql: protocol",
+    );
+    expect((thrown as Error).message).not.toMatch(/user|secret|database\.example/);
   });
 });

@@ -1,47 +1,41 @@
-import type { QueueWorkerResource, RedisResource, WorkerLogger } from "./worker.js";
+import type { DatabasePool } from "./database.js";
+import type {
+  BookingExpirySweeperResource,
+  QueueWorkerResource,
+  RedisResource,
+  WorkerLogger,
+} from "./worker.js";
 
 interface ShutdownResources {
   connection: RedisResource;
+  pool: Pick<DatabasePool, "end">;
+  sweeper: Pick<BookingExpirySweeperResource, "stop">;
   worker: Pick<QueueWorkerResource, "close">;
 }
 
-const asError = (error: unknown, message: string): Error =>
-  error instanceof Error ? error : new Error(message, { cause: error });
-
 const closeResources = async (resources: ShutdownResources): Promise<void> => {
-  let workerError: unknown;
-
-  try {
-    await resources.worker.close();
-  } catch (error) {
-    workerError = error;
-  }
-
-  let connectionError: unknown;
-  if (resources.connection.status !== "end") {
+  const errors: Error[] = [];
+  const close = async (operation: () => Promise<unknown>, message: string): Promise<void> => {
     try {
-      await resources.connection.quit();
-    } catch (error) {
-      connectionError = error;
+      await operation();
+    } catch {
+      errors.push(new Error(message));
+    }
+  };
+
+  await close(() => resources.sweeper.stop(), "Booking expiry sweeper shutdown failed");
+  await close(() => resources.worker.close(), "Queue worker shutdown failed");
+  await close(() => resources.connection.quit(), "Redis shutdown failed");
+  await close(() => resources.pool.end(), "Database pool shutdown failed");
+
+  if (errors.length === 1) {
+    const [error] = errors;
+    if (error !== undefined) {
+      throw error;
     }
   }
-
-  if (workerError !== undefined && connectionError !== undefined) {
-    throw new AggregateError(
-      [
-        asError(workerError, "Worker shutdown failed"),
-        asError(connectionError, "Redis shutdown failed"),
-      ],
-      "Worker and Redis shutdown failed",
-    );
-  }
-
-  if (workerError !== undefined) {
-    throw asError(workerError, "Worker shutdown failed");
-  }
-
-  if (connectionError !== undefined) {
-    throw asError(connectionError, "Redis shutdown failed");
+  if (errors.length > 1) {
+    throw new AggregateError(errors, "Job worker resource shutdown failed");
   }
 };
 
@@ -65,16 +59,20 @@ export const registerShutdownHandlers = (
   runtime: ShutdownRuntime = process,
 ): void => {
   const shutdown = createGracefulShutdown(resources);
+  let handledShutdown: Promise<void> | undefined;
+  const handleShutdown = (): void => {
+    handledShutdown ??= shutdown().catch((error: unknown) => {
+      logger.error(
+        { error: error instanceof Error ? error : new Error("Job worker shutdown failed") },
+        "job worker shutdown failed",
+      );
+      runtime.exitCode = 1;
+    });
+  };
 
   for (const signal of ["SIGINT", "SIGTERM"] as const) {
     runtime.once(signal, () => {
-      void shutdown().catch((error: unknown) => {
-        logger.error(
-          { error: asError(error, "Job worker shutdown failed") },
-          "job worker shutdown failed",
-        );
-        runtime.exitCode = 1;
-      });
+      handleShutdown();
     });
   }
 };

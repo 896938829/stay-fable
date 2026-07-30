@@ -207,12 +207,18 @@ importers:
 
   apps/job-worker:
     dependencies:
+      '@stay-fable/validation':
+        specifier: workspace:*
+        version: link:../../packages/validation
       bullmq:
         specifier: 5.81.2
         version: 5.81.2
       ioredis:
         specifier: 5.11.1
         version: 5.11.1
+      pg:
+        specifier: 8.22.0
+        version: 8.22.0
       pino:
         specifier: 10.3.1
         version: 10.3.1
@@ -220,6 +226,9 @@ importers:
         specifier: 4.4.3
         version: 4.4.3
     devDependencies:
+      '@types/pg':
+        specifier: 8.20.0
+        version: 8.20.0
       tsx:
         specifier: 4.23.1
         version: 4.23.1

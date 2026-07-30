@@ -1,6 +1,7 @@
 import pino, { type LoggerOptions } from "pino";
 import { describe, expect, it, vi } from "vitest";
 
+import { createDatabasePool } from "../src/database.js";
 import { createSystemWorker, createWorkerLoggerOptions } from "../src/worker.js";
 
 describe("createSystemWorker", () => {
@@ -22,6 +23,16 @@ describe("createSystemWorker", () => {
       info: vi.fn(),
     };
     const createConnection = vi.fn(() => connection);
+    const pool = {
+      connect: vi.fn(),
+      end: vi.fn(() => Promise.resolve()),
+    };
+    const sweeper = {
+      start: vi.fn(),
+      stop: vi.fn(() => Promise.resolve()),
+    };
+    const createPool = vi.fn(() => pool);
+    const createSweeper = vi.fn(() => sweeper);
     let processJob: ((job: { id?: string; name: string }) => Promise<void>) | undefined;
     const createWorker = vi.fn(
       (_queueName: string, processor: (job: { id?: string; name: string }) => Promise<void>) => {
@@ -38,11 +49,15 @@ describe("createSystemWorker", () => {
       {
         NODE_ENV: "test",
         REDIS_URL: "redis://127.0.0.1:6379",
+        DATABASE_URL: "postgresql://worker:secret@127.0.0.1:5432/stay_fable",
       },
-      { createConnection, createLogger, createWorker },
+      { createConnection, createLogger, createPool, createSweeper, createWorker },
     );
 
-    expect(resources).toEqual({ connection, worker });
+    expect(resources).toEqual({ connection, pool, sweeper, worker });
+    expect(createPool).toHaveBeenCalledWith("postgresql://worker:secret@127.0.0.1:5432/stay_fable");
+    expect(createSweeper).toHaveBeenCalledWith(pool, 5_000, logger);
+    expect(sweeper.start).toHaveBeenCalledOnce();
     expect(createConnection).toHaveBeenCalledWith(
       "redis://127.0.0.1:6379",
       expect.objectContaining({
@@ -108,6 +123,7 @@ describe("createSystemWorker", () => {
         LOG_LEVEL: "debug",
         NODE_ENV: "development",
         REDIS_URL: "redis://127.0.0.1:6379",
+        DATABASE_URL: "postgresql://localhost/stay_fable",
       },
       {
         createConnection: vi.fn(() => ({
@@ -115,10 +131,156 @@ describe("createSystemWorker", () => {
           quit: vi.fn(() => Promise.resolve("OK")),
         })),
         createLogger,
+        createPool: vi.fn(() => ({
+          connect: vi.fn(),
+          end: vi.fn(() => Promise.resolve()),
+        })),
+        createSweeper: vi.fn(() => ({
+          start: vi.fn(),
+          stop: vi.fn(() => Promise.resolve()),
+        })),
         createWorker: vi.fn(() => worker),
       },
     );
 
     expect(createLogger).toHaveBeenCalledWith(expect.objectContaining({ level: "debug" }));
   });
+
+  it("does not invoke a hostile LOG_LEVEL accessor", () => {
+    const logLevelGetter = vi.fn(() => {
+      throw new Error("log-level-secret");
+    });
+    const environment = Object.defineProperty(
+      {
+        NODE_ENV: "test",
+        REDIS_URL: "redis://127.0.0.1:6379",
+        DATABASE_URL: "postgresql://localhost/stay_fable",
+      },
+      "LOG_LEVEL",
+      { enumerable: true, get: logLevelGetter },
+    );
+    const worker = {
+      close: vi.fn(() => Promise.resolve()),
+      on: vi.fn(() => worker),
+    };
+
+    createSystemWorker(environment, {
+      createConnection: vi.fn(() => ({
+        status: "ready",
+        quit: vi.fn(() => Promise.resolve("OK")),
+      })),
+      createLogger: vi.fn(() => ({ error: vi.fn(), info: vi.fn() })),
+      createPool: vi.fn(() => ({
+        connect: vi.fn(),
+        end: vi.fn(() => Promise.resolve()),
+      })),
+      createSweeper: vi.fn(() => ({
+        start: vi.fn(),
+        stop: vi.fn(() => Promise.resolve()),
+      })),
+      createWorker: vi.fn(() => worker),
+    });
+
+    expect(logLevelGetter).not.toHaveBeenCalled();
+  });
+
+  it("creates the default pool with only the configured connection string", () => {
+    const pool = {
+      connect: vi.fn(),
+      end: vi.fn(() => Promise.resolve()),
+    };
+    const factory = vi.fn(() => pool);
+
+    expect(createDatabasePool("postgresql://worker:secret@database/stay_fable", factory)).toBe(
+      pool,
+    );
+    expect(factory).toHaveBeenCalledWith({
+      connectionString: "postgresql://worker:secret@database/stay_fable",
+    });
+  });
+
+  it.each(["connection", "worker", "sweeper", "start", "listeners"] as const)(
+    "cleans every previously-created resource when %s initialization fails",
+    async (failurePoint) => {
+      const calls: string[] = [];
+      const pool = {
+        connect: vi.fn(),
+        end: vi.fn(() => {
+          calls.push("pool");
+          return Promise.resolve();
+        }),
+      };
+      const connection = {
+        status: "ready",
+        quit: vi.fn(() => {
+          calls.push("connection");
+          return Promise.resolve("OK");
+        }),
+      };
+      const worker = {
+        close: vi.fn(() => {
+          calls.push("worker");
+          return Promise.resolve();
+        }),
+        on: vi.fn(() => {
+          if (failurePoint === "listeners") {
+            throw new Error("listener-secret");
+          }
+          return worker;
+        }),
+      };
+      const sweeper = {
+        start: vi.fn(() => {
+          if (failurePoint === "start") {
+            throw new Error("start-secret");
+          }
+        }),
+        stop: vi.fn(() => Promise.resolve()),
+      };
+
+      expect(() =>
+        createSystemWorker(
+          {
+            NODE_ENV: "test",
+            REDIS_URL: "redis://127.0.0.1:6379",
+            DATABASE_URL: "postgresql://worker:secret@127.0.0.1/stay_fable",
+          },
+          {
+            logger: { error: vi.fn(), info: vi.fn() },
+            createPool: vi.fn(() => pool),
+            createConnection: vi.fn(() => {
+              if (failurePoint === "connection") {
+                throw new Error("connection-secret");
+              }
+              return connection;
+            }),
+            createWorker: vi.fn(() => {
+              if (failurePoint === "worker") {
+                throw new Error("worker-secret");
+              }
+              return worker;
+            }),
+            createSweeper: vi.fn(() => {
+              if (failurePoint === "sweeper") {
+                throw new Error("sweeper-secret");
+              }
+              return sweeper;
+            }),
+          },
+        ),
+      ).toThrow("Job worker resource initialization failed");
+
+      await vi.waitFor(() => {
+        expect(pool.end).toHaveBeenCalledOnce();
+      });
+      expect(connection.quit).toHaveBeenCalledTimes(failurePoint === "connection" ? 0 : 1);
+      expect(worker.close).toHaveBeenCalledTimes(
+        failurePoint === "sweeper" || failurePoint === "start" || failurePoint === "listeners"
+          ? 1
+          : 0,
+      );
+      expect(calls.at(-1)).toBe("pool");
+      expect(calls.join(",")).not.toContain("secret");
+    },
+  );
 });

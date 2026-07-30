@@ -3,6 +3,7 @@ import { Redis, type RedisOptions } from "ioredis";
 import pino, { type LoggerOptions } from "pino";
 
 import { parseWorkerConfig } from "./config.js";
+import { createDatabasePool, type DatabasePool } from "./database.js";
 
 export interface RedisResource {
   readonly status: string;
@@ -13,6 +14,11 @@ export interface QueueWorkerResource {
   close(): Promise<void>;
   on(event: "failed", listener: (job: Job | undefined, error: Error) => void): unknown;
   on(event: "error", listener: (error: Error) => void): unknown;
+}
+
+export interface BookingExpirySweeperResource {
+  start(): void;
+  stop(): Promise<void>;
 }
 
 export interface WorkerLogger {
@@ -29,6 +35,12 @@ interface SystemWorkerOptions {
 interface WorkerDependencies {
   createConnection(url: string, options: RedisOptions): RedisResource;
   createLogger(options: LoggerOptions): WorkerLogger;
+  createPool(databaseUrl: string): DatabasePool;
+  createSweeper(
+    pool: DatabasePool,
+    pollMilliseconds: number,
+    logger: WorkerLogger,
+  ): BookingExpirySweeperResource;
   createWorker(
     queueName: string,
     processor: (job: Job) => Promise<void>,
@@ -40,8 +52,21 @@ interface WorkerOverrides extends Partial<WorkerDependencies> {
   logger?: WorkerLogger;
 }
 
+const readLogLevel = (environment: Record<string, unknown>): string => {
+  try {
+    const descriptor = Reflect.getOwnPropertyDescriptor(environment, "LOG_LEVEL");
+    return descriptor !== undefined &&
+      Object.hasOwn(descriptor, "value") &&
+      typeof descriptor.value === "string"
+      ? descriptor.value
+      : "info";
+  } catch {
+    return "info";
+  }
+};
+
 export const createWorkerLoggerOptions = (environment: Record<string, unknown>): LoggerOptions => ({
-  level: typeof environment.LOG_LEVEL === "string" ? environment.LOG_LEVEL : "info",
+  level: readLogLevel(environment),
   redact: ["password", "token", "idCardNumber"],
   serializers: {
     error: pino.stdSerializers.err,
@@ -55,6 +80,11 @@ export const createWorkerLogger = (
 const defaultDependencies: WorkerDependencies = {
   createConnection: (url, options) => new Redis(url, options),
   createLogger: (options) => pino(options),
+  createPool: (databaseUrl) => createDatabasePool(databaseUrl),
+  createSweeper: () => ({
+    start: () => undefined,
+    stop: () => Promise.resolve(),
+  }),
   createWorker: (queueName, processor, options) =>
     new Worker(queueName, processor, {
       ...options,
@@ -64,8 +94,45 @@ const defaultDependencies: WorkerDependencies = {
 
 export interface SystemWorkerResources {
   connection: RedisResource;
+  pool: DatabasePool;
+  sweeper: BookingExpirySweeperResource;
   worker: QueueWorkerResource;
 }
+
+const cleanupAfterInitializationFailure = (
+  resources: Partial<SystemWorkerResources>,
+  logger: WorkerLogger,
+): void => {
+  const cleanup = (operation: (() => Promise<unknown>) | undefined, message: string): void => {
+    if (operation === undefined) {
+      return;
+    }
+    try {
+      void operation().catch(() => {
+        logger.error({}, message);
+      });
+    } catch {
+      logger.error({}, message);
+    }
+  };
+
+  cleanup(
+    resources.sweeper === undefined ? undefined : () => resources.sweeper!.stop(),
+    "sweeper cleanup failed",
+  );
+  cleanup(
+    resources.worker === undefined ? undefined : () => resources.worker!.close(),
+    "worker cleanup failed",
+  );
+  cleanup(
+    resources.connection === undefined ? undefined : () => resources.connection!.quit(),
+    "redis cleanup failed",
+  );
+  cleanup(
+    resources.pool === undefined ? undefined : () => resources.pool!.end(),
+    "database cleanup failed",
+  );
+};
 
 export const createSystemWorker = (
   environment: Record<string, unknown> = process.env,
@@ -77,32 +144,45 @@ export const createSystemWorker = (
     (overrides.createLogger ?? defaultDependencies.createLogger)(
       createWorkerLoggerOptions(environment),
     );
-  const connection = (overrides.createConnection ?? defaultDependencies.createConnection)(
-    config.redisUrl,
-    {
-      connectTimeout: 5_000,
-      maxRetriesPerRequest: null,
-    },
-  );
-  const worker = (overrides.createWorker ?? defaultDependencies.createWorker)(
-    "system",
-    (job) => {
-      logger.info({ jobId: job.id, jobName: job.name }, "system job processed");
-      return Promise.resolve();
-    },
-    {
-      concurrency: 2,
-      connection,
-      prefix: config.queuePrefix,
-    },
-  );
+  const resources: Partial<SystemWorkerResources> = {};
+  try {
+    resources.pool = (overrides.createPool ?? defaultDependencies.createPool)(config.databaseUrl);
+    resources.connection = (overrides.createConnection ?? defaultDependencies.createConnection)(
+      config.redisUrl,
+      {
+        connectTimeout: 5_000,
+        maxRetriesPerRequest: null,
+      },
+    );
+    resources.worker = (overrides.createWorker ?? defaultDependencies.createWorker)(
+      "system",
+      (job) => {
+        logger.info({ jobId: job.id, jobName: job.name }, "system job processed");
+        return Promise.resolve();
+      },
+      {
+        concurrency: 2,
+        connection: resources.connection,
+        prefix: config.queuePrefix,
+      },
+    );
+    resources.sweeper = (overrides.createSweeper ?? defaultDependencies.createSweeper)(
+      resources.pool,
+      config.bookingExpiryPollMs,
+      logger,
+    );
+    resources.sweeper.start();
 
-  worker.on("failed", (job, error) => {
-    logger.error({ jobId: job?.id, error }, "system job failed");
-  });
-  worker.on("error", (error) => {
-    logger.error({ error }, "system worker error");
-  });
+    resources.worker.on("failed", (job, error) => {
+      logger.error({ jobId: job?.id, error }, "system job failed");
+    });
+    resources.worker.on("error", (error) => {
+      logger.error({ error }, "system worker error");
+    });
+  } catch {
+    cleanupAfterInitializationFailure(resources, logger);
+    throw new Error("Job worker resource initialization failed");
+  }
 
-  return { connection, worker };
+  return resources as SystemWorkerResources;
 };

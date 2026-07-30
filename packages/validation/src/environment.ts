@@ -26,18 +26,33 @@ const runtimeEnvironmentSchema = z.object({
 
 export type RuntimeEnvironment = z.infer<typeof runtimeEnvironmentSchema>;
 
-export const parseRuntimeEnvironment = (environment: unknown): RuntimeEnvironment => {
-  const parsedEnvironment = runtimeEnvironmentSchema.parse(environment);
-  const databaseUrl = new URL(parsedEnvironment.DATABASE_URL);
-  const redisUrl = new URL(parsedEnvironment.REDIS_URL);
-  const sslModes = databaseUrl.searchParams.getAll("sslmode");
+export const validateDatabaseUrlPolicy = (
+  nodeEnv: "development" | "test" | "production",
+  databaseUrl: string,
+): string => {
+  let parsed: URL;
+  try {
+    parsed = new URL(databaseUrl);
+  } catch {
+    throw new Error("DATABASE_URL must use postgres: or postgresql: protocol");
+  }
 
-  if (
-    parsedEnvironment.NODE_ENV === "production" &&
-    (sslModes.length !== 1 || sslModes[0] !== "require")
-  ) {
+  if (!["postgres:", "postgresql:"].includes(parsed.protocol)) {
+    throw new Error("DATABASE_URL must use postgres: or postgresql: protocol");
+  }
+
+  const sslModes = parsed.searchParams.getAll("sslmode");
+  if (nodeEnv === "production" && (sslModes.length !== 1 || sslModes[0] !== "require")) {
     throw new Error("Production DATABASE_URL must require TLS");
   }
+
+  return databaseUrl;
+};
+
+export const parseRuntimeEnvironment = (environment: unknown): RuntimeEnvironment => {
+  const parsedEnvironment = runtimeEnvironmentSchema.parse(environment);
+  validateDatabaseUrlPolicy(parsedEnvironment.NODE_ENV, parsedEnvironment.DATABASE_URL);
+  const redisUrl = new URL(parsedEnvironment.REDIS_URL);
 
   if (parsedEnvironment.NODE_ENV === "production" && redisUrl.protocol !== "rediss:") {
     throw new Error("Production REDIS_URL must use rediss: protocol");
