@@ -430,12 +430,51 @@ describe("BookingLifecycleRepository.simulateMockPayment", () => {
     expect(database.rollbacks).toBe(1);
   });
 
-  it("classifies only the payment-number unique constraint as retryable by the service", async () => {
-    const conflict = new Prisma.PrismaClientKnownRequestError("safe", {
-      code: "P2002",
-      clientVersion: "7.9.0",
-      meta: { target: ["payment_number"] },
-    });
+  it.each([
+    [
+      "P2002 fields",
+      new Prisma.PrismaClientKnownRequestError("safe", {
+        code: "P2002",
+        clientVersion: "7.9.0",
+        meta: { target: ["payment_number"] },
+      }),
+    ],
+    [
+      "flat P2010 constraint name",
+      new Prisma.PrismaClientKnownRequestError("safe", {
+        code: "P2010",
+        clientVersion: "7.9.0",
+        meta: { code: "23505", constraint: "payment_payment_number_key" },
+      }),
+    ],
+    [
+      "flat P2010 strict message with no constraint",
+      new Prisma.PrismaClientKnownRequestError("safe", {
+        code: "P2010",
+        clientVersion: "7.9.0",
+        meta: {
+          code: "23505",
+          message: 'duplicate key value violates unique constraint "payment_payment_number_key"',
+        },
+      }),
+    ],
+    [
+      "nested P2010 constraint fields",
+      new Prisma.PrismaClientKnownRequestError("safe", {
+        code: "P2010",
+        clientVersion: "7.9.0",
+        meta: {
+          driverAdapterError: {
+            cause: {
+              originalCode: "23505",
+              kind: "UniqueConstraintViolation",
+              constraint: { fields: ["payment_number"] },
+            },
+          },
+        },
+      }),
+    ],
+  ])("classifies confirmed %s payment-number metadata as retryable", async (_label, conflict) => {
     const database = {
       $transaction: vi.fn(() => Promise.reject(conflict)),
     } as unknown as BookingLifecycleDatabase;
@@ -658,6 +697,71 @@ describe("MockPaymentService.simulate", () => {
     expect(repository.simulateMockPayment).toHaveBeenCalledTimes(2);
     expect(query.getOwned).not.toHaveBeenCalled();
   });
+
+  it.each([
+    [
+      "flat",
+      new Prisma.PrismaClientKnownRequestError("safe", {
+        code: "P2010",
+        clientVersion: "7.9.0",
+        meta: {
+          code: "23505",
+          constraint: "unknown_constraint",
+          message: 'duplicate key value violates unique constraint "payment_payment_number_key"',
+        },
+      }),
+    ],
+    [
+      "nested",
+      new Prisma.PrismaClientKnownRequestError("safe", {
+        code: "P2010",
+        clientVersion: "7.9.0",
+        meta: {
+          driverAdapterError: {
+            cause: {
+              originalCode: "23505",
+              kind: "UniqueConstraintViolation",
+              constraint: { fields: ["unknown_column"] },
+              originalMessage:
+                'duplicate key value violates unique constraint "payment_payment_number_key"',
+            },
+          },
+        },
+      }),
+    ],
+  ])(
+    "fails closed for conflicting %s P2010 constraint metadata without a fresh payment number",
+    async (_label, conflict) => {
+      const database = {
+        $transaction: vi.fn(() => Promise.reject(conflict)),
+      } as unknown as BookingLifecycleDatabase;
+      const repository = new BookingLifecycleRepository(database);
+      const rateLimit = {
+        checkMockPayment: vi.fn(() => Promise.resolve()),
+      };
+      const clock: Clock = { now: vi.fn(() => new Date(NOW)) };
+      const paymentNumbers: PaymentNumberGenerator = {
+        next: vi.fn(() => PAYMENT_NUMBER),
+      };
+      const query = {
+        getOwned: vi.fn(() => Promise.resolve(confirmedDetail)),
+      };
+      const service = new MockPaymentService(
+        repository,
+        rateLimit as unknown as WriteRateLimitService,
+        clock,
+        paymentNumbers,
+        query as unknown as BookingQueryService,
+      );
+
+      await expect(
+        service.simulate(USER_ID, BOOKING_ID, IDEMPOTENCY_KEY, { outcome: "SUCCEED" }),
+      ).rejects.toMatchObject({ status: 503, code: "BOOKING_LIFECYCLE_UNAVAILABLE" });
+      expect(database.$transaction).toHaveBeenCalledOnce();
+      expect(paymentNumbers.next).toHaveBeenCalledOnce();
+      expect(query.getOwned).not.toHaveBeenCalled();
+    },
+  );
 
   it.each([
     ["invalid user", "not-a-uuid", BOOKING_ID, IDEMPOTENCY_KEY, { outcome: "SUCCEED" }],

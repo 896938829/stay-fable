@@ -126,9 +126,13 @@ const classifyPaymentUnique = (error: unknown): PaymentUniqueConflict | null => 
       return null;
     }
     if (ownDataValue(meta, "code") === "23505") {
-      const direct = paymentConstraint(ownDataValue(meta, "constraint"));
+      const constraint = ownDataValue(meta, "constraint");
+      const direct = paymentConstraint(constraint);
       if (direct !== null) {
         return direct;
+      }
+      if (constraint !== undefined) {
+        return null;
       }
       const message = ownDataValue(meta, "message");
       if (typeof message !== "string") {
@@ -176,6 +180,10 @@ const classifyPaymentUnique = (error: unknown): PaymentUniqueConflict | null => 
           return "SUCCESS";
         }
       }
+      return null;
+    }
+    if (constraint !== undefined) {
+      return null;
     }
     const originalMessage = ownDataValue(cause, "originalMessage");
     if (typeof originalMessage !== "string") {
