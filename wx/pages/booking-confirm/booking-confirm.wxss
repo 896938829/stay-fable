@@ -222,14 +222,10 @@
 }
 
 .created-card__total,
-.created-card__expiry,
-.created-card__notice {
+.created-card__expiry {
   margin-top: var(--space-3);
 }
 
-.created-card__notice {
-  padding: var(--space-3);
-  border-radius: var(--radius-medium);
-  background: #f4e7df;
-  color: var(--color-brand-dark);
+.created-card__action--secondary {
+  margin-top: var(--space-2);
 }

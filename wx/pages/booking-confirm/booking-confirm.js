@@ -233,6 +233,7 @@ function createBookingConfirmPage(dependencies) {
   let requestInput = null;
   let currentQuote = null;
   let replacementQuote = null;
+  let createdBookingId = null;
   let timer = null;
   let submitting = false;
   let nativeToken = 0;
@@ -315,6 +316,35 @@ function createBookingConfirmPage(dependencies) {
       navigationLocked = false;
       if (!successful) {
         page.returnHome();
+      }
+    });
+  }
+
+  function activeCreatedBookingId(page) {
+    try {
+      if (
+        !active ||
+        page.data.status !== "booking_created" ||
+        typeof createdBookingId !== "string" ||
+        !UUID_V4_PATTERN.test(createdBookingId)
+      ) {
+        return null;
+      }
+      return createdBookingId;
+    } catch {
+      return null;
+    }
+  }
+
+  function navigateCreatedBooking(page, method, url) {
+    if (activeCreatedBookingId(page) === null || navigationLocked) {
+      return;
+    }
+    const token = nativeToken;
+    navigationLocked = true;
+    invokeNative(method, { url }, (successful) => {
+      if (nativeToken === token && !successful) {
+        navigationLocked = false;
       }
     });
   }
@@ -431,6 +461,7 @@ function createBookingConfirmPage(dependencies) {
       requestInput = null;
       currentQuote = null;
       replacementQuote = null;
+      createdBookingId = null;
       submitting = false;
       modalLocked = false;
       toastLocked = false;
@@ -522,6 +553,7 @@ function createBookingConfirmPage(dependencies) {
       requestInput = null;
       currentQuote = null;
       replacementQuote = null;
+      createdBookingId = null;
       stopTimer();
     },
 
@@ -600,14 +632,22 @@ function createBookingConfirmPage(dependencies) {
         if (!isCurrent(token)) {
           return;
         }
+        const bookingView = createBookingView(result);
+        if (
+          typeof bookingView.bookingId !== "string" ||
+          !UUID_V4_PATTERN.test(bookingView.bookingId)
+        ) {
+          throw new Error("Invalid booking identifier");
+        }
         idempotency.clear(scope);
         currentQuote = null;
         replacementQuote = null;
+        createdBookingId = bookingView.bookingId;
         stopTimer();
         this.setData({
           status: "booking_created",
           quote: null,
-          booking: createBookingView(result),
+          booking: bookingView,
           changed: null,
           errorCode: "",
           errorMessage: "",
@@ -719,6 +759,26 @@ function createBookingConfirmPage(dependencies) {
         submitPressed: false,
       });
       startTimer(this);
+    },
+
+    viewOrderDetail() {
+      const bookingId = activeCreatedBookingId(this);
+      if (bookingId === null) {
+        return;
+      }
+      navigateCreatedBooking(
+        this,
+        wxApi && wxApi.redirectTo,
+        `/pages/order-detail/order-detail?id=${bookingId}`,
+      );
+    },
+
+    viewAllOrders() {
+      navigateCreatedBooking(
+        this,
+        wxApi && wxApi.switchTab,
+        "/pages/order-list/order-list",
+      );
     },
 
     returnHome() {

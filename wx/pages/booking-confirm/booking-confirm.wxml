@@ -139,9 +139,19 @@
       <text>{{booking.nights}} 晚 · {{booking.guests}} 人</text>
       <text class="created-card__total">{{booking.totalPriceLabel}}</text>
       <text class="created-card__expiry">付款截止：{{booking.expiresAt}}</text>
-      <text class="created-card__notice">支付与订单详情将在下一开发切片开放</text>
-      <button class="secondary-button created-card__action" bindtap="returnHome">
-        返回首页
+      <button
+        class="primary-button created-card__action created-card__action--primary"
+        bindtap="viewOrderDetail"
+        aria-label="查看当前订单详情"
+      >
+        查看订单
+      </button>
+      <button
+        class="secondary-button created-card__action created-card__action--secondary"
+        bindtap="viewAllOrders"
+        aria-label="查看全部订单"
+      >
+        查看全部订单
       </button>
     </view>
   </view>

@@ -27,7 +27,7 @@ const catalogAutomatorUrl = new URL(
 );
 
 describe("WeChat location privacy configuration", () => {
-  it("registers the seven user-flow pages in order and statically validates every page file", async () => {
+  it("registers the nine user-flow pages in order and statically validates every page file", async () => {
     const config = JSON.parse(await readFile(appConfigUrl, "utf8"));
 
     expect(config.pages).toEqual([
@@ -38,9 +38,36 @@ describe("WeChat location privacy configuration", () => {
       "pages/property-detail/property-detail",
       "pages/room-detail/room-detail",
       "pages/booking-confirm/booking-confirm",
+      "pages/order-list/order-list",
+      "pages/order-detail/order-detail",
     ]);
     await expect(validateWxProject(fileURLToPath(wxRootUrl))).resolves.toEqual({
-      pageCount: 7,
+      pageCount: 9,
+    });
+  });
+
+  it("declares the precise home and orders tab bar", async () => {
+    const config = JSON.parse(await readFile(appConfigUrl, "utf8"));
+
+    expect(config.tabBar).toEqual({
+      color: "#8a7f76",
+      selectedColor: "#9b5c3f",
+      backgroundColor: "#fbf7f2",
+      borderStyle: "white",
+      list: [
+        {
+          pagePath: "pages/home/home",
+          text: "首页",
+          iconPath: "images/tab-home.png",
+          selectedIconPath: "images/tab-home-selected.png",
+        },
+        {
+          pagePath: "pages/order-list/order-list",
+          text: "订单",
+          iconPath: "images/tab-orders.png",
+          selectedIconPath: "images/tab-orders-selected.png",
+        },
+      ],
     });
   });
 

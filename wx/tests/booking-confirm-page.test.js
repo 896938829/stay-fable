@@ -614,6 +614,161 @@ describe("booking confirmation page state machine", () => {
     expect(wxApi.setStorageSync).not.toHaveBeenCalled();
   });
 
+  it("opens the created order using only its strict in-memory booking id and shares one navigation lock", async () => {
+    const redirectTo = vi.fn();
+    const switchTab = vi.fn();
+    const harness = createHarness({
+      wxApi: {
+        redirectTo,
+        switchTab,
+        showModal: vi.fn(),
+        showToast: vi.fn(),
+      },
+    });
+    await harness.page.onLoad.call(harness.page, {
+      room_type_id: IDS.room,
+    });
+    await harness.page.confirmBooking.call(harness.page);
+
+    harness.page.viewOrderDetail.call(harness.page, {
+      currentTarget: {
+        dataset: {
+          id: "../order-list/order-list?admin=true",
+        },
+      },
+    });
+    harness.page.viewAllOrders.call(harness.page);
+
+    expect(redirectTo).toHaveBeenCalledOnce();
+    expect(redirectTo.mock.calls[0][0]).toMatchObject({
+      url: `/pages/order-detail/order-detail?id=${IDS.booking}`,
+    });
+    expect(switchTab).not.toHaveBeenCalled();
+  });
+
+  it("keeps the original private booking id when the public booking view is mutated", async () => {
+    const redirectTo = vi.fn();
+    const harness = createHarness({
+      wxApi: {
+        redirectTo,
+        switchTab: vi.fn(),
+        showModal: vi.fn(),
+        showToast: vi.fn(),
+      },
+    });
+    await harness.page.onLoad.call(harness.page, {
+      room_type_id: IDS.room,
+    });
+    await harness.page.confirmBooking.call(harness.page);
+    harness.page.data.booking.bookingId =
+      "40000000-0000-4000-8000-000000000002";
+
+    harness.page.viewOrderDetail.call(harness.page);
+
+    expect(redirectTo).toHaveBeenCalledOnce();
+    expect(redirectTo.mock.calls[0][0]).toMatchObject({
+      url: `/pages/order-detail/order-detail?id=${IDS.booking}`,
+    });
+  });
+
+  it("opens the orders tab only from created state with a strict in-memory booking id", async () => {
+    const switchTab = vi.fn();
+    const harness = createHarness({
+      wxApi: {
+        redirectTo: vi.fn(),
+        switchTab,
+        showModal: vi.fn(),
+        showToast: vi.fn(),
+      },
+    });
+    await harness.page.onLoad.call(harness.page, {
+      room_type_id: IDS.room,
+    });
+    await harness.page.confirmBooking.call(harness.page);
+
+    harness.page.viewAllOrders.call(harness.page, {
+      id: "/pages/private/private",
+    });
+
+    expect(switchTab).toHaveBeenCalledOnce();
+    expect(switchTab.mock.calls[0][0]).toMatchObject({
+      url: "/pages/order-list/order-list",
+    });
+
+    const invalidRedirectTo = vi.fn();
+    const invalidSwitchTab = vi.fn();
+    const invalidId = createHarness({
+      wxApi: {
+        redirectTo: invalidRedirectTo,
+        switchTab: invalidSwitchTab,
+        showModal: vi.fn(),
+        showToast: vi.fn(),
+      },
+    });
+    invalidId.page.data = {
+      ...invalidId.page.data,
+      status: "booking_created",
+      booking: { bookingId: "../private" },
+    };
+    invalidId.page.viewAllOrders.call(invalidId.page);
+    invalidId.page.viewOrderDetail.call(invalidId.page);
+
+    const wrongStateRedirectTo = vi.fn();
+    const wrongStateSwitchTab = vi.fn();
+    const wrongState = createHarness({
+      wxApi: {
+        redirectTo: wrongStateRedirectTo,
+        switchTab: wrongStateSwitchTab,
+        showModal: vi.fn(),
+        showToast: vi.fn(),
+      },
+    });
+    wrongState.page.data = {
+      ...wrongState.page.data,
+      status: "quote_ready",
+      booking: { bookingId: IDS.booking },
+    };
+    wrongState.page.viewAllOrders.call(wrongState.page);
+    wrongState.page.viewOrderDetail.call(wrongState.page);
+
+    expect(switchTab).toHaveBeenCalledOnce();
+    expect(invalidRedirectTo).not.toHaveBeenCalled();
+    expect(invalidSwitchTab).not.toHaveBeenCalled();
+    expect(wrongStateRedirectTo).not.toHaveBeenCalled();
+    expect(wrongStateSwitchTab).not.toHaveBeenCalled();
+  });
+
+  it("releases the shared order navigation lock after callback and promise failures", async () => {
+    const redirectTo = vi
+      .fn()
+      .mockImplementationOnce(() =>
+        Promise.reject(new Error("private redirect failure")),
+      )
+      .mockImplementationOnce(() => undefined);
+    const switchTab = vi.fn(({ fail }) => fail());
+    const harness = createHarness({
+      wxApi: {
+        redirectTo,
+        switchTab,
+        showModal: vi.fn(),
+        showToast: vi.fn(),
+      },
+    });
+    await harness.page.onLoad.call(harness.page, {
+      room_type_id: IDS.room,
+    });
+    await harness.page.confirmBooking.call(harness.page);
+
+    harness.page.viewOrderDetail.call(harness.page);
+    await Promise.resolve();
+    await Promise.resolve();
+    harness.page.viewAllOrders.call(harness.page);
+    harness.page.viewOrderDetail.call(harness.page);
+
+    expect(redirectTo).toHaveBeenCalledTimes(2);
+    expect(switchTab).toHaveBeenCalledOnce();
+  });
+
   it("cancels timers and ignores late quote or booking responses across hide and unload", async () => {
     const lateQuote = deferred();
     const quoteHarness = createHarness({
@@ -828,7 +983,16 @@ describe("booking confirmation native files", () => {
     expect(wxml).toContain('aria-disabled="{{submitDisabled}}"');
     expect(wxml).toContain('aria-pressed="{{submitPressed}}"');
     expect(wxml).toContain('loading="{{status === \'submitting\'}}"');
-    expect(wxml).toContain("支付与订单详情将在下一开发切片开放");
+    expect(wxml).not.toContain("支付与订单详情将在下一开发切片开放");
+    expect(wxml).not.toContain(
+      '<button class="secondary-button created-card__action" bindtap="returnHome">',
+    );
+    expect(wxml).toContain('bindtap="viewOrderDetail"');
+    expect(wxml).toContain('aria-label="查看当前订单详情"');
+    expect(wxml).toContain("查看订单");
+    expect(wxml).toContain('bindtap="viewAllOrders"');
+    expect(wxml).toContain('aria-label="查看全部订单"');
+    expect(wxml).toContain("查看全部订单");
     expect(wxml).toContain(
       "errorCode === 'INVALID_ROOM_LINK'",
     );
