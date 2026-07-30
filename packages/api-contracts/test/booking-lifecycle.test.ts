@@ -195,18 +195,47 @@ describe("booking lifecycle contracts", () => {
         allowed_actions: ["CANCEL"],
       }).success,
     ).toBe(false);
+    const listItems = (length: number) => Array.from({ length }, () => ({ ...listItem }));
     expect(
       bookingListResponseSchema.safeParse({
-        items: Array.from({ length: 21 }, () => listItem),
+        items: listItems(20),
+        next_cursor: null,
+      }).success,
+    ).toBe(true);
+    expect(
+      bookingListResponseSchema.safeParse({
+        items: listItems(21),
         next_cursor: null,
       }).success,
     ).toBe(false);
+
+    const historyItems = (length: number) => Array.from({ length }, () => ({ ...history }));
     expect(
       bookingDetailSchema.safeParse({
         ...detail,
-        status_history: Array.from({ length: 101 }, () => history),
+        status_history: historyItems(100),
+      }).success,
+    ).toBe(true);
+    expect(
+      bookingDetailSchema.safeParse({
+        ...detail,
+        status_history: historyItems(101),
       }).success,
     ).toBe(false);
+
+    const sparseHistory = new Array(1);
+    const historyWithExtraProperty = historyItems(1);
+    Object.defineProperty(historyWithExtraProperty, "extra", { value: true });
+    const historyWithSymbol = historyItems(1);
+    Object.defineProperty(historyWithSymbol, Symbol("extra"), { value: true });
+    for (const statusHistory of [sparseHistory, historyWithExtraProperty, historyWithSymbol]) {
+      expect(
+        bookingDetailSchema.safeParse({
+          ...detail,
+          status_history: statusHistory,
+        }).success,
+      ).toBe(false);
+    }
   });
 
   it("requires dates, nights, nightly prices, and totals to describe one stay", () => {

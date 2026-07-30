@@ -98,7 +98,7 @@ const snapshotJsonLikeInput = (input: unknown): unknown => {
     const keys = Object.getOwnPropertyNames(descriptors);
     if (
       symbolKeys.length > 0 ||
-      keys.length > maximumSnapshotKeysPerObject ||
+      (!isArray && keys.length > maximumSnapshotKeysPerObject) ||
       keys.includes("__proto__")
     ) {
       return invalidJsonLikeInput;
