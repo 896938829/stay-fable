@@ -23,6 +23,10 @@
     "./booking": {
       "types": "./src/booking.ts",
       "default": "./dist/src/booking.js"
+    },
+    "./booking-lifecycle": {
+      "types": "./src/booking-lifecycle.ts",
+      "default": "./dist/src/booking-lifecycle.js"
     }
   },
   "scripts": {
