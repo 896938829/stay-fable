@@ -114,6 +114,8 @@ candidate commit/tree unchanged
 - `BLOCKED_API`：loopback API 不可达或 ready 失败；
 - `BLOCKED_AUTOMATOR_RC`：初始化、物理点击或导航分发失败；
 - `BLOCKED_DATA_WINDOW`：执行日没有可用的确定性 seed 日期；
+- `BLOCKED_PHYSICAL_UAT`：人工或手机补充 UAT 未完成；
+- `BLOCKED_DEPENDENCY_AUDIT`：目标分支仍有未修复且无例外的 Critical/High；
 - `FAILED_PRODUCT`：真实业务断言失败。
 
 只有 `READY` 能进入写操作。任何 blocker 都必须在交互前停止，或在首个物理失败后立即停止。

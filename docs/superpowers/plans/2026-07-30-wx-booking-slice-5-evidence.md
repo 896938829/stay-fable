@@ -21,7 +21,8 @@
 
 - commit、`/wx` tree、9 pages、migration count；
 - `check`、audit、OpenAPI、WechatIDE、Automator、manual、phone、WSL 状态；
-- `READY | BLOCKED_* | FAILED_PRODUCT` 枚举；
+- `READY | BLOCKED_* | FAILED_PRODUCT` 枚举，其中必须独立包含
+  `BLOCKED_PHYSICAL_UAT` 和 `BLOCKED_DEPENDENCY_AUDIT`；
 - blocker 不得被其他 PASS 抵消；
 - dangerous object、getter、Proxy、unknown key 和敏感字段拒绝。
 
