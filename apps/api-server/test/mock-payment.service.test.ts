@@ -108,9 +108,10 @@ const inventories = [
   { roomTypeId: ROOM_TYPE_ID, businessDate: "2026-08-01" },
   { roomTypeId: ROOM_TYPE_ID, businessDate: "2026-08-02" },
 ];
+const advisoryLockRows = [{ locked: true }];
 
 const successResults = (): unknown[] => [
-  [],
+  advisoryLockRows,
   [bookingRow()],
   [],
   holds,
@@ -232,8 +233,39 @@ describe("BookingLifecycleRepository.simulateMockPayment", () => {
     }
   });
 
+  it.each([
+    ["zero rows", []],
+    ["false result", [{ locked: false }]],
+    ["multiple rows", [{ locked: true }, { locked: true }]],
+    ["expanded row", [{ locked: true, secret: "unexpected" }]],
+  ])("rolls back a hostile advisory lock %s before reading the booking", async (_label, rows) => {
+    const results = successResults();
+    results[0] = rows;
+    const { database, transaction } = createLifecycleDatabase(results);
+    const repository = new BookingLifecycleRepository(database);
+
+    await expect(
+      repository.simulateMockPayment({
+        userId: USER_ID,
+        bookingId: BOOKING_ID,
+        idempotencyKey: IDEMPOTENCY_KEY,
+        outcome: "SUCCEED",
+        paymentNumber: PAYMENT_NUMBER,
+        now: NOW,
+      }),
+    ).rejects.toThrow();
+    expect(database.commits).toBe(0);
+    expect(database.rollbacks).toBe(1);
+    expect(transaction.$queryRaw).toHaveBeenCalledOnce();
+  });
+
   it("records a failed payment without touching booking, holds, or inventory", async () => {
-    const results = [[], [bookingRow()], [], [{ id: PAYMENT_ID, paymentNumber: PAYMENT_NUMBER }]];
+    const results = [
+      advisoryLockRows,
+      [bookingRow()],
+      [],
+      [{ id: PAYMENT_ID, paymentNumber: PAYMENT_NUMBER }],
+    ];
     const { database, transaction } = createLifecycleDatabase(results);
     const repository = new BookingLifecycleRepository(database);
 
@@ -264,7 +296,7 @@ describe("BookingLifecycleRepository.simulateMockPayment", () => {
     ["FAIL", "FAILED", "FAILED"],
   ] as const)("replays an existing same-key %s payment", async (outcome, status, kind) => {
     const { database, transaction } = createLifecycleDatabase([
-      [],
+      advisoryLockRows,
       [bookingRow({ status: status === "SUCCEEDED" ? "CONFIRMED" : "PENDING_PAYMENT" })],
       [{ requestedOutcome: outcome, status, paymentNumber: PAYMENT_NUMBER }],
     ]);
@@ -285,7 +317,7 @@ describe("BookingLifecycleRepository.simulateMockPayment", () => {
 
   it("rejects reusing the same key with a different requested outcome", async () => {
     const { database } = createLifecycleDatabase([
-      [],
+      advisoryLockRows,
       [bookingRow()],
       [{ requestedOutcome: "FAIL", status: "FAILED", paymentNumber: PAYMENT_NUMBER }],
     ]);
@@ -303,7 +335,7 @@ describe("BookingLifecycleRepository.simulateMockPayment", () => {
   });
 
   it("returns NOT_FOUND before exposing another user's booking", async () => {
-    const { database, transaction } = createLifecycleDatabase([[], []]);
+    const { database, transaction } = createLifecycleDatabase([advisoryLockRows, []]);
     const repository = new BookingLifecycleRepository(database);
     await expect(
       repository.simulateMockPayment({
@@ -320,7 +352,7 @@ describe("BookingLifecycleRepository.simulateMockPayment", () => {
 
   it("returns ALREADY_PROCESSED for a terminal booking with a different key", async () => {
     const { database, transaction } = createLifecycleDatabase([
-      [],
+      advisoryLockRows,
       [bookingRow({ status: "CONFIRMED" })],
       [],
     ]);
@@ -340,7 +372,7 @@ describe("BookingLifecycleRepository.simulateMockPayment", () => {
 
   it("closes and releases an expired pending booking before returning EXPIRED", async () => {
     const results = [
-      [],
+      advisoryLockRows,
       [bookingRow({ expiresAt: new Date(NOW) })],
       [],
       holds,
@@ -375,15 +407,15 @@ describe("BookingLifecycleRepository.simulateMockPayment", () => {
   });
 
   it.each([
-    ["missing hold", [[], [bookingRow()], [], holds.slice(0, 1)]],
+    ["missing hold", [advisoryLockRows, [bookingRow()], [], holds.slice(0, 1)]],
     [
       "conditional inventory miss",
-      [[], [bookingRow()], [], holds, inventories, [inventories[0]], []],
+      [advisoryLockRows, [bookingRow()], [], holds, inventories, [inventories[0]], []],
     ],
     [
       "duplicate consumed rows",
       [
-        [],
+        advisoryLockRows,
         [bookingRow()],
         [],
         holds,
@@ -415,7 +447,7 @@ describe("BookingLifecycleRepository.simulateMockPayment", () => {
     ["proxy", [new Proxy(bookingRow(), { ownKeys: () => ["secret"] })]],
     ["symbol", [{ ...bookingRow(), [Symbol("secret")]: true }]],
   ])("fails closed for hostile booking rows using a %s", async (_label, bookingRows) => {
-    const { database } = createLifecycleDatabase([[], bookingRows]);
+    const { database } = createLifecycleDatabase([advisoryLockRows, bookingRows]);
     const repository = new BookingLifecycleRepository(database);
     await expect(
       repository.simulateMockPayment({
@@ -506,7 +538,7 @@ describe("BookingLifecycleRepository.simulateMockPayment", () => {
       const replayResults =
         expectedKind === "SUCCEEDED"
           ? [
-              [],
+              advisoryLockRows,
               [bookingRow({ status: "CONFIRMED" })],
               [
                 {
@@ -516,7 +548,7 @@ describe("BookingLifecycleRepository.simulateMockPayment", () => {
                 },
               ],
             ]
-          : [[], [bookingRow({ status: "CONFIRMED" })], []];
+          : [advisoryLockRows, [bookingRow({ status: "CONFIRMED" })], []];
       let resultIndex = 0;
       let transactionCount = 0;
       const transaction = {

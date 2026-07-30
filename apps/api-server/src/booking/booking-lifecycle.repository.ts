@@ -604,13 +604,22 @@ export class BookingLifecycleRepository {
     transaction: BookingLifecycleTransaction,
     input: SimulateMockPaymentInput,
   ): Promise<SimulateMockPaymentResult> {
-    await transaction.$queryRaw(
+    const lockRows = await queryRows(
+      transaction,
       Prisma.sql`
-        SELECT pg_advisory_xact_lock(
-          hashtextextended(${input.bookingId} || chr(31) || ${input.idempotencyKey}, 0)
+        WITH lock_taken AS MATERIALIZED (
+          SELECT pg_advisory_xact_lock(
+            hashtextextended(${input.bookingId} || chr(31) || ${input.idempotencyKey}, 0)
+          ) AS ignored
         )
+        SELECT true AS "locked"
+        FROM lock_taken
       `,
+      1,
     );
+    if (lockRows.length !== 1 || readExactRecord(lockRows[0], ["locked"]).locked !== true) {
+      return rollback();
+    }
 
     const bookingRows = await queryRows(
       transaction,

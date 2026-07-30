@@ -1129,6 +1129,25 @@ describeDatabase(suiteName, () => {
     await applyTargetMigration();
   }, 25_000);
 
+  test("materializes lifecycle advisory locks as adapter-supported boolean rows", async () => {
+    await applyTargetMigration();
+    const bookingId = randomUUID();
+    const idempotencyKey = nextIdempotencyKey();
+    const rows = await activeRepositoryDatabase().$transaction((transaction) =>
+      transaction.$queryRaw<Array<{ locked: boolean }>>(Prisma.sql`
+        WITH lock_taken AS MATERIALIZED (
+          SELECT pg_advisory_xact_lock(
+            hashtextextended(${bookingId} || chr(31) || ${idempotencyKey}, 0)
+          ) AS ignored
+        )
+        SELECT true AS "locked"
+        FROM lock_taken
+      `),
+    );
+
+    expect(rows).toEqual([{ locked: true }]);
+  }, 25_000);
+
   test("target relations, enums, and key columns are isolated in the generated schema", async () => {
     await applyTargetMigration();
     const schema = schemaName;
