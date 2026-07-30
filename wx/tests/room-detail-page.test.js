@@ -96,6 +96,7 @@ function createPage({
   const app = { globalData: { searchStore } };
   const safeWxApi = wxApi || {
     navigateBack: vi.fn(),
+    navigateTo: vi.fn(),
     reLaunch: vi.fn(),
     showModal: vi.fn(),
   };
@@ -443,140 +444,132 @@ describe("room detail page state machine", () => {
     expect(page.data.status).toBe("loading");
   });
 
-  it("shows only the exact Slice 3 notice and performs no fake booking action", async () => {
-    const modal = deferred();
+  it("navigates only from active success with the validated room ID", async () => {
     const wxApi = {
       navigateBack: vi.fn(),
       reLaunch: vi.fn(),
-      showModal: vi.fn(() => modal.promise),
       navigateTo: vi.fn(),
+      showModal: vi.fn(),
       request: vi.fn(),
       setStorageSync: vi.fn(),
       setStorage: vi.fn(),
     };
     const { catalogService, page } = createPage({ wxApi });
-    await page.onLoad.call(page, { id: IDS.room });
-
-    page.selectRoom.call(page, {
-      currentTarget: Object.create({ dataset: { order: "forged" } }),
-    });
     page.selectRoom.call(page);
-    expect(wxApi.showModal).toHaveBeenCalledOnce();
-    expect(wxApi.showModal.mock.calls[0][0]).toMatchObject({
-      title: "预订功能即将开放",
-      content: "报价与预订将在下一开发切片开放",
-      showCancel: false,
+    expect(wxApi.navigateTo).not.toHaveBeenCalled();
+
+    await page.onLoad.call(page, { id: IDS.room });
+    page.selectRoom.call(page, {
+      currentTarget: {
+        dataset: {
+          checkin: "2099-01-01",
+          checkout: "2099-01-02",
+          guests: 10,
+          price: 1,
+          room_type_id: "forged",
+        },
+      },
     });
-    expect(wxApi.showModal.mock.calls[0][0]).toEqual({
-      title: "预订功能即将开放",
-      content: "报价与预订将在下一开发切片开放",
-      showCancel: false,
+    expect(wxApi.navigateTo).toHaveBeenCalledOnce();
+    expect(wxApi.navigateTo).toHaveBeenCalledWith({
+      url: `/pages/booking-confirm/booking-confirm?room_type_id=${encodeURIComponent(
+        IDS.room,
+      )}`,
       success: expect.any(Function),
       fail: expect.any(Function),
-      complete: expect.any(Function),
     });
+    expect(JSON.stringify(wxApi.navigateTo.mock.calls)).not.toMatch(
+      /2099|guests|price|forged/,
+    );
+    expect(wxApi.showModal).not.toHaveBeenCalled();
     expect(catalogService).not.toHaveProperty("post");
     expect(wxApi.request).not.toHaveBeenCalled();
     expect(wxApi.setStorageSync).not.toHaveBeenCalled();
     expect(wxApi.setStorage).not.toHaveBeenCalled();
-    expect(wxApi.navigateTo).not.toHaveBeenCalled();
 
-    modal.reject(new Error("private modal failure"));
-    await Promise.resolve();
-    await Promise.resolve();
+    page.data.roomType = { ...page.data.roomType, id: "not-a-room-id" };
+    page.onHide.call(page);
+    page.onShow.call(page);
     page.selectRoom.call(page);
-    expect(wxApi.showModal).toHaveBeenCalledTimes(2);
+    expect(wxApi.navigateTo).toHaveBeenCalledOnce();
   });
 
-  it("holds a callback-only modal lock until one guarded completion", async () => {
+  it("keeps a successful navigation locked until hide and ignores old callbacks", async () => {
     const calls = [];
     const wxApi = {
       navigateBack: vi.fn(),
       reLaunch: vi.fn(),
-      showModal: vi.fn((options) => {
+      navigateTo: vi.fn((options) => {
         calls.push(options);
         return undefined;
       }),
+      showModal: vi.fn(),
     };
     const { page } = createPage({ wxApi });
     await page.onLoad.call(page, { id: IDS.room });
 
     page.selectRoom.call(page);
     page.selectRoom.call(page);
-    expect(wxApi.showModal).toHaveBeenCalledOnce();
+    expect(wxApi.navigateTo).toHaveBeenCalledOnce();
 
-    calls[0].success({ confirm: true });
-    calls[0].complete({ confirm: true });
+    calls[0].success();
     page.selectRoom.call(page);
-    expect(wxApi.showModal).toHaveBeenCalledTimes(2);
+    expect(wxApi.navigateTo).toHaveBeenCalledOnce();
 
-    calls[1].fail(new Error("native fail"));
-    calls[1].complete();
+    page.onHide.call(page);
+    page.onShow.call(page);
     page.selectRoom.call(page);
-    expect(wxApi.showModal).toHaveBeenCalledTimes(3);
+    expect(wxApi.navigateTo).toHaveBeenCalledTimes(2);
+
+    page.onHide.call(page);
+    page.onShow.call(page);
+    page.selectRoom.call(page);
+    expect(wxApi.navigateTo).toHaveBeenCalledTimes(3);
+    calls[1].fail(new Error("old callback"));
+    page.selectRoom.call(page);
+    expect(wxApi.navigateTo).toHaveBeenCalledTimes(3);
+
+    calls[2].fail(new Error("current callback"));
+    page.selectRoom.call(page);
+    expect(wxApi.navigateTo).toHaveBeenCalledTimes(4);
   });
 
-  it("does not let an old modal callback unlock a newer page lifecycle", async () => {
-    const calls = [];
-    const wxApi = {
-      navigateBack: vi.fn(),
-      reLaunch: vi.fn(),
-      showModal: vi.fn((options) => {
-        calls.push(options);
-        return undefined;
+  it("unlocks navigation after callback failure, rejection, or throw", async () => {
+    for (const navigateTo of [
+      vi.fn(({ fail }) => fail(new Error("private callback failure"))),
+      vi.fn(() => Promise.reject(new Error("private rejection"))),
+      vi.fn(() => {
+        throw new Error("private throw");
       }),
-    };
-    const { page } = createPage({ wxApi });
-    await page.onLoad.call(page, { id: IDS.room });
-    page.selectRoom.call(page);
+    ]) {
+      const wxApi = {
+        navigateBack: vi.fn(),
+        navigateTo,
+        reLaunch: vi.fn(),
+        showModal: vi.fn(),
+      };
+      const { page } = createPage({ wxApi });
+      await page.onLoad.call(page, { id: IDS.room });
 
-    page.onUnload.call(page);
-    await page.onLoad.call(page, { id: IDS.room });
-    page.selectRoom.call(page);
-    calls[0].complete();
-    page.selectRoom.call(page);
-    expect(wxApi.showModal).toHaveBeenCalledTimes(2);
-
-    calls[1].complete();
-    page.selectRoom.call(page);
-    expect(wxApi.showModal).toHaveBeenCalledTimes(3);
-  });
-
-  it("settles a malicious thenable only once and remains usable", async () => {
-    const malicious = {
-      then(resolve, reject) {
-        resolve();
-        reject(new Error("second settlement"));
-        throw new Error("throw after settlement");
-      },
-    };
-    const wxApi = {
-      navigateBack: vi.fn(),
-      reLaunch: vi.fn(),
-      showModal: vi
-        .fn()
-        .mockReturnValueOnce(malicious)
-        .mockImplementationOnce((options) => {
-          options.complete();
-        }),
-    };
-    const { page } = createPage({ wxApi });
-    await page.onLoad.call(page, { id: IDS.room });
-
-    expect(() => page.selectRoom.call(page)).not.toThrow();
-    page.selectRoom.call(page);
-    expect(wxApi.showModal).toHaveBeenCalledTimes(2);
+      expect(() => page.selectRoom.call(page)).not.toThrow();
+      await Promise.resolve();
+      await Promise.resolve();
+      page.selectRoom.call(page);
+      expect(navigateTo).toHaveBeenCalledTimes(2);
+      expect(wxApi.showModal).not.toHaveBeenCalled();
+    }
   });
 
   it("ignores selection unless active success and safely handles image failures", async () => {
     const wxApi = {
       navigateBack: vi.fn(),
+      navigateTo: vi.fn(),
       reLaunch: vi.fn(),
       showModal: vi.fn(),
     };
     const { page } = createPage({ wxApi });
     page.selectRoom.call(page);
-    expect(wxApi.showModal).not.toHaveBeenCalled();
+    expect(wxApi.navigateTo).not.toHaveBeenCalled();
 
     await page.onLoad.call(page, { id: IDS.room });
     page.handleImageError.call(page, {
@@ -588,6 +581,7 @@ describe("room detail page state machine", () => {
 
     page.onHide.call(page);
     page.selectRoom.call(page);
+    expect(wxApi.navigateTo).not.toHaveBeenCalled();
     expect(wxApi.showModal).not.toHaveBeenCalled();
   });
 });
@@ -620,6 +614,8 @@ describe("room detail native files", () => {
     expect(wxml).toContain('wx:for="{{roomType.nightlyPrices}}"');
     expect(wxml).toContain('cents="{{item.salePriceCents}}"');
     expect(wxml).toContain('bindtap="selectRoom"');
+    expect(wxml).toContain("确认价格并预订");
+    expect(wxml).not.toContain("下一切片");
     expect(wxml).toContain('binderror="handleImageError"');
     expect(wxml).not.toContain("rich-text");
     expect(wxml).not.toMatch(/data-(?:search|context|guests|checkin|checkout)=/);
@@ -629,6 +625,7 @@ describe("room detail native files", () => {
       }
     }
     expect(pageSource).not.toMatch(/setStorage|request\s*\(|\.post\s*\(/);
+    expect(pageSource).not.toContain("showModal");
     expect(logic).not.toMatch(/\.reduce\s*\(/);
     const propertyIndex = wxml.indexOf("{{roomType.property.name}}");
     const contentIndex = wxml.indexOf("{{roomType.description}}");

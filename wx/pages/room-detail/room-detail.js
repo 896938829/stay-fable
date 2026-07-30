@@ -10,11 +10,6 @@ const UUID_V4_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const INVALID_LINK_MESSAGE = "房型链接无效，请返回旅店重新选择";
 const INVALID_SEARCH_MESSAGE = "搜索条件已失效，请返回首页重新选择";
-const BOOKING_NOTICE = {
-  title: "预订功能即将开放",
-  content: "报价与预订将在下一开发切片开放",
-  showCancel: false,
-};
 
 function canonicalId(options) {
   try {
@@ -126,7 +121,7 @@ function createRoomDetailPage(dependencies = {}) {
   let invalidDestination = null;
   let returnInFlight = false;
   let returnToken = 0;
-  let choosing = false;
+  let navigating = false;
   let selectionToken = 0;
 
   function current(requestGeneration) {
@@ -251,7 +246,7 @@ function createRoomDetailPage(dependencies = {}) {
       availability = null;
       invalidDestination = null;
       returnInFlight = false;
-      choosing = false;
+      navigating = false;
       if (roomId === null) {
         invalidDestination = "property";
         returnSafely(this);
@@ -276,7 +271,6 @@ function createRoomDetailPage(dependencies = {}) {
 
     onShow() {
       active = true;
-      choosing = false;
       if (invalidDestination !== null) {
         hidden = false;
         returnSafely(this);
@@ -294,7 +288,7 @@ function createRoomDetailPage(dependencies = {}) {
     onHide() {
       active = false;
       hidden = true;
-      choosing = false;
+      navigating = false;
       generation += 1;
       returnToken += 1;
       returnInFlight = false;
@@ -311,7 +305,7 @@ function createRoomDetailPage(dependencies = {}) {
       availability = null;
       invalidDestination = null;
       returnInFlight = false;
-      choosing = false;
+      navigating = false;
     },
 
     retry() {
@@ -336,44 +330,40 @@ function createRoomDetailPage(dependencies = {}) {
     },
 
     selectRoom() {
-      if (!active || this.data.status !== "success" || choosing) {
+      if (!active || this.data.status !== "success" || navigating) {
+        return;
+      }
+      let selectedRoomId;
+      try {
+        selectedRoomId =
+          this.data.roomType === null ? null : this.data.roomType.id;
+      } catch {
+        return;
+      }
+      if (
+        selectedRoomId !== roomId ||
+        typeof selectedRoomId !== "string" ||
+        !UUID_V4_PATTERN.test(selectedRoomId)
+      ) {
         return;
       }
       const token = ++selectionToken;
-      choosing = true;
-      let settled = false;
-      const settle = () => {
-        if (settled) {
-          return;
-        }
-        settled = true;
+      navigating = true;
+      const releaseNavigation = () => {
         if (selectionToken === token) {
-          choosing = false;
+          navigating = false;
         }
       };
-      let result;
-      try {
-        result = wxApi.showModal({
-          ...BOOKING_NOTICE,
-          success: settle,
-          fail: settle,
-          complete: settle,
-        });
-      } catch {
-        settle();
-        return;
-      }
-      try {
-        if (
-          result !== null &&
-          (typeof result === "object" || typeof result === "function") &&
-          typeof result.then === "function"
-        ) {
-          result.then(settle, settle);
-        }
-      } catch {
-        settle();
-      }
+      invokeNavigation(
+        wxApi && wxApi.navigateTo,
+        {
+          url: `/pages/booking-confirm/booking-confirm?room_type_id=${encodeURIComponent(
+            selectedRoomId,
+          )}`,
+        },
+        () => {},
+        releaseNavigation,
+      );
     },
 
     handleImageError(event) {

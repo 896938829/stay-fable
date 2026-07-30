@@ -5,7 +5,8 @@
     "pages/date-guest-select/date-guest-select",
     "pages/property-list/property-list",
     "pages/property-detail/property-detail",
-    "pages/room-detail/room-detail"
+    "pages/room-detail/room-detail",
+    "pages/booking-confirm/booking-confirm"
   ],
   "window": {
     "navigationBarBackgroundColor": "#FBF7F2",

@@ -7,6 +7,10 @@ import { describe, expect, it } from "vitest";
 import { validateWxProject } from "../../scripts/check-wx-project.mjs";
 
 const appConfigUrl = new URL("../app.json", import.meta.url);
+const bookingPageConfigUrl = new URL(
+  "../pages/booking-confirm/booking-confirm.json",
+  import.meta.url,
+);
 const wxRootUrl = new URL("../", import.meta.url);
 const pendingVerificationUrl = new URL(
   "../../docs/operations/phase-0-verification.md",
@@ -23,7 +27,7 @@ const catalogAutomatorUrl = new URL(
 );
 
 describe("WeChat location privacy configuration", () => {
-  it("registers the six user-flow pages in order and statically validates every page file", async () => {
+  it("registers the seven user-flow pages in order and statically validates every page file", async () => {
     const config = JSON.parse(await readFile(appConfigUrl, "utf8"));
 
     expect(config.pages).toEqual([
@@ -33,10 +37,31 @@ describe("WeChat location privacy configuration", () => {
       "pages/property-list/property-list",
       "pages/property-detail/property-detail",
       "pages/room-detail/room-detail",
+      "pages/booking-confirm/booking-confirm",
     ]);
     await expect(validateWxProject(fileURLToPath(wxRootUrl))).resolves.toEqual({
-      pageCount: 6,
+      pageCount: 7,
     });
+  });
+
+  it("uses only existing approved components on booking confirmation", async () => {
+    const config = JSON.parse(
+      await readFile(bookingPageConfigUrl, "utf8"),
+    );
+
+    expect(config).toEqual({
+      navigationStyle: "custom",
+      usingComponents: {
+        "navigation-bar": "/components/navigation-bar/navigation-bar",
+        "loading-state": "/components/loading-state/loading-state",
+        "error-state": "/components/error-state/error-state",
+        price: "/components/price/price",
+      },
+    });
+    for (const component of Object.values(config.usingComponents)) {
+      const componentJson = new URL(`.${component}.json`, wxRootUrl);
+      await expect(readFile(componentJson, "utf8")).resolves.toBeTruthy();
+    }
   });
 
   it("declares the precise private API and user-facing purpose", async () => {
