@@ -1,0 +1,90 @@
+<navigation-bar
+  title="我的订单"
+  back="{{false}}"
+  color="#2f2925"
+  background="#f7f1eb"
+  loading="{{status === 'loading'}}"
+></navigation-bar>
+
+<view class="page-shell order-list-page">
+  <loading-state
+    wx:if="{{status === 'loading'}}"
+    text="正在加载订单"
+  ></loading-state>
+
+  <empty-state
+    wx:elif="{{status === 'empty'}}"
+    title="还没有订单"
+    description="完成预订后，订单会显示在这里。"
+    action-text="重新加载"
+    bind:action="retry"
+  ></empty-state>
+
+  <error-state
+    wx:elif="{{status === 'error'}}"
+    title="暂时无法加载订单"
+    message="{{errorMessage}}"
+    action-text="重新加载"
+    bind:retry="retry"
+  ></error-state>
+
+  <view wx:elif="{{status === 'list'}}" class="order-results">
+    <view
+      wx:for="{{items}}"
+      wx:key="bookingId"
+      class="surface-card order-row"
+    >
+      <view class="order-row__heading">
+        <text class="order-row__number">{{item.bookingNumber}}</text>
+        <text class="order-row__status">{{item.statusLabel}}</text>
+      </view>
+      <text class="order-row__property">{{item.propertyName}}</text>
+      <text class="order-row__room">{{item.roomTypeName}}</text>
+      <view class="order-row__facts">
+        <text>{{item.dateLabel}}</text>
+        <text>{{item.stayLabel}}</text>
+      </view>
+      <view class="order-row__payment">
+        <text
+          wx:if="{{item.paymentHint}}"
+          class="order-row__deadline {{item.paymentDeadlinePassed ? 'order-row__deadline--passed' : ''}}"
+        >
+          {{item.paymentHint}}
+        </text>
+        <text class="order-row__price">{{item.totalPriceLabel}}</text>
+      </view>
+      <button
+        class="order-row__action"
+        data-booking-id="{{item.bookingId}}"
+        bindtap="openOrder"
+      >
+        {{item.actionLabel}}
+      </button>
+    </view>
+
+    <view class="order-pagination" aria-role="status">
+      <loading-state
+        wx:if="{{footerStatus === 'loading'}}"
+        text="正在加载更多订单"
+      ></loading-state>
+      <view
+        wx:elif="{{footerStatus === 'error'}}"
+        class="order-pagination__error"
+      >
+        <text class="order-pagination__message">{{errorMessage}}</text>
+        <button
+          class="secondary-button order-pagination__retry"
+          bindtap="retryFooter"
+        >
+          重试加载更多
+        </button>
+      </view>
+      <text
+        wx:elif="{{footerStatus === 'done'}}"
+        class="order-pagination__done"
+      >
+        已显示全部订单
+      </text>
+    </view>
+  </view>
+</view>

@@ -1,0 +1,133 @@
+.order-list-page {
+  min-height: 100vh;
+  padding-top: var(--space-3);
+  padding-bottom: calc(40rpx + env(safe-area-inset-bottom));
+}
+
+.order-results {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.order-row {
+  padding: var(--space-4);
+}
+
+.order-row__heading,
+.order-row__payment {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.order-row__number {
+  min-width: 0;
+  color: var(--color-muted);
+  font-size: 23rpx;
+  overflow-wrap: anywhere;
+}
+
+.order-row__status {
+  flex: none;
+  color: var(--color-brand-dark);
+  font-size: 25rpx;
+  font-weight: 700;
+}
+
+.order-row__property,
+.order-row__room,
+.order-row__facts text {
+  display: block;
+}
+
+.order-row__property {
+  margin-top: var(--space-3);
+  color: var(--color-text);
+  font-size: 34rpx;
+  font-weight: 700;
+}
+
+.order-row__room {
+  margin-top: var(--space-1);
+  color: var(--color-brand-dark);
+  font-size: 27rpx;
+  font-weight: 600;
+}
+
+.order-row__facts {
+  display: flex;
+  margin-top: var(--space-3);
+  color: var(--color-muted);
+  flex-direction: column;
+  gap: var(--space-1);
+  font-size: 24rpx;
+  line-height: 1.6;
+}
+
+.order-row__payment {
+  min-height: 72rpx;
+  margin-top: var(--space-2);
+}
+
+.order-row__deadline {
+  color: var(--color-brand-dark);
+  font-size: 24rpx;
+  font-weight: 650;
+}
+
+.order-row__deadline--passed {
+  color: #9a4f39;
+}
+
+.order-row__price {
+  margin-left: auto;
+  color: var(--color-brand-dark);
+  font-size: 36rpx;
+  font-weight: 750;
+}
+
+.order-row__action {
+  width: 100%;
+  min-height: 88rpx;
+  margin-top: var(--space-3);
+  border: 1rpx solid var(--color-brand);
+  border-radius: var(--radius-medium);
+  background: var(--color-brand);
+  color: #ffffff;
+  font-size: 28rpx;
+  font-weight: 650;
+  line-height: 88rpx;
+}
+
+.order-row__action::after {
+  border: 0;
+}
+
+.order-pagination {
+  min-height: 112rpx;
+  padding: var(--space-3) 0 env(safe-area-inset-bottom);
+}
+
+.order-pagination__error {
+  display: flex;
+  align-items: center;
+  flex-direction: column;
+}
+
+.order-pagination__message,
+.order-pagination__done {
+  display: block;
+  color: var(--color-muted);
+  font-size: 25rpx;
+  line-height: 1.6;
+  text-align: center;
+}
+
+.order-pagination__retry {
+  min-width: 280rpx;
+  min-height: 88rpx;
+  margin-top: var(--space-2);
+  line-height: 88rpx;
+}
