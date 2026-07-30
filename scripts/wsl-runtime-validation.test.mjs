@@ -1,10 +1,16 @@
 import assert from "node:assert/strict";
 import { Buffer } from "node:buffer";
 import { spawnSync } from "node:child_process";
-import { readFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import test from "node:test";
 
 const powershellPath = new URL("./wsl-runtime-validation.ps1", import.meta.url);
+const powershellScriptPath = decodeURIComponent(powershellPath.pathname).replace(
+  /^\/([A-Za-z]:)/,
+  "$1",
+);
 const bashPath = new URL("./wsl-runtime-validation.sh", import.meta.url);
 const bootstrapPath = new URL("./wsl-database-bootstrap.ps1", import.meta.url);
 const sliceThreeVerifierPath = new URL("./verify-slice-3-runtime.mjs", import.meta.url);
@@ -48,6 +54,22 @@ const sliceFourRuntimeHelper = async () => {
   const helper = bash.match(/run_slice_four_runtime_validation\(\) \{[\s\S]*?\n\}/)?.[0];
   assert.ok(helper, "Slice 4 runtime helper must be defined");
   return `${redactor}\n${helper}`;
+};
+
+const stableWindowHelpers = async () => {
+  const bash = (await readFile(bashPath, "utf8")).replaceAll("\r\n", "\n");
+  const gate = bash.match(/await_stable_window_gate\(\) \{[\s\S]*?\n\}/)?.[0];
+  const observe = bash.match(/observe_worker_stability\(\) \{[\s\S]*?\n\}/)?.[0];
+  assert.ok(gate, "stable-window gate helper must be defined");
+  assert.ok(observe, "worker stability helper must be defined");
+  return `${gate}\n${observe}`;
+};
+
+const cleanupHelper = async () => {
+  const bash = (await readFile(bashPath, "utf8")).replaceAll("\r\n", "\n");
+  const helper = bash.match(/cleanup_validation\(\) \{[\s\S]*?\n\}/)?.[0];
+  assert.ok(helper, "cleanup helper must be defined");
+  return helper;
 };
 
 const runSliceFourRuntimeHelper = async ({
@@ -313,4 +335,428 @@ test("uses the host Prisma engine and preserves the bounded Slice 2 runtime gate
   assert.match(bash, /docker compose[\s\S]*down/);
   assert.doesNotMatch(bash, /down\s+--volumes/);
   assert.doesNotMatch(bash, /rims-postgres|vigorous_jang/);
+});
+
+test("starts a complete ten-minute Worker window only after the owner-bound START gate", async () => {
+  const helpers = await stableWindowHelpers();
+  const owner = "a".repeat(32);
+  const script = `
+set -Eeuo pipefail
+${helpers}
+gate="$(mktemp)"
+rm -- "$gate"
+STABLE_GATE_PATH="$gate"
+STABLE_GATE_OWNER_TOKEN="${owner}"
+sleep_calls=0
+sleep() {
+  sleep_calls=$((sleep_calls + 1))
+  if [ "$sleep_calls" -eq 601 ]; then
+    printf '%s\\n' "${owner} START" >"$gate"
+    echo 'AUTOMATOR_TERMINAL_AFTER_601_POLLS'
+  fi
+}
+docker() {
+  case "$1:$2" in
+    inspect:--format)
+      case "$3" in
+        *Running*) printf 'true\\n' ;;
+        *RestartCount*) printf '0\\n' ;;
+      esac
+      ;;
+    logs:*) return 0 ;;
+    *) return 0 ;;
+  esac
+}
+await_stable_window_gate
+observe_worker_stability worker-container
+echo 'SIMULATED_STABLE'
+rm -f -- "$gate"
+`;
+  const command =
+    process.platform === "win32"
+      ? { file: "wsl.exe", arguments: ["-d", "Ubuntu-22.04", "--", "bash", "-s"] }
+      : { file: "bash", arguments: ["-s"] };
+  const execution = spawnSync(command.file, command.arguments, {
+    encoding: "utf8",
+    input: script,
+    timeout: 5_000,
+  });
+
+  assert.equal(execution.status, 0, execution.stderr);
+  const output = execution.stdout.trim().split(/\r?\n/);
+  const terminalIndex = output.indexOf("AUTOMATOR_TERMINAL_AFTER_601_POLLS");
+  const minuteLines = output.filter((line) => /^Worker observation minute \d+\/10 /.test(line));
+  assert.ok(terminalIndex >= 0);
+  assert.equal(minuteLines.length, 10);
+  assert.equal(minuteLines[0].includes("minute 1/10"), true);
+  assert.equal(minuteLines[9].includes("minute 10/10"), true);
+  assert.ok(output.indexOf(minuteLines[0]) > terminalIndex);
+  assert.ok(output.indexOf("SIMULATED_STABLE") > output.indexOf(minuteLines[9]));
+  assert.equal(output.includes("SLICE2_RUNTIME_CLEANUP_COMPLETE"), false);
+});
+
+test("ABORT gate exits without a stable marker", async () => {
+  const helpers = await stableWindowHelpers();
+  const owner = "b".repeat(32);
+  const script = `
+set -Eeuo pipefail
+${helpers}
+gate="$(mktemp)"
+printf '%s\\n' "${owner} ABORT" >"$gate"
+STABLE_GATE_PATH="$gate"
+STABLE_GATE_OWNER_TOKEN="${owner}"
+if await_stable_window_gate; then
+  echo 'UNEXPECTED_GATE_SUCCESS'
+  exit 99
+else
+  status=$?
+fi
+rm -f -- "$gate"
+exit "$status"
+`;
+  const command =
+    process.platform === "win32"
+      ? { file: "wsl.exe", arguments: ["-d", "Ubuntu-22.04", "--", "bash", "-s"] }
+      : { file: "bash", arguments: ["-s"] };
+  const execution = spawnSync(command.file, command.arguments, {
+    encoding: "utf8",
+    input: script,
+  });
+
+  assert.equal(execution.status, 125, execution.stderr);
+  assert.doesNotMatch(execution.stdout, /STABLE|CLEANUP_COMPLETE|UNEXPECTED/);
+});
+
+test("owner-bound gate wait times out instead of hanging forever", async () => {
+  const helpers = await stableWindowHelpers();
+  const owner = "c".repeat(32);
+  const script = `
+set -Eeuo pipefail
+${helpers}
+gate="$(mktemp)"
+rm -- "$gate"
+STABLE_GATE_PATH="$gate"
+STABLE_GATE_OWNER_TOKEN="${owner}"
+STABLE_GATE_TIMEOUT_SECONDS=3
+sleep() { :; }
+if await_stable_window_gate; then
+  echo 'UNEXPECTED_GATE_SUCCESS'
+  exit 99
+else
+  status=$?
+fi
+rm -f -- "$gate"
+exit "$status"
+`;
+  const command =
+    process.platform === "win32"
+      ? { file: "wsl.exe", arguments: ["-d", "Ubuntu-22.04", "--", "bash", "-s"] }
+      : { file: "bash", arguments: ["-s"] };
+  const execution = spawnSync(command.file, command.arguments, {
+    encoding: "utf8",
+    input: script,
+    timeout: 5_000,
+  });
+
+  assert.equal(execution.status, 124, execution.stderr);
+  assert.match(execution.stderr, /gate wait timed out/i);
+  assert.doesNotMatch(execution.stdout, /STABLE|CLEANUP_COMPLETE|UNEXPECTED/);
+});
+
+test("PowerShell exposes the optional stable gate to WSL without changing default behavior", async () => {
+  const [powershell, bash] = await Promise.all([
+    readFile(powershellPath, "utf8"),
+    readFile(bashPath, "utf8"),
+  ]);
+
+  assert.match(powershell, /\[string\]\$StableGatePath/);
+  assert.match(powershell, /\[string\]\$StableGateOwnerToken/);
+  assert.match(powershell, /STABLE_GATE_PATH=/);
+  assert.match(powershell, /STABLE_GATE_OWNER_TOKEN=/);
+  assert.match(powershell, /\[switch\]\$CleanupOnly/);
+  assert.match(powershell, /CLEANUP_ONLY=true/);
+  assert.match(
+    powershell,
+    /\$wslValidationStarted = \$true\s+wsl\.exe -d \$Distro -- env `\s+"VALIDATION_TOKEN=\$validationToken" `\s+"REPO_ROOT=\$repoWsl" `\s+"ARTIFACT_ROOT=\$runtimeWsl"/,
+  );
+  assert.match(
+    powershell,
+    /\$runtimeOwned -and\s+\(\s+-not \$wslValidationStarted -or\s+\$wslCleanupConfirmed\s+\)/,
+  );
+  assert.match(bash, /printf '%s OWNER=%s\\n' "\$marker" "\$STABLE_GATE_OWNER_TOKEN"/);
+  assert.match(bash, /compose_project="\$\{compose_project\}-\$\{VALIDATION_TOKEN\}"/);
+  assert.match(
+    bash,
+    /expected_validation_root="\$validation_root"[\s\S]*if \[ "\$validation_root" != "\$expected_validation_root" \]/,
+  );
+  assert.match(bash, /if \[ "\$\{CLEANUP_ONLY:-false\}" = true \]/);
+  assert.match(bash, /if \[ -z "\$\{STABLE_GATE_PATH:-\}" \]; then[\s\S]*return 0/);
+  assert.match(
+    bash,
+    /SLICE2_RUNTIME_READY http:\/\/127\.0\.0\.1:3000[\s\S]*await_stable_window_gate[\s\S]*observe_worker_stability/,
+  );
+});
+
+test("gated ABORT preserves owner credentials for a successful cleanup-only retry", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "stay-fable-wsl-abort-"));
+  try {
+    const owner = "a".repeat(32);
+    const ownerRoot = path.join(root, "owner");
+    const gatePath = path.join(ownerRoot, "stable-window.gate");
+    const verifierPath = path.join(root, "scripts", "verify-slice-4-runtime.mjs");
+    const invocation = `
+$ErrorActionPreference = 'Stop'
+$repo = ${JSON.stringify(root)}
+$ownerRoot = ${JSON.stringify(ownerRoot)}
+[System.IO.Directory]::CreateDirectory((Split-Path -Parent ${JSON.stringify(verifierPath)})) | Out-Null
+[System.IO.File]::WriteAllText(${JSON.stringify(verifierPath)}, '')
+[System.IO.Directory]::CreateDirectory($ownerRoot) | Out-Null
+[System.IO.File]::WriteAllText((Join-Path $ownerRoot '.slice5-owner'), '${owner}')
+Set-Location -LiteralPath $repo
+function git {
+  $global:LASTEXITCODE = 0
+  if ("$args" -eq 'rev-parse --show-toplevel') { return $repo }
+  return ''
+}
+function Get-NetTCPConnection { return $null }
+function corepack {
+  $global:LASTEXITCODE = 0
+  if ($args -contains 'deploy') {
+    [System.IO.Directory]::CreateDirectory([string]$args[-1]) | Out-Null
+  }
+}
+$global:WslMode = 'abort'
+function wsl.exe {
+  if ($args -contains 'wslpath') {
+    & $env:ComSpec /c exit 0
+    if ([string]$args[-1] -like '*.wsl-runtime') {
+      return '/mnt/e/stay-fable-test/.wsl-runtime'
+    }
+    return '/mnt/e/stay-fable-test'
+  }
+  if ($global:WslMode -eq 'abort') {
+    & $env:ComSpec /c exit 125
+    return
+  }
+  & $env:ComSpec /c exit 0
+}
+try {
+  & ${JSON.stringify(powershellScriptPath)} -Distro 'Ubuntu-22.04' -StableGatePath ${JSON.stringify(gatePath)} -StableGateOwnerToken '${owner}'
+  throw 'gated ABORT unexpectedly succeeded'
+}
+catch {
+  if ($_.Exception.Message -eq 'gated ABORT unexpectedly succeeded') { throw }
+}
+$runtimeMarker = Join-Path $repo '.wsl-runtime/.stay-fable-validation-owner'
+if (-not (Test-Path -LiteralPath $runtimeMarker -PathType Leaf)) {
+  throw 'fallback owner credential was deleted'
+}
+if ((Get-Content -LiteralPath $runtimeMarker -Raw) -ne '${owner}') {
+  throw 'fallback owner credential changed'
+}
+$global:WslMode = 'cleanup'
+$cleanupOutput = @(
+  & ${JSON.stringify(powershellScriptPath)} -Distro 'Ubuntu-22.04' -StableGateOwnerToken '${owner}' -CleanupOnly
+)
+if ($cleanupOutput -notcontains 'SLICE5_RUNTIME_FALLBACK_CLEANUP_COMPLETE') {
+  throw 'fallback completion marker missing'
+}
+if (Test-Path -LiteralPath (Join-Path $repo '.wsl-runtime')) {
+  throw 'fallback runtime directory survived'
+}
+'GATED_ABORT_FALLBACK_CLEAN'
+`;
+    const execution = spawnSync("powershell.exe", ["-NoProfile", "-Command", invocation], {
+      encoding: "utf8",
+      timeout: 10_000,
+    });
+
+    assert.equal(execution.status, 0, execution.stderr);
+    assert.match(execution.stdout, /GATED_ABORT_FALLBACK_CLEAN/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("cleanup-only removes owner-bound runtime resources when the trap never ran", async () => {
+  const cleanup = await cleanupHelper();
+  const owner = "d".repeat(32);
+  const script = `
+set -Eeuo pipefail
+${cleanup}
+VALIDATION_TOKEN='${owner}'
+api_container=api-${owner}
+worker_container=worker-${owner}
+lock_container=lock-${owner}
+compose_started=true
+lock_owned=true
+validation_root_owned=false
+validation_root="$(mktemp -d)"
+expected_validation_root="$validation_root"
+ownership_marker="$validation_root/.owner"
+printf '%s' '${owner}' >"$ownership_marker"
+validation_root_owned=true
+repo_root=/repo
+compose_project=project-${owner}
+api_exists=true
+worker_exists=true
+lock_exists=true
+project_exists=true
+runtime_marker() { :; }
+rm() {
+  echo "REMOVED_ROOT:$2" >&2
+  command rm "$@"
+}
+docker() {
+  case "$1 $2" in
+    "inspect --format")
+      printf '%s\\n' '${owner}'
+      ;;
+    "container inspect")
+      case "$3" in
+        "$api_container") [ "$api_exists" = true ] ;;
+        "$worker_container") [ "$worker_exists" = true ] ;;
+        *) return 1 ;;
+      esac
+      ;;
+    "rm -f")
+      echo "REMOVED:$3" >&2
+      case "$3" in
+        "$api_container") api_exists=false ;;
+        "$worker_container") worker_exists=false ;;
+      esac
+      ;;
+    "rm $lock_container")
+      echo "REMOVED:$lock_container" >&2
+      lock_exists=false
+      ;;
+    "compose --project-name")
+      echo "COMPOSE_DOWN:$compose_project"
+      project_exists=false
+      ;;
+    "ps -a")
+      if [ "$api_exists" = true ] || [ "$worker_exists" = true ] || [ "$lock_exists" = true ]; then
+        printf 'owned-resource\\n'
+      fi
+      ;;
+    "network ls")
+      if [ "$project_exists" = true ]; then printf 'owned-network\\n'; fi
+      ;;
+    *) return 0 ;;
+  esac
+}
+cleanup_validation 0
+if [ "$api_exists" = true ] || [ "$worker_exists" = true ] ||
+  [ "$lock_exists" = true ] || [ "$project_exists" = true ] ||
+  [ -e "$validation_root" ]; then
+  exit 99
+fi
+echo 'OWNER_FALLBACK_CLEAN'
+`;
+  const command =
+    process.platform === "win32"
+      ? { file: "wsl.exe", arguments: ["-d", "Ubuntu-22.04", "--", "bash", "-s"] }
+      : { file: "bash", arguments: ["-s"] };
+  const execution = spawnSync(command.file, command.arguments, {
+    encoding: "utf8",
+    input: script,
+    timeout: 5_000,
+  });
+
+  assert.equal(execution.status, 0, execution.stderr);
+  assert.match(execution.stdout, /OWNER_FALLBACK_CLEAN/);
+  assert.match(execution.stderr, /REMOVED:api-/);
+  assert.match(execution.stderr, /REMOVED:worker-/);
+  assert.match(execution.stderr, /REMOVED:lock-/);
+  assert.match(execution.stderr, /REMOVED_ROOT:/);
+  assert.match(execution.stdout, /COMPOSE_DOWN:project-/);
+});
+
+test("cleanup-only without an owner lock performs no destructive action", async () => {
+  const bash = (await readFile(bashPath, "utf8")).replaceAll("\r\n", "\n");
+  const owner = "1".repeat(32);
+  const script = `
+repo="$(mktemp -d)"
+trap 'command rm -rf -- "$repo"' EXIT
+docker() {
+  case "$1 $2" in
+    "container inspect") return 1 ;;
+    "ps -a"|"network ls") return 0 ;;
+    "rm "*|"compose "*) echo "DESTRUCTIVE:docker $*" ;;
+    *) return 0 ;;
+  esac
+}
+rm() { echo "DESTRUCTIVE:rm $*"; }
+export VALIDATION_TOKEN='${owner}'
+export STABLE_GATE_OWNER_TOKEN='${owner}'
+export REPO_ROOT="$repo"
+export CLEANUP_ONLY=true
+${bash}
+`;
+  const command =
+    process.platform === "win32"
+      ? { file: "wsl.exe", arguments: ["-d", "Ubuntu-22.04", "--", "bash", "-s"] }
+      : { file: "bash", arguments: ["-s"] };
+  const execution = spawnSync(command.file, command.arguments, {
+    encoding: "utf8",
+    input: script,
+    timeout: 5_000,
+  });
+
+  assert.equal(execution.status, 1, execution.stderr);
+  assert.match(execution.stderr, /owner lock.*unconfirmed/i);
+  assert.doesNotMatch(execution.stdout, /DESTRUCTIVE/);
+});
+
+test("foreign lock ownership prevents every destructive cleanup action", async () => {
+  const cleanup = await cleanupHelper();
+  const script = `
+set -Eeuo pipefail
+${cleanup}
+VALIDATION_TOKEN='${"e".repeat(32)}'
+api_container=api
+worker_container=worker
+lock_container=lock
+compose_started=true
+lock_owned=true
+validation_root_owned=false
+validation_root=/tmp/stay-fable-wsl-validation
+expected_validation_root=/tmp/stay-fable-wsl-validation
+ownership_marker="$validation_root/.owner"
+repo_root=/repo
+compose_project=project
+runtime_marker() { :; }
+docker() {
+  if [ "$1" = inspect ]; then
+    printf '%s\\n' '${"f".repeat(32)}'
+    return 0
+  fi
+  case "$*" in
+    *" rm "*|rm\\ *|compose\\ *down*) echo "DESTRUCTIVE:$*" ;;
+  esac
+  return 0
+}
+rm() { echo "DESTRUCTIVE:rm $*"; }
+if cleanup_validation 1; then
+  exit 99
+else
+  status=$?
+fi
+echo 'FOREIGN_LOCK_RETAINED'
+exit "$status"
+`;
+  const command =
+    process.platform === "win32"
+      ? { file: "wsl.exe", arguments: ["-d", "Ubuntu-22.04", "--", "bash", "-s"] }
+      : { file: "bash", arguments: ["-s"] };
+  const execution = spawnSync(command.file, command.arguments, {
+    encoding: "utf8",
+    input: script,
+    timeout: 5_000,
+  });
+
+  assert.equal(execution.status, 1, execution.stderr);
+  assert.match(execution.stderr, /ownership label mismatch/i);
+  assert.doesNotMatch(execution.stdout, /DESTRUCTIVE/);
+  assert.match(execution.stdout, /FOREIGN_LOCK_RETAINED/);
 });

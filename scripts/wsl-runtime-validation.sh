@@ -8,28 +8,65 @@ lock_container='stay-fable-wsl-validation-lock'
 api_container='stay-fable-wsl-validation-api'
 worker_container='stay-fable-wsl-validation-worker'
 validation_root='/tmp/stay-fable-wsl-validation'
-ownership_marker="$validation_root/.stay-fable-validation-owner"
+expected_validation_root="$validation_root"
 compose_started=false
 validation_root_owned=false
 lock_owned=false
 
-if [ -z "${VALIDATION_TOKEN:-}" ] || [ -z "${REPO_ROOT:-}" ] || [ -z "${ARTIFACT_ROOT:-}" ]; then
-  echo 'VALIDATION_TOKEN, REPO_ROOT, and ARTIFACT_ROOT are required' >&2
+if [ -z "${VALIDATION_TOKEN:-}" ] || [ -z "${REPO_ROOT:-}" ]; then
+  echo 'VALIDATION_TOKEN and REPO_ROOT are required' >&2
   exit 1
 fi
+if [ -n "${STABLE_GATE_OWNER_TOKEN:-}" ]; then
+  if [ "$VALIDATION_TOKEN" != "$STABLE_GATE_OWNER_TOKEN" ] ||
+    ! printf '%s' "$VALIDATION_TOKEN" | grep -Eq '^[[:xdigit:]]{32}$'; then
+    echo 'Gated validation token does not match its owner' >&2
+    exit 1
+  fi
+  compose_project="${compose_project}-${VALIDATION_TOKEN}"
+  lock_container="${lock_container}-${VALIDATION_TOKEN}"
+  api_container="${api_container}-${VALIDATION_TOKEN}"
+  worker_container="${worker_container}-${VALIDATION_TOKEN}"
+  validation_root="${validation_root}-${VALIDATION_TOKEN}"
+  expected_validation_root="$validation_root"
+fi
+ownership_marker="$validation_root/.stay-fable-validation-owner"
 
 repo_root="$(cd -- "$REPO_ROOT" && pwd -P)"
-artifact_root="$(cd -- "$ARTIFACT_ROOT" && pwd -P)"
-if [ "$artifact_root" != "$repo_root/.wsl-runtime" ]; then
-  echo 'Artifact root is not owned by the current linked worktree' >&2
-  exit 1
+if [ "${CLEANUP_ONLY:-false}" != true ]; then
+  if [ -z "${ARTIFACT_ROOT:-}" ]; then
+    echo 'ARTIFACT_ROOT is required for validation' >&2
+    exit 1
+  fi
+  artifact_root="$(cd -- "$ARTIFACT_ROOT" && pwd -P)"
+  if [ "$artifact_root" != "$repo_root/.wsl-runtime" ]; then
+    echo 'Artifact root is not owned by the current linked worktree' >&2
+    exit 1
+  fi
 fi
+
+runtime_marker() {
+  local marker="$1"
+  if [ -n "${STABLE_GATE_OWNER_TOKEN:-}" ]; then
+    printf '%s OWNER=%s\n' "$marker" "$STABLE_GATE_OWNER_TOKEN"
+  else
+    printf '%s\n' "$marker"
+  fi
+}
 
 cleanup_validation() {
   local exit_status="$1"
   local cleanup_failed=0
-  local name token
+  local name token remaining_containers remaining_project_containers remaining_networks
   trap - EXIT
+
+  if [ "$lock_owned" = true ]; then
+    token="$(docker inspect --format '{{ index .Config.Labels "stay-fable.validation-token" }}' "$lock_container" 2>/dev/null || true)"
+    if [ "$token" != "$VALIDATION_TOKEN" ]; then
+      echo "Ownership label mismatch; refusing cleanup for $lock_container" >&2
+      return 1
+    fi
+  fi
 
   for name in "$api_container" "$worker_container"; do
     if docker container inspect "$name" >/dev/null 2>&1; then
@@ -44,7 +81,11 @@ cleanup_validation() {
   done
 
   if [ "$compose_started" = true ]; then
-    if ! POSTGRES_PORT=55432 REDIS_PORT=56379 docker compose \
+    token="$(docker inspect --format '{{ index .Config.Labels "stay-fable.validation-token" }}' "$lock_container" 2>/dev/null || true)"
+    if [ "$token" != "$VALIDATION_TOKEN" ]; then
+      echo "Ownership label mismatch; refusing Compose cleanup for $lock_container" >&2
+      cleanup_failed=1
+    elif ! POSTGRES_PORT=55432 REDIS_PORT=56379 docker compose \
       --project-name "$compose_project" \
       -f "$repo_root/infrastructure/compose.yaml" down; then
       cleanup_failed=1
@@ -61,8 +102,31 @@ cleanup_validation() {
     fi
   fi
 
+  if ! remaining_containers="$(docker ps -a \
+    --filter "label=stay-fable.validation-token=$VALIDATION_TOKEN" \
+    --format '{{.Names}}')"; then
+    echo 'Unable to verify owner-labeled container cleanup' >&2
+    cleanup_failed=1
+  elif [ -n "$remaining_containers" ]; then
+    echo 'Owner-labeled containers remain after cleanup' >&2
+    cleanup_failed=1
+  fi
+  if ! remaining_project_containers="$(docker ps -a \
+    --filter "label=com.docker.compose.project=$compose_project" \
+    --format '{{.Names}}')" ||
+    ! remaining_networks="$(docker network ls \
+      --filter "label=com.docker.compose.project=$compose_project" \
+      --format '{{.Name}}')"; then
+    echo 'Unable to verify owner Compose cleanup' >&2
+    cleanup_failed=1
+  elif [ -n "$remaining_project_containers" ] ||
+    [ -n "$remaining_networks" ]; then
+    echo 'Owner Compose resources remain after cleanup' >&2
+    cleanup_failed=1
+  fi
+
   if [ "$validation_root_owned" = true ]; then
-    if [ "$validation_root" != '/tmp/stay-fable-wsl-validation' ] ||
+    if [ "$validation_root" != "$expected_validation_root" ] ||
       [ ! -f "$ownership_marker" ] ||
       [ "$(cat -- "$ownership_marker")" != "$VALIDATION_TOKEN" ]; then
       echo 'Runtime directory ownership check failed; refusing cleanup' >&2
@@ -75,8 +139,29 @@ cleanup_validation() {
   if [ "$cleanup_failed" -ne 0 ]; then
     return 1
   fi
+  runtime_marker 'SLICE2_RUNTIME_CLEANUP_COMPLETE'
   return "$exit_status"
 }
+
+if [ "${CLEANUP_ONLY:-false}" = true ]; then
+  if docker container inspect "$lock_container" >/dev/null 2>&1; then
+    lock_token="$(docker inspect --format '{{ index .Config.Labels "stay-fable.validation-token" }}' "$lock_container" 2>/dev/null || true)"
+    if [ "$lock_token" != "$VALIDATION_TOKEN" ]; then
+      echo "Ownership label mismatch; refusing cleanup for $lock_container" >&2
+      exit 1
+    fi
+    compose_started=true
+    lock_owned=true
+    if [ -e "$validation_root" ]; then
+      validation_root_owned=true
+    fi
+    cleanup_validation 0
+    exit $?
+  fi
+  echo 'Owner lock is absent; cleanup remains unconfirmed' >&2
+  exit 1
+fi
+
 trap 'cleanup_validation $?' EXIT
 
 docker ps --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}'
@@ -285,26 +370,80 @@ run_slice_four_runtime_validation() {
 
 run_slice_four_runtime_validation "$api_container" "$worker_container" "$database_url"
 
-echo 'SLICE2_RUNTIME_READY http://127.0.0.1:3000'
+if [ -n "${STABLE_GATE_PATH:-}" ]; then
+  runtime_marker 'SLICE4_UAT_READY http://127.0.0.1:3000'
+fi
+
+await_stable_window_gate() {
+  if [ -z "${STABLE_GATE_PATH:-}" ]; then
+    return 0
+  fi
+  if [ -z "${STABLE_GATE_OWNER_TOKEN:-}" ] ||
+    ! printf '%s' "$STABLE_GATE_OWNER_TOKEN" | grep -Eq '^[[:xdigit:]]{32}$' ||
+    [ "${STABLE_GATE_PATH#/}" = "$STABLE_GATE_PATH" ]; then
+    echo 'Stable-window gate configuration is invalid' >&2
+    return 1
+  fi
+
+  local gate_decision
+  local timeout_seconds="${STABLE_GATE_TIMEOUT_SECONDS:-3600}"
+  local waited_seconds=0
+  if ! printf '%s' "$timeout_seconds" | grep -Eq '^[1-9][0-9]{0,4}$' ||
+    [ "$timeout_seconds" -gt 86400 ]; then
+    echo 'Stable-window gate timeout is invalid' >&2
+    return 1
+  fi
+  while true; do
+    if [ -f "$STABLE_GATE_PATH" ]; then
+      IFS= read -r gate_decision <"$STABLE_GATE_PATH"
+      case "$gate_decision" in
+        "$STABLE_GATE_OWNER_TOKEN START")
+          return 0
+          ;;
+        "$STABLE_GATE_OWNER_TOKEN ABORT")
+          return 125
+          ;;
+        *)
+          echo 'Stable-window gate decision is invalid' >&2
+          return 1
+          ;;
+      esac
+    fi
+    if [ "$waited_seconds" -ge "$timeout_seconds" ]; then
+      echo 'Stable-window gate wait timed out' >&2
+      return 124
+    fi
+    sleep 1
+    waited_seconds=$((waited_seconds + 1))
+  done
+}
 
 worker_failure_pattern='("level" *: *(50|60)([,} ])|"level" *: *"(error|fatal)"|(^| )FATAL( |:)|uncaught *(exception)?|unhandled *(rejection)?|ECONN[A-Z_]*|reconnect(ion)? +loop)'
-for minute in $(seq 1 10); do
-  sleep 60
-  worker_running="$(docker inspect --format '{{.State.Running}}' "$worker_container")"
-  restart_count="$(docker inspect --format '{{.RestartCount}}' "$worker_container")"
-  echo "Worker observation minute ${minute}/10 Running=${worker_running} RestartCount=${restart_count}"
-  if [ "$worker_running" != true ] || [ "$restart_count" -ne 0 ]; then
-    echo 'Worker stopped or restarted during observation' >&2
-    exit 1
-  fi
-  worker_logs="$(docker logs --since 65s "$worker_container" 2>&1)"
-  if printf '%s\n' "$worker_logs" | grep -Eiq "$worker_failure_pattern"; then
-    echo 'Worker logs contain a fatal, connection, or reconnect-loop signal' >&2
-    exit 1
-  fi
-done
+observe_worker_stability() {
+  local observed_worker_container="$1"
+  local minute worker_running restart_count worker_logs
+  for minute in $(seq 1 10); do
+    sleep 60
+    worker_running="$(docker inspect --format '{{.State.Running}}' "$observed_worker_container")"
+    restart_count="$(docker inspect --format '{{.RestartCount}}' "$observed_worker_container")"
+    echo "Worker observation minute ${minute}/10 Running=${worker_running} RestartCount=${restart_count}"
+    if [ "$worker_running" != true ] || [ "$restart_count" -ne 0 ]; then
+      echo 'Worker stopped or restarted during observation' >&2
+      return 1
+    fi
+    worker_logs="$(docker logs --since 65s "$observed_worker_container" 2>&1)"
+    if printf '%s\n' "$worker_logs" | grep -Eiq "$worker_failure_pattern"; then
+      echo 'Worker logs contain a fatal, connection, or reconnect-loop signal' >&2
+      return 1
+    fi
+  done
+}
 
-echo 'SLICE2_RUNTIME_STABLE_10_MINUTES'
+echo 'SLICE2_RUNTIME_READY http://127.0.0.1:3000'
+
+await_stable_window_gate
+observe_worker_stability "$worker_container"
+
+runtime_marker 'SLICE2_RUNTIME_STABLE_10_MINUTES'
 cleanup_validation 0
 trap - EXIT
-echo 'SLICE2_RUNTIME_CLEANUP_COMPLETE'
