@@ -5,19 +5,24 @@ import { DatabaseModule } from "../database/database.module.js";
 import { IdentityModule } from "../identity/identity.module.js";
 import { PricingModule } from "../pricing/pricing.module.js";
 import { BOOKING_NUMBER_GENERATOR, createBookingNumberGenerator } from "./booking-number.js";
+import { BookingQueryController } from "./booking-query.controller.js";
+import { BookingQueryRepository } from "./booking-query.repository.js";
+import { BookingQueryService } from "./booking-query.service.js";
 import { BookingRepository } from "./booking.repository.js";
 import { BookingsController } from "./bookings.controller.js";
 import { BookingsService } from "./bookings.service.js";
 
 @Module({
   imports: [DatabaseModule, IdentityModule, PricingModule],
-  controllers: [BookingsController],
+  controllers: [BookingsController, BookingQueryController],
   providers: [
     BookingRepository,
     BookingsService,
+    BookingQueryRepository,
+    BookingQueryService,
     { provide: CLOCK, useValue: systemClock },
     { provide: BOOKING_NUMBER_GENERATOR, useFactory: createBookingNumberGenerator },
   ],
-  exports: [BookingsService],
+  exports: [BookingsService, BookingQueryService],
 })
 export class BookingModule {}

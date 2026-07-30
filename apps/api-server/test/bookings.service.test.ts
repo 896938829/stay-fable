@@ -12,6 +12,7 @@ import {
   type BookingNumberGenerator,
 } from "../src/booking/booking-number.js";
 import { BookingModule } from "../src/booking/booking.module.js";
+import { BookingQueryController } from "../src/booking/booking-query.controller.js";
 import { BookingsController } from "../src/booking/bookings.controller.js";
 import {
   BookingNumberConflictError,
@@ -1354,7 +1355,7 @@ describe("BookingRepository", () => {
 });
 
 describe("BookingModule", () => {
-  it("reuses the pricing rate limiter and registers only the create controller", () => {
+  it("reuses the pricing rate limiter and registers create and query controllers", () => {
     const imports = Reflect.getMetadata("imports", BookingModule) as unknown[];
     const providers = Reflect.getMetadata("providers", BookingModule) as unknown[];
     const controllers = Reflect.getMetadata("controllers", BookingModule) as unknown[] | undefined;
@@ -1368,6 +1369,6 @@ describe("BookingModule", () => {
       ]),
     );
     expect(providers).not.toContain(WriteRateLimitService);
-    expect(controllers ?? []).toEqual([BookingsController]);
+    expect(controllers ?? []).toEqual([BookingsController, BookingQueryController]);
   });
 });
