@@ -16,6 +16,20 @@ const bootstrapPath = new URL("./wsl-database-bootstrap.ps1", import.meta.url);
 const sliceThreeVerifierPath = new URL("./verify-slice-3-runtime.mjs", import.meta.url);
 const sliceFourVerifierPath = new URL("./verify-slice-4-runtime.mjs", import.meta.url);
 
+const wslPathHelper = async () => {
+  const powershell = await readFile(powershellPath, "utf8");
+  const helper = powershell.match(/function ConvertTo-WslDrvfsPath \{[\s\S]*?\r?\n\}/)?.[0];
+  assert.ok(helper, "WSL drvfs path helper must be defined");
+  return helper;
+};
+
+const wslPathContainmentHelper = async () => {
+  const powershell = await readFile(powershellPath, "utf8");
+  const helper = powershell.match(/function Test-WslPathInsideRoot \{[\s\S]*?\r?\n\}/)?.[0];
+  assert.ok(helper, "WSL path containment helper must be defined");
+  return helper;
+};
+
 const sliceThreeRuntimeHelper = async () => {
   const bash = (await readFile(bashPath, "utf8")).replaceAll("\r\n", "\n");
   const helper = bash.match(/run_slice_three_runtime_validation\(\) \{[\s\S]*?\n\}/)?.[0];
@@ -477,7 +491,7 @@ test("PowerShell exposes the optional stable gate to WSL without changing defaul
   assert.match(powershell, /CLEANUP_ONLY=true/);
   assert.match(
     powershell,
-    /\$wslValidationStarted = \$true\s+wsl\.exe -d \$Distro -- env `\s+"VALIDATION_TOKEN=\$validationToken" `\s+"REPO_ROOT=\$repoWsl" `\s+"ARTIFACT_ROOT=\$runtimeWsl"/,
+    /\$wslValidationStarted = \$true\s+wsl\.exe -d \$Distro --exec env `\s+"VALIDATION_TOKEN=\$validationToken" `\s+"REPO_ROOT=\$repoWsl" `\s+"ARTIFACT_ROOT=\$runtimeWsl"/,
   );
   assert.match(
     powershell,
@@ -495,6 +509,209 @@ test("PowerShell exposes the optional stable gate to WSL without changing defaul
     bash,
     /SLICE2_RUNTIME_READY http:\/\/127\.0\.0\.1:3000[\s\S]*await_stable_window_gate[\s\S]*observe_worker_stability/,
   );
+});
+
+test(
+  "uses only direct WSL exec boundaries and preserves every downstream environment value",
+  { skip: process.platform !== "win32" },
+  async () => {
+    const powershell = await readFile(powershellPath, "utf8");
+    const probe = "/mnt/e/$HOME/$(printf probe)/" + "`printf probe`";
+    const owner = "a".repeat(32);
+    const pythonSink = [
+      "import json, os",
+      "keys = json.loads(os.environ['SINK_KEYS'])",
+      "print(json.dumps({key: os.environ[key] for key in keys}, sort_keys=True))",
+    ].join("; ");
+    const invokeSink = (values) => {
+      const keys = Object.keys(values);
+      return spawnSync(
+        "wsl.exe",
+        [
+          "-d",
+          "Ubuntu-22.04",
+          "--exec",
+          "env",
+          `SINK_KEYS=${JSON.stringify(keys)}`,
+          ...Object.entries(values).map(([key, value]) => `${key}=${value}`),
+          "python3",
+          "-c",
+          pythonSink,
+        ],
+        { encoding: "utf8", timeout: 10_000 },
+      );
+    };
+    const normalValues = {
+      VALIDATION_TOKEN: owner,
+      REPO_ROOT: `${probe}/repo`,
+      ARTIFACT_ROOT: `${probe}/repo/.wsl-runtime`,
+      STABLE_GATE_PATH: `${probe}/owner/stable-window.gate`,
+      STABLE_GATE_OWNER_TOKEN: owner,
+    };
+    const cleanupValues = {
+      VALIDATION_TOKEN: owner,
+      REPO_ROOT: `${probe}/repo`,
+      STABLE_GATE_OWNER_TOKEN: owner,
+      CLEANUP_ONLY: "true",
+    };
+
+    const normal = invokeSink(normalValues);
+    const cleanup = invokeSink(cleanupValues);
+
+    assert.equal(normal.status, 0, normal.stderr);
+    assert.deepEqual(JSON.parse(normal.stdout.trim()), normalValues);
+    assert.equal(cleanup.status, 0, cleanup.stderr);
+    assert.deepEqual(JSON.parse(cleanup.stdout.trim()), cleanupValues);
+    assert.equal(
+      (powershell.match(/wsl\.exe -d \$Distro --exec env/g) ?? []).length,
+      2,
+      "normal and cleanup runtime calls must both use --exec env",
+    );
+    assert.equal(
+      (powershell.match(/wsl\.exe -d \$Distro --exec wslpath/g) ?? []).length,
+      1,
+      "path conversion must keep its one direct --exec boundary",
+    );
+    assert.doesNotMatch(powershell, /wsl\.exe -d \$Distro -- (?:env|bash)\b/);
+  },
+);
+
+test(
+  "converts spaced and unspaced Windows paths through real WSL",
+  { skip: process.platform !== "win32" },
+  async () => {
+    const helper = await wslPathHelper();
+    const invocation = `
+${helper}
+$cPath = ConvertTo-WslDrvfsPath -Distro 'Ubuntu-22.04' -WindowsPath 'C:\\Users\\Public'
+$ePath = ConvertTo-WslDrvfsPath -Distro 'Ubuntu-22.04' -WindowsPath 'E:\\My Work\\stay-fable'
+"C_PATH=$cPath"
+"E_PATH=$ePath"
+`;
+    const execution = spawnSync("powershell.exe", ["-NoProfile", "-Command", invocation], {
+      encoding: "utf8",
+      timeout: 10_000,
+    });
+
+    assert.equal(execution.status, 0, execution.stderr);
+    assert.match(execution.stdout, /^C_PATH=\/mnt\/c\/Users\/Public$/m);
+    assert.match(execution.stdout, /^E_PATH=\/mnt\/e\/My Work\/stay-fable$/m);
+  },
+);
+
+test(
+  "passes shell metacharacters literally to real WSL without shell evaluation",
+  { skip: process.platform !== "win32" },
+  async () => {
+    const helper = await wslPathHelper();
+    const specialWindowsPath = "C:\\Users\\Public\\$HOME\\$(printf probe)\\" + "`printf probe`";
+    const encodedPath = Buffer.from(specialWindowsPath).toString("base64");
+    const invocation = `
+${helper}
+$specialPath = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${encodedPath}'))
+ConvertTo-WslDrvfsPath -Distro 'Ubuntu-22.04' -WindowsPath $specialPath
+`;
+    const execution = spawnSync("powershell.exe", ["-NoProfile", "-Command", invocation], {
+      encoding: "utf8",
+      timeout: 10_000,
+    });
+
+    assert.equal(execution.status, 0, execution.stderr);
+    assert.equal(
+      execution.stdout.trim(),
+      "/mnt/c/Users/Public/$HOME/$(printf probe)/" + "`printf probe`",
+    );
+  },
+);
+
+test("normalizes separators and passes wslpath arguments through --exec", async () => {
+  const helper = await wslPathHelper();
+  const invocation = `
+${helper}
+$global:ReceivedWslArguments = [System.Collections.Generic.List[string]]::new()
+function wsl.exe {
+  $global:ReceivedWslArguments.Add(($args -join [char]31))
+  & $env:ComSpec /c exit 0
+  if ([string]$args[-1] -like 'C:*') { return '/mnt/c/Users/Public' }
+  return '/mnt/e/My Work/stay-fable'
+}
+$null = ConvertTo-WslDrvfsPath -Distro 'Ubuntu-22.04' -WindowsPath 'C:\\Users\\Public'
+$null = ConvertTo-WslDrvfsPath -Distro 'Ubuntu-22.04' -WindowsPath 'E:\\My Work\\stay-fable'
+$global:ReceivedWslArguments | ConvertTo-Json -Compress
+`;
+  const execution = spawnSync("powershell.exe", ["-NoProfile", "-Command", invocation], {
+    encoding: "utf8",
+    timeout: 10_000,
+  });
+
+  assert.equal(execution.status, 0, execution.stderr);
+  assert.deepEqual(JSON.parse(execution.stdout.trim()), [
+    ["-d", "Ubuntu-22.04", "--exec", "wslpath", "-a", "C:/Users/Public"].join("\u001f"),
+    ["-d", "Ubuntu-22.04", "--exec", "wslpath", "-a", "E:/My Work/stay-fable"].join("\u001f"),
+  ]);
+});
+
+test("rejects null, empty, multiline, malformed, and nonzero wslpath results uniformly", async () => {
+  const helper = await wslPathHelper();
+  const invocation = `
+${helper}
+$ErrorActionPreference = 'Stop'
+function wsl.exe {
+  if ($global:WslResultMode -eq 'nonzero') {
+    & $env:ComSpec /c exit 7
+    return '/mnt/c/ignored'
+  }
+  & $env:ComSpec /c exit 0
+  switch ($global:WslResultMode) {
+    'null' { return $null }
+    'empty' { return '' }
+    'multiline' { return @('/mnt/c/one', '/mnt/c/two') }
+    'malformed' { return 'relative/path' }
+  }
+}
+foreach ($mode in @('null', 'empty', 'multiline', 'malformed', 'nonzero')) {
+  $global:WslResultMode = $mode
+  try {
+    $null = ConvertTo-WslDrvfsPath -Distro 'Ubuntu-22.04' -WindowsPath 'C:\\probe' -FailureMessage 'EXPECTED_FAILURE'
+    "$mode=NO_ERROR"
+  }
+  catch {
+    "$mode=$($_.Exception.Message)"
+  }
+}
+`;
+  const execution = spawnSync("powershell.exe", ["-NoProfile", "-Command", invocation], {
+    encoding: "utf8",
+    timeout: 10_000,
+  });
+
+  assert.equal(execution.status, 0, execution.stderr);
+  assert.deepEqual(execution.stdout.trim().split(/\r?\n/), [
+    "null=EXPECTED_FAILURE",
+    "empty=EXPECTED_FAILURE",
+    "multiline=EXPECTED_FAILURE",
+    "malformed=EXPECTED_FAILURE",
+    "nonzero=EXPECTED_FAILURE",
+  ]);
+});
+
+test("accepts children of a drive root while rejecting the root itself and sibling prefixes", async () => {
+  const helper = await wslPathContainmentHelper();
+  const invocation = `
+${helper}
+@(
+  (Test-WslPathInsideRoot -RootPath '/mnt/e/' -CandidatePath '/mnt/e'),
+  (Test-WslPathInsideRoot -RootPath '/mnt/e/' -CandidatePath '/mnt/e/.wsl-runtime'),
+  (Test-WslPathInsideRoot -RootPath '/mnt/e/' -CandidatePath '/mnt/example')
+) | ConvertTo-Json -Compress
+`;
+  const execution = spawnSync("powershell.exe", ["-NoProfile", "-Command", invocation], {
+    encoding: "utf8",
+    timeout: 10_000,
+  });
+
+  assert.equal(execution.status, 0, execution.stderr);
+  assert.deepEqual(JSON.parse(execution.stdout.trim()), [false, true, false]);
 });
 
 test("gated ABORT preserves owner credentials for a successful cleanup-only retry", async () => {
@@ -526,6 +743,7 @@ function corepack {
   }
 }
 $global:WslMode = 'abort'
+$global:RuntimeExecCalls = 0
 function wsl.exe {
   if ($args -contains 'wslpath') {
     & $env:ComSpec /c exit 0
@@ -534,6 +752,10 @@ function wsl.exe {
     }
     return '/mnt/e/stay-fable-test'
   }
+  if ($args -notcontains '--exec') {
+    throw 'runtime validation must use a direct WSL exec boundary'
+  }
+  $global:RuntimeExecCalls++
   if ($global:WslMode -eq 'abort') {
     & $env:ComSpec /c exit 125
     return
@@ -563,6 +785,9 @@ if ($cleanupOutput -notcontains 'SLICE5_RUNTIME_FALLBACK_CLEANUP_COMPLETE') {
 }
 if (Test-Path -LiteralPath (Join-Path $repo '.wsl-runtime')) {
   throw 'fallback runtime directory survived'
+}
+if ($global:RuntimeExecCalls -ne 2) {
+  throw "expected two direct runtime exec calls, got $global:RuntimeExecCalls"
 }
 'GATED_ABORT_FALLBACK_CLEAN'
 `;

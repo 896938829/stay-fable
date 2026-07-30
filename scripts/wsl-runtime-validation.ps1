@@ -7,6 +7,62 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+
+function ConvertTo-WslDrvfsPath {
+  param(
+    [Parameter(Mandatory)][string]$Distro,
+    [Parameter(Mandatory)][string]$WindowsPath,
+    [string]$FailureMessage = 'Windows path could not be converted to WSL drvfs'
+  )
+
+  if (
+    $Distro -notmatch '^[A-Za-z0-9._-]{1,64}$' -or
+    $WindowsPath -notmatch '^[A-Za-z]:[\\/]'
+  ) {
+    throw $FailureMessage
+  }
+  $normalizedPath = $WindowsPath.Replace([char]92, [char]47)
+  $rawOutput = @(
+    wsl.exe -d $Distro --exec wslpath -a $normalizedPath
+  )
+  $conversionExitCode = $LASTEXITCODE
+  if (
+    $conversionExitCode -ne 0 -or
+    $rawOutput.Count -ne 1 -or
+    [string]::IsNullOrWhiteSpace([string]$rawOutput[0])
+  ) {
+    throw $FailureMessage
+  }
+  $convertedPath = ([string]$rawOutput[0]).Trim()
+  if (
+    $convertedPath -notmatch '^/mnt/[a-z](?:/|$)'
+  ) {
+    throw $FailureMessage
+  }
+  return $convertedPath
+}
+
+function Test-WslPathInsideRoot {
+  param(
+    [Parameter(Mandatory)][string]$RootPath,
+    [Parameter(Mandatory)][string]$CandidatePath
+  )
+
+  $normalizedRoot = $RootPath.TrimEnd([char]47)
+  $normalizedCandidate = $CandidatePath.TrimEnd([char]47)
+  if (
+    [string]::IsNullOrWhiteSpace($normalizedRoot) -or
+    [string]::IsNullOrWhiteSpace($normalizedCandidate) -or
+    [StringComparer]::Ordinal.Equals($normalizedCandidate, $normalizedRoot)
+  ) {
+    return $false
+  }
+  return $normalizedCandidate.StartsWith(
+    "$normalizedRoot/",
+    [StringComparison]::Ordinal
+  )
+}
+
 $repoRoot = (Resolve-Path -LiteralPath (git rev-parse --show-toplevel)).Path
 $currentPath = (Resolve-Path -LiteralPath (Get-Location).ProviderPath).Path
 if (-not [StringComparer]::OrdinalIgnoreCase.Equals($currentPath, $repoRoot)) {
@@ -59,11 +115,11 @@ if ($CleanupOnly) {
   ) {
     throw 'Cleanup-only runtime ownership check failed'
   }
-  $repoWsl = (wsl.exe -d $Distro -- wslpath -a $repoRoot).Trim()
-  if ($LASTEXITCODE -ne 0 -or -not $repoWsl.StartsWith('/mnt/')) {
-    throw 'Repository path could not be converted to a WSL drvfs path'
-  }
-  wsl.exe -d $Distro -- env `
+  $repoWsl = ConvertTo-WslDrvfsPath `
+    -Distro $Distro `
+    -WindowsPath $repoRoot `
+    -FailureMessage 'Repository path could not be converted to a WSL drvfs path'
+  wsl.exe -d $Distro --exec env `
     "VALIDATION_TOKEN=$validationToken" `
     "REPO_ROOT=$repoWsl" `
     "STABLE_GATE_OWNER_TOKEN=$StableGateOwnerToken" `
@@ -119,10 +175,10 @@ try {
     ) {
       throw 'Stable-window gate ownership check failed'
     }
-    $stableGateWsl = (wsl.exe -d $Distro -- wslpath -a $StableGatePath).Trim()
-    if ($LASTEXITCODE -ne 0 -or -not $stableGateWsl.StartsWith('/mnt/')) {
-      throw 'Stable-window gate path could not be converted to WSL'
-    }
+    $stableGateWsl = ConvertTo-WslDrvfsPath `
+      -Distro $Distro `
+      -WindowsPath $StableGatePath `
+      -FailureMessage 'Stable-window gate path could not be converted to WSL'
   }
 
   New-Item -ItemType Directory -Path $runtimeDir | Out-Null
@@ -138,17 +194,20 @@ try {
   corepack pnpm deploy --filter @stay-fable/job-worker --prod (Join-Path $runtimeDir 'worker')
   if ($LASTEXITCODE -ne 0) { throw 'Worker production deployment failed' }
 
-  $repoWsl = (wsl.exe -d $Distro -- wslpath -a $repoRoot).Trim()
-  if ($LASTEXITCODE -ne 0 -or -not $repoWsl.StartsWith('/mnt/')) {
-    throw 'Repository path could not be converted to a WSL drvfs path'
-  }
-  $runtimeWsl = (wsl.exe -d $Distro -- wslpath -a $runtimeDir).Trim()
-  if ($LASTEXITCODE -ne 0 -or -not $runtimeWsl.StartsWith("$repoWsl/")) {
+  $repoWsl = ConvertTo-WslDrvfsPath `
+    -Distro $Distro `
+    -WindowsPath $repoRoot `
+    -FailureMessage 'Repository path could not be converted to a WSL drvfs path'
+  $runtimeWsl = ConvertTo-WslDrvfsPath `
+    -Distro $Distro `
+    -WindowsPath $runtimeDir `
+    -FailureMessage 'Runtime path could not be converted to WSL drvfs'
+  if (-not (Test-WslPathInsideRoot -RootPath $repoWsl -CandidatePath $runtimeWsl)) {
     throw 'Runtime path is not inside the current linked worktree'
   }
 
   $wslValidationStarted = $true
-  wsl.exe -d $Distro -- env `
+  wsl.exe -d $Distro --exec env `
     "VALIDATION_TOKEN=$validationToken" `
     "REPO_ROOT=$repoWsl" `
     "ARTIFACT_ROOT=$runtimeWsl" `
