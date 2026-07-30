@@ -162,7 +162,8 @@ git commit -m "test(wx): preflight physical uat environment"
 - quote/booking/fail/success/cancel 各 POST 增量恰为 1；
 - GET 刷新 POST 增量 0；
 - unknown write 立即终止，不自动重试；
-- payment retry 保持同一 scope/key，但 evidence 不保存 key；
+- 同一个 payment outcome 在未知结果后的人工重试保持同一 scope/key，但 evidence 不保存 key；
+- `FAIL` 与 `SUCCEED` 的请求 body 不同，必须使用不同 scope/key，不得把两者伪装成同一重试；
 - confirmed/cancelled 终态和订单 Tab 返回刷新。
 
 ### Step 3：实现安全 evidence writer
