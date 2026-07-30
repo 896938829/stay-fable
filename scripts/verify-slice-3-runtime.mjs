@@ -379,6 +379,36 @@ function requireUserIds(userIds) {
   }
 }
 
+export function assertExactFixtureState(actual, expected, fields) {
+  try {
+    assert.ok(isPlainObject(actual));
+    assert.ok(isPlainObject(expected));
+    for (const field of fields) {
+      assert.deepEqual(actual[field], expected[field], `fixture field ${field} drifted`);
+    }
+    return actual;
+  } catch (error) {
+    throw new Error("runtime fixture state drift", { cause: error });
+  }
+}
+
+export function assertOwnerInventoryDelta(actual, expected, delta) {
+  try {
+    assert.ok(Number.isInteger(delta) && delta >= 0);
+    assertExactFixtureState(actual, expected, ["total_inventory", "sold_inventory"]);
+    assert.equal(actual.held_inventory, expected.held_inventory + delta);
+    assert.equal(actual.version, expected.version + delta);
+    assert.ok(actual.held_inventory >= delta);
+    return {
+      ...expected,
+      held_inventory: actual.held_inventory - delta,
+      version: actual.version + 1,
+    };
+  } catch (error) {
+    throw new Error("runtime owner inventory delta mismatch", { cause: error });
+  }
+}
+
 async function loadPostgresOwner(databaseUrl) {
   assert.equal(typeof databaseUrl, "string", "DATABASE_URL is required");
   const requireFromArtifact = createRequire("/app/package.json");
@@ -393,6 +423,8 @@ async function loadPostgresOwner(databaseUrl) {
     max: 3,
   });
   let snapshots;
+  let expectedState;
+  let ownerUserIds = [];
   let closed = false;
 
   const query = (client, text, values = []) =>
@@ -431,31 +463,181 @@ async function loadPostgresOwner(databaseUrl) {
     }
   };
 
-  const deleteOwnerData = async (client, userIds) => {
+  const cloneSupply = (supply) => new Map([...supply].map(([date, row]) => [date, { ...row }]));
+
+  const requireOwnedDates = (dates) => {
+    assert.ok(dates.length > 0, "runtime fixture dates are required");
+    assert.equal(new Set(dates).size, dates.length, "runtime fixture dates must be unique");
+    assert.ok(
+      dates.every((date) => fixture.dates.includes(date)),
+      "runtime fixture date is not owned",
+    );
+    return [...dates].sort();
+  };
+
+  const rowsByDate = (rows) => new Map(rows.map((row) => [row.business_date, row]));
+
+  const lockFixtureRows = async (client, dates) => {
+    const orderedDates = requireOwnedDates(dates);
+    const identity = await query(
+      client,
+      `
+        SELECT room.id::text AS room_id, room.name_zh AS room_name,
+               property.id::text AS property_id, property.name_zh AS property_name,
+               room.booking_policy_zh AS booking_policy
+        FROM room_type room
+        JOIN property ON property.id = room.property_id
+        WHERE room.id = $1::uuid AND property.id = $2::uuid
+        FOR UPDATE OF property, room
+      `,
+      [fixture.roomId, fixture.propertyId],
+    );
+    assert.equal(identity.rowCount, 1, "runtime fixture identity mismatch");
+    const prices = await query(
+      client,
+      `
+        SELECT business_date::text, sale_price_cents, rack_price_cents
+        FROM daily_price price
+        WHERE room_type_id = $1::uuid AND business_date = ANY($2::date[])
+        ORDER BY business_date ASC
+        FOR UPDATE OF price
+      `,
+      [fixture.roomId, orderedDates],
+    );
+    const inventories = await query(
+      client,
+      `
+        SELECT business_date::text, total_inventory, held_inventory, sold_inventory, version
+        FROM daily_inventory inventory
+        WHERE room_type_id = $1::uuid AND business_date = ANY($2::date[])
+        ORDER BY business_date ASC
+        FOR UPDATE OF inventory
+      `,
+      [fixture.roomId, orderedDates],
+    );
+    assert.deepEqual(
+      prices.rows.map(({ business_date }) => business_date),
+      orderedDates,
+      "runtime fixture prices are incomplete",
+    );
+    assert.deepEqual(
+      inventories.rows.map(({ business_date }) => business_date),
+      orderedDates,
+      "runtime fixture inventory is incomplete",
+    );
+    return {
+      identity: identity.rows[0],
+      inventories: rowsByDate(inventories.rows),
+      prices: rowsByDate(prices.rows),
+    };
+  };
+
+  const assertNoForeignOccupancy = async (client, userIds, dates) => {
+    const orderedDates = requireOwnedDates(dates);
+    const result = await query(
+      client,
+      `
+        SELECT
+          (
+            SELECT count(*)::integer
+            FROM booking
+            WHERE room_type_id = $1::uuid
+              AND user_id <> ALL($2::uuid[])
+              AND checkin_date < ($3::date[])[array_length($3::date[], 1)] + 1
+              AND checkout_date > ($3::date[])[1]
+          ) AS booking_count,
+          (
+            SELECT count(*)::integer
+            FROM inventory_hold hold
+            JOIN booking ON booking.id = hold.booking_id
+            WHERE hold.room_type_id = $1::uuid
+              AND hold.business_date = ANY($3::date[])
+              AND booking.user_id <> ALL($2::uuid[])
+          ) AS hold_count
+      `,
+      [fixture.roomId, userIds, orderedDates],
+    );
+    assert.equal(result.rows[0]?.booking_count, 0, "runtime fixture has foreign booking drift");
+    assert.equal(result.rows[0]?.hold_count, 0, "runtime fixture has foreign hold drift");
+  };
+
+  const assertLockedPricesAndPolicy = (locked, expected) => {
+    assertExactFixtureState(locked.identity, expected, ["booking_policy"]);
+    for (const [date, price] of locked.prices) {
+      assertExactFixtureState(price, expected.supply.get(date), [
+        "sale_price_cents",
+        "rack_price_cents",
+      ]);
+    }
+  };
+
+  const deleteOwnerData = async (client, userIds, locked, workingSupply) => {
     if (userIds.length === 0) {
       return;
     }
-    await query(
+    const groups = await query(
       client,
       `
-        WITH owner_holds AS (
-          SELECT hold.room_type_id, hold.business_date, count(*)::integer AS held_count
-          FROM inventory_hold hold
-          JOIN booking ON booking.id = hold.booking_id
-          WHERE booking.user_id = ANY($1::uuid[]) AND hold.status = 'HELD'
-          GROUP BY hold.room_type_id, hold.business_date
-        )
-        UPDATE daily_inventory inventory
-        SET held_inventory = inventory.held_inventory - owner_holds.held_count,
-            version = inventory.version + 1,
-            updated_at = CURRENT_TIMESTAMP
-        FROM owner_holds
-        WHERE inventory.room_type_id = owner_holds.room_type_id
-          AND inventory.business_date = owner_holds.business_date
-          AND inventory.held_inventory >= owner_holds.held_count
+        SELECT hold.room_type_id::text, hold.business_date::text,
+               count(*) FILTER (WHERE hold.status = 'HELD')::integer AS held_count
+        FROM inventory_hold hold
+        JOIN booking ON booking.id = hold.booking_id
+        WHERE booking.user_id = ANY($1::uuid[])
+        GROUP BY hold.room_type_id, hold.business_date
+        ORDER BY hold.room_type_id, hold.business_date
       `,
       [userIds],
     );
+    const deltas = new Map();
+    for (const group of groups.rows) {
+      assert.equal(group.room_type_id, fixture.roomId, "runtime owner hold escaped fixture room");
+      assert.ok(
+        locked.inventories.has(group.business_date),
+        "runtime owner hold escaped locked fixture dates",
+      );
+      deltas.set(group.business_date, group.held_count);
+    }
+
+    for (const [date, actual] of locked.inventories) {
+      const expected = workingSupply.get(date);
+      assert.ok(expected, "runtime expected inventory is missing");
+      const delta = deltas.get(date) ?? 0;
+      const next = assertOwnerInventoryDelta(actual, expected, delta);
+      if (delta > 0) {
+        const result = await query(
+          client,
+          `
+            UPDATE daily_inventory inventory
+            SET held_inventory = inventory.held_inventory - $3,
+                version = inventory.version + 1,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE room_type_id = $1::uuid AND business_date = $2::date
+              AND total_inventory = $4 AND held_inventory = $5
+              AND sold_inventory = $6 AND version = $7
+            RETURNING business_date::text, total_inventory, held_inventory,
+                      sold_inventory, version
+          `,
+          [
+            fixture.roomId,
+            date,
+            delta,
+            actual.total_inventory,
+            actual.held_inventory,
+            actual.sold_inventory,
+            actual.version,
+          ],
+        );
+        assert.equal(result.rowCount, 1, "runtime owner inventory delta mismatch");
+        assertExactFixtureState(result.rows[0], next, [
+          "total_inventory",
+          "held_inventory",
+          "sold_inventory",
+          "version",
+        ]);
+        workingSupply.set(date, next);
+      }
+    }
+
     await query(
       client,
       `
@@ -478,48 +660,133 @@ async function loadPostgresOwner(databaseUrl) {
     await query(client, "DELETE FROM quote WHERE user_id = ANY($1::uuid[])", [userIds]);
   };
 
-  const assertNoForeignOccupancy = async (client, userIds, dates) => {
-    const result = await query(
+  const restoreFixture = async (client, locked, working) => {
+    assertLockedPricesAndPolicy(locked, working);
+    for (const [date, actual] of locked.inventories) {
+      assertExactFixtureState(actual, working.supply.get(date), [
+        "total_inventory",
+        "held_inventory",
+        "sold_inventory",
+        "version",
+      ]);
+    }
+    const policy = await query(
       client,
       `
-        SELECT count(*)::integer AS count
-        FROM booking
-        WHERE room_type_id = $1::uuid
-          AND user_id <> ALL($2::uuid[])
-          AND checkin_date < ($3::date[])[array_length($3::date[], 1)] + 1
-          AND checkout_date > ($3::date[])[1]
+        UPDATE room_type
+        SET booking_policy_zh = $2, updated_at = CURRENT_TIMESTAMP
+        WHERE id = $1::uuid AND booking_policy_zh = $3
+        RETURNING booking_policy_zh AS booking_policy
       `,
-      [fixture.roomId, userIds, dates],
+      [fixture.roomId, snapshots.bookingPolicy, working.booking_policy],
     );
-    assert.equal(result.rows[0]?.count, 0, "runtime fixture has non-owner occupancy");
+    assert.equal(policy.rowCount, 1, "runtime cleanup policy drift");
+    working.booking_policy = snapshots.bookingPolicy;
+    for (const row of snapshots.supply) {
+      const expected = working.supply.get(row.business_date);
+      if (
+        expected.sale_price_cents !== row.sale_price_cents ||
+        expected.rack_price_cents !== row.rack_price_cents
+      ) {
+        const price = await query(
+          client,
+          `
+            UPDATE daily_price
+            SET sale_price_cents = $3, rack_price_cents = $4,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE room_type_id = $1::uuid AND business_date = $2::date
+              AND sale_price_cents = $5 AND rack_price_cents = $6
+            RETURNING business_date::text, sale_price_cents, rack_price_cents
+          `,
+          [
+            fixture.roomId,
+            row.business_date,
+            row.sale_price_cents,
+            row.rack_price_cents,
+            expected.sale_price_cents,
+            expected.rack_price_cents,
+          ],
+        );
+        assert.equal(price.rowCount, 1, "runtime cleanup price drift");
+        expected.sale_price_cents = row.sale_price_cents;
+        expected.rack_price_cents = row.rack_price_cents;
+      }
+      const inventory = await query(
+        client,
+        `
+          UPDATE daily_inventory inventory
+          SET total_inventory = $3, held_inventory = $4, sold_inventory = $5,
+              version = inventory.version + 1, updated_at = CURRENT_TIMESTAMP
+          WHERE room_type_id = $1::uuid AND business_date = $2::date
+            AND total_inventory = $6 AND held_inventory = $7
+            AND sold_inventory = $8 AND version = $9
+          RETURNING business_date::text, total_inventory, held_inventory,
+                    sold_inventory, version
+        `,
+        [
+          fixture.roomId,
+          row.business_date,
+          row.total_inventory,
+          row.held_inventory,
+          row.sold_inventory,
+          expected.total_inventory,
+          expected.held_inventory,
+          expected.sold_inventory,
+          expected.version,
+        ],
+      );
+      assert.equal(inventory.rowCount, 1, "runtime cleanup inventory drift");
+      working.supply.set(row.business_date, {
+        ...expected,
+        total_inventory: row.total_inventory,
+        held_inventory: row.held_inventory,
+        sold_inventory: row.sold_inventory,
+        version: expected.version + 1,
+      });
+    }
   };
 
   return {
     async prepare(userIds) {
       requireUserIds(userIds);
       await transaction(async (client) => {
-        await deleteOwnerData(client, userIds);
-        const identity = await query(
+        const locked = await lockFixtureRows(client, fixture.dates);
+        await assertNoForeignOccupancy(client, userIds, fixture.dates);
+        const ownerData = await query(
+          client,
+          `
+            SELECT
+              (SELECT count(*)::integer FROM booking
+               WHERE user_id = ANY($1::uuid[])) AS booking_count,
+              (SELECT count(*)::integer FROM inventory_hold hold
+               JOIN booking ON booking.id = hold.booking_id
+               WHERE booking.user_id = ANY($1::uuid[])) AS hold_count
+          `,
+          [userIds],
+        );
+        assert.equal(ownerData.rows[0]?.booking_count, 0, "runtime owner has stale bookings");
+        assert.equal(ownerData.rows[0]?.hold_count, 0, "runtime owner has stale holds");
+        await query(client, "DELETE FROM quote WHERE user_id = ANY($1::uuid[])", [userIds]);
+        const uatIdentity = await query(
           client,
           `
             SELECT room.id::text AS room_id, room.name_zh AS room_name,
-                   property.id::text AS property_id, property.name_zh AS property_name,
-                   room.booking_policy_zh AS booking_policy
+                   property.id::text AS property_id, property.name_zh AS property_name
             FROM room_type room
             JOIN property ON property.id = room.property_id
-            WHERE room.id = ANY($1::uuid[]) AND property.id = $2::uuid
-            ORDER BY room.id
-            FOR UPDATE OF room, property
+            WHERE room.id = $1::uuid AND property.id = $2::uuid
           `,
-          [[fixture.roomId, fixture.uatRoomId], fixture.propertyId],
+          [fixture.uatRoomId, fixture.propertyId],
         );
         assert.deepEqual(
-          identity.rows.map(({ room_id, room_name, property_id, property_name }) => ({
-            room_id,
-            room_name,
-            property_id,
-            property_name,
-          })),
+          [locked.identity, uatIdentity.rows[0]].map(
+            ({ room_id, room_name, property_id, property_name }) => ({
+              room_id,
+              room_name,
+              property_id,
+              property_name,
+            }),
+          ),
           [
             {
               room_id: fixture.roomId,
@@ -536,101 +803,156 @@ async function loadPostgresOwner(databaseUrl) {
           ],
           "runtime fixture identity mismatch",
         );
-        const supply = await query(
-          client,
-          `
-            SELECT price.business_date::text, price.sale_price_cents, price.rack_price_cents,
-                   inventory.total_inventory, inventory.held_inventory,
-                   inventory.sold_inventory, inventory.version
-            FROM daily_price price
-            JOIN daily_inventory inventory
-              ON inventory.room_type_id = price.room_type_id
-             AND inventory.business_date = price.business_date
-            WHERE price.room_type_id = $1::uuid
-              AND price.business_date = ANY($2::date[])
-            ORDER BY price.business_date
-            FOR UPDATE OF price, inventory
-          `,
-          [fixture.roomId, fixture.dates],
-        );
-        assert.equal(
-          supply.rows.length,
-          fixture.dates.length,
-          "runtime fixture supply is incomplete",
-        );
+        const supply = fixture.dates.map((date) => ({
+          ...locked.prices.get(date),
+          ...locked.inventories.get(date),
+        }));
         assert.ok(
-          supply.rows.every(
+          supply.every(
             ({ held_inventory, sold_inventory }) => held_inventory === 0 && sold_inventory === 0,
           ),
           "runtime fixture supply is already occupied",
         );
         snapshots = {
-          bookingPolicy: identity.rows[0].booking_policy,
-          supply: supply.rows,
+          bookingPolicy: locked.identity.booking_policy,
+          supply: supply.map((row) => ({ ...row })),
+        };
+        expectedState = {
+          booking_policy: snapshots.bookingPolicy,
+          supply: rowsByDate(supply.map((row) => ({ ...row }))),
         };
       });
+      ownerUserIds = [...userIds];
     },
 
     async resetInventory({ dates, totals, userIds }) {
       requireUserIds(userIds);
       assert.equal(dates.length, totals.length, "runtime reset dates/totals mismatch");
-      assert.ok(
-        dates.every((date) => fixture.dates.includes(date)),
-        "runtime reset date is not owned",
-      );
+      requireOwnedDates(dates);
+      const working = { ...expectedState, supply: cloneSupply(expectedState.supply) };
       await transaction(async (client) => {
-        await assertNoForeignOccupancy(client, userIds, dates);
-        await deleteOwnerData(client, userIds);
+        const locked = await lockFixtureRows(client, fixture.dates);
+        await assertNoForeignOccupancy(client, userIds, fixture.dates);
+        assertLockedPricesAndPolicy(locked, working);
+        await deleteOwnerData(client, userIds, locked, working.supply);
         for (const [index, date] of dates.entries()) {
+          const expected = working.supply.get(date);
           const result = await query(
             client,
             `
-              UPDATE daily_inventory
+              UPDATE daily_inventory inventory
               SET total_inventory = $3, held_inventory = 0, sold_inventory = 0,
-                  version = version + 1, updated_at = CURRENT_TIMESTAMP
+                  version = inventory.version + 1, updated_at = CURRENT_TIMESTAMP
               WHERE room_type_id = $1::uuid AND business_date = $2::date
-              RETURNING room_type_id
+                AND total_inventory = $4 AND held_inventory = $5
+                AND sold_inventory = $6 AND version = $7
+              RETURNING business_date::text, total_inventory, held_inventory,
+                        sold_inventory, version
             `,
-            [fixture.roomId, date, totals[index]],
+            [
+              fixture.roomId,
+              date,
+              totals[index],
+              expected.total_inventory,
+              expected.held_inventory,
+              expected.sold_inventory,
+              expected.version,
+            ],
           );
-          assert.equal(result.rowCount, 1, "runtime reset missed fixture inventory");
+          assert.equal(result.rowCount, 1, "runtime reset inventory drift");
+          working.supply.set(date, {
+            ...expected,
+            total_inventory: totals[index],
+            held_inventory: 0,
+            sold_inventory: 0,
+            version: expected.version + 1,
+          });
         }
       });
+      expectedState = working;
     },
 
     async setInventoryTotal(date, total) {
-      assert.ok(fixture.dates.includes(date), "runtime inventory date is not owned");
+      requireOwnedDates([date]);
+      const working = { ...expectedState, supply: cloneSupply(expectedState.supply) };
       await transaction(async (client) => {
+        const locked = await lockFixtureRows(client, [date]);
+        await assertNoForeignOccupancy(client, ownerUserIds, [date]);
+        assertLockedPricesAndPolicy(locked, working);
+        const actual = locked.inventories.get(date);
+        const expected = working.supply.get(date);
+        assertExactFixtureState(actual, expected, [
+          "total_inventory",
+          "held_inventory",
+          "sold_inventory",
+          "version",
+        ]);
         const result = await query(
           client,
           `
-            UPDATE daily_inventory
+            UPDATE daily_inventory inventory
             SET total_inventory = $3, version = version + 1, updated_at = CURRENT_TIMESTAMP
             WHERE room_type_id = $1::uuid AND business_date = $2::date
-              AND held_inventory = 0 AND sold_inventory = 0
-            RETURNING room_type_id
+              AND total_inventory = $4 AND held_inventory = $5
+              AND sold_inventory = $6 AND version = $7
+            RETURNING business_date::text, total_inventory, held_inventory,
+                      sold_inventory, version
           `,
-          [fixture.roomId, date, total],
+          [
+            fixture.roomId,
+            date,
+            total,
+            expected.total_inventory,
+            expected.held_inventory,
+            expected.sold_inventory,
+            expected.version,
+          ],
         );
         assert.equal(result.rowCount, 1, "runtime inventory mutation was not isolated");
+        working.supply.set(date, {
+          ...expected,
+          total_inventory: total,
+          version: expected.version + 1,
+        });
       });
+      expectedState = working;
     },
 
     async changePrice(date) {
-      assert.ok(fixture.dates.includes(date), "runtime price date is not owned");
+      requireOwnedDates([date]);
+      const working = { ...expectedState, supply: cloneSupply(expectedState.supply) };
       await transaction(async (client) => {
+        const locked = await lockFixtureRows(client, [date]);
+        await assertNoForeignOccupancy(client, ownerUserIds, [date]);
+        assertLockedPricesAndPolicy(locked, working);
+        assertExactFixtureState(locked.inventories.get(date), working.supply.get(date), [
+          "total_inventory",
+          "held_inventory",
+          "sold_inventory",
+          "version",
+        ]);
+        const expected = working.supply.get(date);
         const result = await query(
           client,
           `
             UPDATE daily_price
-            SET sale_price_cents = sale_price_cents + $3, updated_at = CURRENT_TIMESTAMP
+            SET sale_price_cents = $3, updated_at = CURRENT_TIMESTAMP
             WHERE room_type_id = $1::uuid AND business_date = $2::date
-            RETURNING room_type_id
+              AND sale_price_cents = $4 AND rack_price_cents = $5
+            RETURNING business_date::text, sale_price_cents, rack_price_cents
           `,
-          [fixture.roomId, date, 1],
+          [
+            fixture.roomId,
+            date,
+            expected.sale_price_cents + 1,
+            expected.sale_price_cents,
+            expected.rack_price_cents,
+          ],
         );
         assert.equal(result.rowCount, 1, "runtime price mutation missed fixture");
+        working.supply.set(date, { ...expected, sale_price_cents: expected.sale_price_cents + 1 });
       });
+      expectedState = working;
     },
 
     async expireQuote(quoteId, userId) {
@@ -667,6 +989,9 @@ async function loadPostgresOwner(databaseUrl) {
 
     async assertState({ userIds, dates, bookingCount, holdCount, historyCount, heldByDate }) {
       await transaction(async (client) => {
+        const locked = await lockFixtureRows(client, fixture.dates);
+        await assertNoForeignOccupancy(client, userIds, fixture.dates);
+        assertLockedPricesAndPolicy(locked, expectedState);
         const bookings = await query(
           client,
           `
@@ -711,18 +1036,25 @@ async function loadPostgresOwner(databaseUrl) {
           },
           { bookingCount, holdCount, historyCount },
         );
-        const inventory = await query(
+        const ownerGroups = await query(
           client,
           `
-            SELECT business_date::text, held_inventory
-            FROM daily_inventory
-            WHERE room_type_id = $1::uuid AND business_date = ANY($2::date[])
+            SELECT hold.business_date::text, count(*)::integer AS held_count
+            FROM inventory_hold hold
+            JOIN booking ON booking.id = hold.booking_id
+            WHERE booking.user_id = ANY($1::uuid[]) AND hold.room_type_id = $2::uuid
+              AND hold.status = 'HELD'
+            GROUP BY hold.business_date
             ORDER BY business_date
           `,
-          [fixture.roomId, dates],
+          [userIds, fixture.roomId],
         );
+        const deltas = new Map(ownerGroups.rows.map((row) => [row.business_date, row.held_count]));
+        for (const [date, actual] of locked.inventories) {
+          assertOwnerInventoryDelta(actual, expectedState.supply.get(date), deltas.get(date) ?? 0);
+        }
         assert.deepEqual(
-          inventory.rows.map(({ held_inventory }) => held_inventory),
+          dates.map((date) => locked.inventories.get(date).held_inventory),
           heldByDate,
           "runtime inventory state mismatch",
         );
@@ -742,67 +1074,35 @@ async function loadPostgresOwner(databaseUrl) {
           errors.push(error);
         }
       };
-      await cleanupStep(() =>
-        transaction(async (client) => {
-          await deleteOwnerData(client, userIds);
-        }),
-      );
-      await cleanupStep(async () => {
-        if (snapshots === undefined) {
-          return;
-        }
-        await transaction(async (client) => {
-          await query(
-            client,
-            `
-              UPDATE room_type
-              SET booking_policy_zh = $2, updated_at = CURRENT_TIMESTAMP
-              WHERE id = $1::uuid
-            `,
-            [fixture.roomId, snapshots.bookingPolicy],
-          );
-          for (const row of snapshots.supply) {
-            await query(
-              client,
-              `
-                UPDATE daily_price
-                SET sale_price_cents = $3, rack_price_cents = $4,
-                    updated_at = CURRENT_TIMESTAMP
-                WHERE room_type_id = $1::uuid AND business_date = $2::date
-              `,
-              [fixture.roomId, row.business_date, row.sale_price_cents, row.rack_price_cents],
-            );
-            await query(
-              client,
-              `
-                UPDATE daily_inventory
-                SET total_inventory = $3, held_inventory = $4, sold_inventory = $5,
-                    version = $6, updated_at = CURRENT_TIMESTAMP
-                WHERE room_type_id = $1::uuid AND business_date = $2::date
-              `,
-              [
-                fixture.roomId,
-                row.business_date,
-                row.total_inventory,
-                row.held_inventory,
-                row.sold_inventory,
-                row.version,
-              ],
-            );
-          }
+      let fixtureCleaned = snapshots === undefined;
+      if (snapshots !== undefined) {
+        const working = { ...expectedState, supply: cloneSupply(expectedState.supply) };
+        await cleanupStep(async () => {
+          await transaction(async (client) => {
+            const locked = await lockFixtureRows(client, fixture.dates);
+            await assertNoForeignOccupancy(client, userIds, fixture.dates);
+            assertLockedPricesAndPolicy(locked, working);
+            await deleteOwnerData(client, userIds, locked, working.supply);
+            const relocked = await lockFixtureRows(client, fixture.dates);
+            await restoreFixture(client, relocked, working);
+          });
+          expectedState = working;
+          fixtureCleaned = true;
         });
-      });
-      await cleanupStep(() =>
-        transaction(async (client) => {
-          if (userIds.length === 0) {
-            return;
-          }
-          await query(client, "DELETE FROM user_identity WHERE user_id = ANY($1::uuid[])", [
-            userIds,
-          ]);
-          await query(client, 'DELETE FROM "user" WHERE id = ANY($1::uuid[])', [userIds]);
-        }),
-      );
+      }
+      if (fixtureCleaned) {
+        await cleanupStep(() =>
+          transaction(async (client) => {
+            if (userIds.length === 0) {
+              return;
+            }
+            await query(client, "DELETE FROM user_identity WHERE user_id = ANY($1::uuid[])", [
+              userIds,
+            ]);
+            await query(client, 'DELETE FROM "user" WHERE id = ANY($1::uuid[])', [userIds]);
+          }),
+        );
+      }
       await cleanupStep(() =>
         withTimeout(pool.end(), sqlTimeoutMilliseconds, "runtime SQL pool close timed out"),
       );

@@ -69,6 +69,28 @@ test("uses the host Prisma engine and preserves the bounded Slice 2 runtime gate
   assert.match(sliceThreeVerifier, /lock_timeout/);
   assert.match(sliceThreeVerifier, /\$1/);
   assert.match(sliceThreeVerifier, /SLICE3_RUNTIME_VALIDATION_FAILED/);
+  const lockHelper = sliceThreeVerifier.slice(
+    sliceThreeVerifier.indexOf("const lockFixtureRows"),
+    sliceThreeVerifier.indexOf("const deleteOwnerData"),
+  );
+  assert.ok(lockHelper.indexOf("FOR UPDATE OF property, room") >= 0);
+  assert.ok(
+    lockHelper.indexOf("FOR UPDATE OF price") > lockHelper.indexOf("FOR UPDATE OF property, room"),
+  );
+  assert.ok(
+    lockHelper.indexOf("FOR UPDATE OF inventory") > lockHelper.indexOf("FOR UPDATE OF price"),
+  );
+  assert.match(
+    sliceThreeVerifier,
+    /async resetInventory[\s\S]*lockFixtureRows[\s\S]*assertNoForeignOccupancy[\s\S]*deleteOwnerData/,
+  );
+  assert.match(sliceThreeVerifier, /sale_price_cents = \$[0-9][\s\S]*rack_price_cents = \$[0-9]/);
+  assert.match(
+    sliceThreeVerifier,
+    /total_inventory = \$[0-9][\s\S]*held_inventory = \$[0-9][\s\S]*sold_inventory = \$[0-9][\s\S]*version = \$[0-9]/,
+  );
+  assert.doesNotMatch(sliceThreeVerifier, /SET[\s\S]{0,200}version\s*=\s*\$[0-9]/);
+  assert.match(sliceThreeVerifier, /version = inventory\.version \+ 1/);
   assert.doesNotMatch(
     sliceThreeVerifier,
     /console\.(?:log|error)\([^)]*(?:access_token|userId|sql)/,

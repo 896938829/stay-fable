@@ -3,7 +3,9 @@ import { clearTimeout, setTimeout } from "node:timers";
 import test from "node:test";
 
 import {
+  assertExactFixtureState,
   assertBookingSummary,
+  assertOwnerInventoryDelta,
   assertPersistedBookingState,
   createBoundedBarrier,
   verifySliceThreeRuntime,
@@ -113,6 +115,59 @@ test("requires pending bookings, held holds, and one exact initial history per b
       { bookingCount: 0, historyCount: 0, holdCount: 0 },
     ),
   );
+});
+
+test("rejects price and inventory CAS drift without mutating expected state", () => {
+  const expected = {
+    sale_price_cents: 46_800,
+    rack_price_cents: 52_800,
+    total_inventory: 1,
+    held_inventory: 0,
+    sold_inventory: 0,
+    version: 7,
+  };
+  const before = globalThis.structuredClone(expected);
+
+  assert.throws(
+    () =>
+      assertExactFixtureState({ ...expected, sale_price_cents: 46_801 }, expected, [
+        "sale_price_cents",
+        "rack_price_cents",
+      ]),
+    /fixture state drift/,
+  );
+  assert.throws(
+    () =>
+      assertExactFixtureState({ ...expected, total_inventory: 2 }, expected, [
+        "total_inventory",
+        "held_inventory",
+        "sold_inventory",
+        "version",
+      ]),
+    /fixture state drift/,
+  );
+  assert.deepEqual(expected, before);
+});
+
+test("rejects an owner hold delta mismatch without changing expected inventory", () => {
+  const expected = {
+    total_inventory: 1,
+    held_inventory: 0,
+    sold_inventory: 0,
+    version: 7,
+  };
+  const before = globalThis.structuredClone(expected);
+
+  assert.throws(
+    () =>
+      assertOwnerInventoryDelta(
+        { total_inventory: 1, held_inventory: 1, sold_inventory: 0, version: 8 },
+        expected,
+        2,
+      ),
+    /owner inventory delta mismatch/,
+  );
+  assert.deepEqual(expected, before);
 });
 
 function createDatabase() {
@@ -294,6 +349,59 @@ test("runs owner cleanup when an HTTP operation fails", async () => {
   );
 
   assert.equal(database.calls.at(-1)[0], "cleanup");
+});
+
+for (const failure of [
+  "foreign booking drift",
+  "price drift",
+  "inventory drift",
+  "owner delta mismatch",
+]) {
+  test(`does not emit UAT ready when cleanup rejects ${failure}`, async () => {
+    const database = createDatabase();
+    const http = createFetch();
+    const logs = [];
+    database.cleanup = async (userIds) => {
+      database.calls.push(["cleanup", [...userIds]]);
+      throw new Error(failure);
+    };
+
+    await assert.rejects(
+      verifySliceThreeRuntime({
+        baseUrl: "http://api:3000",
+        database,
+        fetch: http.fetch,
+        log: (message) => logs.push(message),
+      }),
+      new RegExp(failure),
+    );
+
+    assert.equal(database.calls.at(-1)[0], "cleanup");
+    assert.equal(logs.includes("SLICE3_UAT_READY http://127.0.0.1:3000"), false);
+  });
+}
+
+test("rejects foreign occupancy during reset and still enters owner cleanup", async () => {
+  const database = createDatabase();
+  const http = createFetch();
+  const logs = [];
+  database.resetInventory = async () => {
+    database.calls.push(["resetInventory"]);
+    throw new Error("foreign fixture occupancy");
+  };
+
+  await assert.rejects(
+    verifySliceThreeRuntime({
+      baseUrl: "http://api:3000",
+      database,
+      fetch: http.fetch,
+      log: (message) => logs.push(message),
+    }),
+    /foreign fixture occupancy/,
+  );
+
+  assert.equal(database.calls.at(-1)[0], "cleanup");
+  assert.equal(logs.includes("SLICE3_UAT_READY http://127.0.0.1:3000"), false);
 });
 
 for (const [name, malformed] of [
