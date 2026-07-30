@@ -6,6 +6,7 @@ import {
   assertMockFailureResponse,
   deleteRegisteredOwnerData,
   pollForWorkerExpiry,
+  resetRegisteredOwnerFixture,
   runCleanupStages,
   verifySliceFourRuntime,
 } from "./verify-slice-4-runtime.mjs";
@@ -407,4 +408,121 @@ test("owner cleanup stops before FK deletion when conditional inventory compensa
     /runtime owner inventory cleanup drift/,
   );
   assert.equal(deletes, 0);
+});
+
+test("reset locks owner lifecycle before supply and rolls back foreign occupancy failure for fallback cleanup", async () => {
+  const ownerIds = ["10000000-0000-4000-8000-000000000001"];
+  const events = [];
+  const state = {
+    foreignBooking: true,
+    foreignHeld: 1,
+    heldInventory: 2,
+    ownerBooking: true,
+    ownerHoldStatus: "HELD",
+  };
+  const transaction = async (operation) => {
+    const snapshot = structuredClone(state);
+    try {
+      return await operation({});
+    } catch (error) {
+      Object.assign(state, snapshot);
+      throw error;
+    }
+  };
+  const fakeQuery = async (_client, text, values = []) => {
+    const sql = text.replace(/\s+/g, " ").trim();
+    if (/SELECT booking\.id::text AS booking_id/.test(sql)) {
+      events.push("lock:owner-booking");
+      return {
+        rowCount: state.ownerBooking ? 1 : 0,
+        rows: state.ownerBooking ? [{ booking_id: "booking-owner" }] : [],
+      };
+    }
+    if (/SELECT hold\.id::text AS hold_id/.test(sql)) {
+      events.push("lock:owner-holds");
+      return {
+        rowCount: state.ownerHoldStatus === null ? 0 : 1,
+        rows:
+          state.ownerHoldStatus === null
+            ? []
+            : [
+                {
+                  business_date: "2026-08-14",
+                  hold_id: "hold-owner",
+                  room_type_id: "30000000-0000-4000-8000-000000000001",
+                  status: state.ownerHoldStatus,
+                },
+              ],
+      };
+    }
+    if (/SELECT held_inventory, sold_inventory/.test(sql) && /FOR UPDATE/.test(sql)) {
+      events.push("lock:owner-inventory");
+      return {
+        rowCount: 1,
+        rows: [{ held_inventory: state.heldInventory, sold_inventory: 0 }],
+      };
+    }
+    if (/UPDATE daily_inventory inventory/.test(sql)) {
+      const [, , heldDelta, soldDelta, expectedHeld, expectedSold] = values;
+      assert.equal(state.heldInventory, expectedHeld);
+      assert.equal(expectedSold, 0);
+      state.heldInventory -= heldDelta;
+      assert.equal(soldDelta, 0);
+      return { rowCount: 1, rows: [{ business_date: "2026-08-14" }] };
+    }
+    if (/^DELETE FROM inventory_hold /.test(sql)) {
+      state.ownerHoldStatus = null;
+      return { rowCount: 1, rows: [] };
+    }
+    if (/^DELETE FROM booking WHERE/.test(sql)) {
+      state.ownerBooking = false;
+      return { rowCount: 1, rows: [] };
+    }
+    if (/^DELETE FROM /.test(sql)) {
+      return { rowCount: 1, rows: [] };
+    }
+    throw new Error(`unexpected fake SQL: ${sql}`);
+  };
+  const deleteOwnerData = (client) =>
+    deleteRegisteredOwnerData({ client, ownerIds, query: fakeQuery });
+  const lockSupply = async () => {
+    events.push("lock:supply");
+  };
+  const assertNoForeignOccupancy = async () => {
+    events.push("assert:foreign-occupancy");
+    throw new Error("runtime fixture has foreign occupancy");
+  };
+  const restoreSupply = async () => {
+    events.push("restore:supply");
+  };
+
+  await assert.rejects(
+    resetRegisteredOwnerFixture({
+      assertNoForeignOccupancy,
+      deleteOwnerData,
+      lockSupply,
+      restoreSupply,
+      transaction,
+    }),
+    /runtime fixture has foreign occupancy/,
+  );
+
+  assert.deepEqual(events, [
+    "lock:owner-booking",
+    "lock:owner-holds",
+    "lock:owner-inventory",
+    "lock:supply",
+    "assert:foreign-occupancy",
+  ]);
+  assert.equal(state.ownerBooking, true);
+  assert.equal(state.ownerHoldStatus, "HELD");
+  assert.equal(state.heldInventory, 2);
+  assert.equal(state.foreignBooking, true);
+
+  await transaction(deleteOwnerData);
+
+  assert.equal(state.ownerBooking, false);
+  assert.equal(state.ownerHoldStatus, null);
+  assert.equal(state.heldInventory, state.foreignHeld);
+  assert.equal(state.foreignBooking, true);
 });

@@ -201,6 +201,21 @@ export async function runCleanupStages(stages) {
   }
 }
 
+export async function resetRegisteredOwnerFixture({
+  assertNoForeignOccupancy,
+  deleteOwnerData,
+  lockSupply,
+  restoreSupply,
+  transaction,
+}) {
+  await transaction(async (client) => {
+    await deleteOwnerData(client);
+    await lockSupply(client);
+    await assertNoForeignOccupancy(client);
+    await restoreSupply(client);
+  });
+}
+
 export async function deleteRegisteredOwnerData({ client, ownerIds, query }) {
   if (ownerIds.length === 0) return;
   await query(
@@ -488,11 +503,12 @@ async function loadDatabase(databaseUrl) {
     },
 
     async reset() {
-      await transaction(async (client) => {
-        await lockSupply(client);
-        await assertNoForeignOccupancy(client);
-        await deleteOwnerData(client);
-        await restoreSupply(client);
+      await resetRegisteredOwnerFixture({
+        assertNoForeignOccupancy,
+        deleteOwnerData,
+        lockSupply,
+        restoreSupply,
+        transaction,
       });
     },
 
