@@ -44,7 +44,7 @@ async function requestJson(fetchImplementation, baseUrl, path, options, statuses
       "content-type": "application/json",
       ...options?.headers,
     },
-    signal: AbortSignal.timeout(timeoutMs),
+    signal: globalThis.AbortSignal.timeout(timeoutMs),
   });
   const body = await response.json();
   assert.ok(statuses.includes(response.status), `runtime HTTP status was ${response.status}`);
@@ -905,7 +905,6 @@ async function createProductionRuntime(options) {
 export async function verifySliceFourRuntime(options = {}) {
   const runtime = options.runtime ?? (await createProductionRuntime(options));
   const log = options.log || console.log;
-  let completed = false;
   try {
     if (typeof runtime.initialize === "function") {
       await runtime.initialize();
@@ -914,11 +913,9 @@ export async function verifySliceFourRuntime(options = {}) {
       await runtime[method]();
       log(marker);
     }
-    completed = true;
   } finally {
     await runtime.cleanup();
   }
-  assert.equal(completed, true);
   log("SLICE4_UAT_READY http://127.0.0.1:3000");
 }
 

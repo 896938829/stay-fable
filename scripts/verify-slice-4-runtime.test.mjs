@@ -444,7 +444,7 @@ test("reset locks merged inventory globally and rolls back foreign drift for fal
     workerWaitsLate: false,
   };
   const transaction = async (operation) => {
-    const snapshot = structuredClone(state);
+    const snapshot = globalThis.structuredClone(state);
     try {
       return await operation({});
     } catch (error) {
