@@ -530,7 +530,7 @@ export class QuoteRepository {
     const nightlyRows = normalizeRows(
       await this.database.$queryRaw<unknown[]>(Prisma.sql`
         SELECT
-          requested.business_date::text AS "businessDate",
+          requested.business_date::date::text AS "businessDate",
           price."sale_price_cents" AS "salePriceCents",
           price."rack_price_cents" AS "rackPriceCents",
           inventory."total_inventory" AS "totalInventory",

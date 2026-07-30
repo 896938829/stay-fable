@@ -623,6 +623,24 @@ describe("QuoteRepository", () => {
     }
   });
 
+  it("projects generated nightly dates as date-only text", async () => {
+    const database = createQuoteDatabase();
+    const repository = new QuoteRepository(database as unknown as QuoteDatabase);
+
+    await repository.findQuoteInput(ROOM_TYPE_ID, {
+      checkin: "2026-07-31",
+      checkout: "2026-08-02",
+      nights: 2,
+      guests: 2,
+    });
+
+    const nightlyQuery = database.$queryRaw.mock.calls[1]?.[0] as {
+      sql: string;
+    };
+    expect(nightlyQuery.sql).toContain('requested.business_date::date::text AS "businessDate"');
+    expect(nightlyQuery.sql).not.toContain('requested.business_date::text AS "businessDate"');
+  });
+
   it("returns NOT_AVAILABLE for absent, closed, or off-sale rooms without a nightly query", async () => {
     const database = createQuoteDatabase([[]]);
     const repository = new QuoteRepository(database as unknown as QuoteDatabase);
