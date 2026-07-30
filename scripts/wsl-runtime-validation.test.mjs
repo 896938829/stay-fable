@@ -129,20 +129,35 @@ test("redacts identifiers and credentials from Slice 4 failure diagnostics", asy
     "22222222-2222-4222-8222-222222222222",
     "slice4-secret-idempotency-key-000001",
     "opaque-access-token-secret",
+    "opaque-refresh-token-secret",
+    "plain-authorization-token-secret",
+    "plain-token-value-secret",
+    "postgres-literal-idempotency-key",
   ];
-  const diagnosticPayload = `${JSON.stringify({
-    req: {
-      url: `/api/v1/dev/payments/${secrets[0]}/simulate`,
-      headers: {
-        authorization: `Bearer ${secrets[3]}`,
-        "idempotency-key": secrets[2],
+  const diagnosticPayload = [
+    JSON.stringify({
+      req: {
+        url: `/api/v1/dev/payments/${secrets[0]}/simulate`,
+        headers: {
+          authorization: `Bearer ${secrets[3]}`,
+          "idempotency-key": secrets[2],
+        },
       },
-    },
-    user_id: secrets[1],
-    payment_id: secrets[0],
-    access_token: secrets[3],
-    message: "database constraint failed",
-  })}\n`;
+      user_id: secrets[1],
+      payment_id: secrets[0],
+      access_token: secrets[3],
+      refresh_token: secrets[4],
+      message: "database constraint failed",
+    }),
+    `DETAIL: Key (booking_id, idempotency_key)=(${secrets[0]}, ${secrets[7]}) already exists.`,
+    `Authorization: Bearer ${secrets[5]}`,
+    `access_token: ${secrets[3]}`,
+    `refresh-token: ${secrets[4]}`,
+    `token: ${secrets[6]}`,
+    `idempotency_key: ${secrets[2]}`,
+    "tokenization worker reported an ordinary error",
+    "",
+  ].join("\n");
   const failure = await runSliceFourRuntimeHelper({
     diagnosticPayload,
     execExit: 137,
@@ -153,6 +168,8 @@ test("redacts identifiers and credentials from Slice 4 failure diagnostics", asy
     assert.doesNotMatch(failure.stderr, new RegExp(secret));
   }
   assert.match(failure.stderr, /database constraint failed/);
+  assert.match(failure.stderr, /tokenization worker reported an ordinary error/);
+  assert.match(failure.stderr, /Key \(booking_id, idempotency_key\)=/);
   assert.match(failure.stderr, /\[REDACTED_(?:UUID|SECRET)\]/);
 });
 

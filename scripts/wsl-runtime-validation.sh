@@ -250,8 +250,9 @@ run_slice_three_runtime_validation "$api_container" "$worker_container" "$databa
 redact_slice_four_diagnostics() {
   sed -E \
     -e 's/[[:xdigit:]]{8}-[[:xdigit:]]{4}-[1-5][[:xdigit:]]{3}-[89abAB][[:xdigit:]]{3}-[[:xdigit:]]{12}/[REDACTED_UUID]/g' \
-    -e 's/(\"(authorization|access_token|refresh_token|idempotency-key|idempotency_key|token)\"[[:space:]]*:[[:space:]]*\")[^\"]*/\1[REDACTED_SECRET]/Ig' \
-    -e 's/((authorization|access_token|refresh_token|idempotency-key|idempotency_key|token)[=:])[^,[:space:]]+/\1[REDACTED_SECRET]/Ig'
+    -e 's/(\"(authorization|access[_-]token|refresh[_-]token|idempotency[_-]key|token)\"[[:space:]]*:[[:space:]]*\")[^\"]*/\1[REDACTED_SECRET]/Ig' \
+    -e 's/(Key \(booking_id, idempotency_key\)=\(\[REDACTED_UUID\],[[:space:]]*)[^)]+/\1[REDACTED_SECRET]/Ig' \
+    -e 's/((authorization|access[_-]token|refresh[_-]token|idempotency[_-]key|token)[=:][[:space:]]*)(Bearer[[:space:]]+)?[^,[:space:]]+/\1[REDACTED_SECRET]/Ig'
 }
 
 run_slice_four_runtime_validation() {

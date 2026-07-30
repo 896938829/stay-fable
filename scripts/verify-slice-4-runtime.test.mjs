@@ -5,6 +5,7 @@ import test from "node:test";
 import {
   assertMockFailureResponse,
   pollForWorkerExpiry,
+  runCleanupStages,
   verifySliceFourRuntime,
 } from "./verify-slice-4-runtime.mjs";
 
@@ -140,7 +141,7 @@ test("worker expiry polling passes the shrinking remaining deadline to each read
   const state = await pollForWorkerExpiry({
     pollIntervalMs: 5,
     timeoutMs: 30,
-    now: () => now,
+    monotonicNow: () => now,
     sleep: async (milliseconds) => {
       sleeps.push(milliseconds);
       now += milliseconds;
@@ -169,7 +170,7 @@ test("worker expiry polling fails after one over-budget read without continuing"
   await assert.rejects(
     pollForWorkerExpiry({
       timeoutMs: 30,
-      now: () => now,
+      monotonicNow: () => now,
       sleep: async () => {
         sleeps += 1;
       },
@@ -195,4 +196,76 @@ test("production expiry reads use the remaining pg query timeout without a detac
     /readState: \(remainingTimeoutMs\) => readLifecycle\(bookingId, remainingTimeoutMs\)/,
   );
   assert.doesNotMatch(source, /Promise\.race/);
+});
+
+test("cleanup continues through owner and identity deletion after fixture isolation fails", async () => {
+  const events = [];
+  const foreignOccupancy = new Error("runtime fixture has foreign occupancy");
+
+  await assert.rejects(
+    runCleanupStages([
+      async () => {
+        events.push("fixture");
+        throw foreignOccupancy;
+      },
+      async () => events.push("owner-data"),
+      async () => events.push("identity-user"),
+      async () => events.push("pool"),
+    ]),
+    (error) =>
+      error instanceof AggregateError &&
+      error.errors.length === 1 &&
+      error.errors[0] === foreignOccupancy,
+  );
+
+  assert.deepEqual(events, ["fixture", "owner-data", "identity-user", "pool"]);
+});
+
+test("worker deadline uses an injected monotonic clock despite wall-clock rollback", async () => {
+  const originalDateNow = Date.now;
+  let monotonic = 0;
+  let wallClock = 10_000;
+  const budgets = [];
+  Date.now = () => wallClock;
+  try {
+    const state = await pollForWorkerExpiry({
+      monotonicNow: () => monotonic,
+      pollIntervalMs: 5,
+      timeoutMs: 30,
+      sleep: async (milliseconds) => {
+        monotonic += milliseconds;
+        wallClock -= 5_000;
+      },
+      readState: async (remainingTimeoutMs) => {
+        budgets.push(remainingTimeoutMs);
+        if (budgets.length === 1) {
+          monotonic += 20;
+          wallClock -= 5_000;
+          return { status: "PENDING_PAYMENT" };
+        }
+        return { status: "CLOSED" };
+      },
+    });
+    assert.equal(state.status, "CLOSED");
+  } finally {
+    Date.now = originalDateNow;
+  }
+
+  assert.deepEqual(budgets, [30, 5]);
+});
+
+test("failed payment assertion checks the exact nightly held and sold inventory", async () => {
+  const source = await readFile(new URL("./verify-slice-4-runtime.mjs", import.meta.url), "utf8");
+  const assertion = source.slice(
+    source.indexOf("async assertFailedPending"),
+    source.indexOf("async assertConfirmed"),
+  );
+  assert.match(assertion, /async assertFailedPending\(bookingId, date\)/);
+  assert.match(assertion, /SELECT held_inventory, sold_inventory FROM daily_inventory/);
+  assert.match(assertion, /held_inventory, 1/);
+  assert.match(assertion, /sold_inventory, 0/);
+  assert.match(
+    source,
+    /await database\.assertFailedPending\(bookingId, fixture\.dates\[2\]\);\s+},/,
+  );
 });

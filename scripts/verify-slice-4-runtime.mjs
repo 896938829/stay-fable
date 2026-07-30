@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
+import { performance } from "node:perf_hooks";
 import { setTimeout as delay } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
 
@@ -156,33 +157,47 @@ export function assertMockFailureResponse(result) {
 }
 
 export async function pollForWorkerExpiry(options) {
-  const now = options.now ?? Date.now;
+  const monotonicNow = options.monotonicNow ?? (() => performance.now());
   const sleep = options.sleep ?? delay;
   const pollIntervalMs = options.pollIntervalMs ?? 250;
   assert.ok(Number.isInteger(options.timeoutMs) && options.timeoutMs > 0);
   assert.ok(Number.isInteger(pollIntervalMs) && pollIntervalMs > 0);
-  const deadline = now() + options.timeoutMs;
+  const deadline = monotonicNow() + options.timeoutMs;
 
   while (true) {
-    const remainingTimeoutMs = deadline - now();
+    const remainingTimeoutMs = deadline - monotonicNow();
     if (remainingTimeoutMs <= 0) {
       throw new Error("runtime worker expiry timed out");
     }
     const state = await options.readState(remainingTimeoutMs);
-    if (now() > deadline) {
+    if (monotonicNow() > deadline) {
       throw new Error("runtime worker expiry timed out");
     }
     if (state.status === "CLOSED") {
       return state;
     }
-    const remainingSleepMs = deadline - now();
+    const remainingSleepMs = deadline - monotonicNow();
     if (remainingSleepMs <= 0) {
       throw new Error("runtime worker expiry timed out");
     }
     await sleep(Math.min(pollIntervalMs, remainingSleepMs));
-    if (now() > deadline) {
+    if (monotonicNow() > deadline) {
       throw new Error("runtime worker expiry timed out");
     }
+  }
+}
+
+export async function runCleanupStages(stages) {
+  const errors = [];
+  for (const stage of stages) {
+    try {
+      await stage();
+    } catch (error) {
+      errors.push(error);
+    }
+  }
+  if (errors.length > 0) {
+    throw new AggregateError(errors, "runtime cleanup failed");
   }
 }
 
@@ -267,6 +282,37 @@ async function loadDatabase(databaseUrl) {
 
   const deleteOwnerData = async (client) => {
     if (ownerIds.length === 0) return;
+    const inventoryDeltas = await query(
+      client,
+      `
+        SELECT hold.room_type_id::text, hold.business_date::text,
+               count(*) FILTER (WHERE hold.status = 'HELD')::integer AS held_count,
+               count(*) FILTER (WHERE hold.status = 'CONSUMED')::integer AS sold_count
+        FROM inventory_hold hold
+        JOIN booking ON booking.id = hold.booking_id
+        WHERE booking.user_id = ANY($1::uuid[])
+        GROUP BY hold.room_type_id, hold.business_date
+        ORDER BY hold.room_type_id, hold.business_date
+      `,
+      [ownerIds],
+    );
+    for (const delta of inventoryDeltas.rows) {
+      const adjusted = await query(
+        client,
+        `
+          UPDATE daily_inventory inventory
+          SET held_inventory = inventory.held_inventory - $3,
+              sold_inventory = inventory.sold_inventory - $4,
+              version = inventory.version + 1,
+              updated_at = CURRENT_TIMESTAMP
+          WHERE room_type_id = $1::uuid AND business_date = $2::date
+            AND held_inventory >= $3 AND sold_inventory >= $4
+          RETURNING business_date
+        `,
+        [delta.room_type_id, delta.business_date, delta.held_count, delta.sold_count],
+      );
+      assert.equal(adjusted.rowCount, 1, "runtime owner inventory cleanup drift");
+    }
     await query(
       client,
       `DELETE FROM payment USING booking
@@ -414,12 +460,22 @@ async function loadDatabase(databaseUrl) {
       });
     },
 
-    async assertFailedPending(bookingId) {
+    async assertFailedPending(bookingId, date) {
       const state = await readLifecycle(bookingId);
       assert.equal(state.status, "PENDING_PAYMENT");
       assert.equal(state.payment_count, 1);
       assert.equal(state.failed_count, 1);
       assert.equal(state.held_count, 1);
+      const inventory = await transaction((client) =>
+        query(
+          client,
+          `SELECT held_inventory, sold_inventory FROM daily_inventory
+           WHERE room_type_id = $1::uuid AND business_date = $2::date`,
+          [fixture.roomTypeId, date],
+        ),
+      );
+      assert.equal(inventory.rows[0]?.held_inventory, 1);
+      assert.equal(inventory.rows[0]?.sold_inventory, 0);
     },
 
     async assertConfirmed(bookingId, date) {
@@ -519,26 +575,18 @@ async function loadDatabase(databaseUrl) {
     async cleanup() {
       if (closed) return;
       closed = true;
-      const errors = [];
-      try {
-        await this.reset();
-        await transaction(async (client) => {
-          await query(client, "DELETE FROM user_identity WHERE user_id = ANY($1::uuid[])", [
-            ownerIds,
-          ]);
-          await query(client, 'DELETE FROM "user" WHERE id = ANY($1::uuid[])', [ownerIds]);
-        });
-      } catch (error) {
-        errors.push(error);
-      }
-      try {
-        await pool.end();
-      } catch (error) {
-        errors.push(error);
-      }
-      if (errors.length > 0) {
-        throw new AggregateError(errors, "runtime cleanup failed");
-      }
+      await runCleanupStages([
+        () => this.reset(),
+        () => transaction((client) => deleteOwnerData(client)),
+        () =>
+          transaction(async (client) => {
+            await query(client, "DELETE FROM user_identity WHERE user_id = ANY($1::uuid[])", [
+              ownerIds,
+            ]);
+            await query(client, 'DELETE FROM "user" WHERE id = ANY($1::uuid[])', [ownerIds]);
+          }),
+        () => pool.end(),
+      ]);
     },
   };
 }
@@ -643,7 +691,7 @@ async function createProductionRuntime(options) {
         );
         assertMockFailureResponse(result);
       }
-      await database.assertFailedPending(bookingId);
+      await database.assertFailedPending(bookingId, fixture.dates[2]);
     },
 
     async verifyMockSuccessConfirmed() {
