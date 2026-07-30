@@ -320,6 +320,7 @@ export class BookingLifecycleRepository {
       releasedRows.map((row) => readUuid(readExactRecord(row, ["id"]).id)),
     );
     if (
+      releasedRows.length !== holdIds.size ||
       releasedIds.size !== holdIds.size ||
       [...holdIds].some((holdId) => !releasedIds.has(holdId))
     ) {

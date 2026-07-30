@@ -237,6 +237,53 @@ describe("BookingLifecycleRepository.cancelOwnedBooking", () => {
     expect(database.rollbackCount).toBe(1);
   });
 
+  it("rolls back duplicate released hold rows before booking and history writes", async () => {
+    const duplicateReleaseResults = [
+      [bookingRow()],
+      holds,
+      inventories,
+      [inventories[0]],
+      [inventories[1]],
+      [{ id: HOLD_IDS[0] }, { id: HOLD_IDS[1] }, { id: HOLD_IDS[0] }],
+    ];
+    const { database, transaction } = createLifecycleDatabase(duplicateReleaseResults);
+    const repository = new BookingLifecycleRepository(database);
+
+    await expect(
+      repository.cancelOwnedBooking({ userId: USER_ID, bookingId: BOOKING_ID, now: NOW }),
+    ).rejects.toThrow();
+
+    expect(database.commitCount).toBe(0);
+    expect(database.rollbackCount).toBe(1);
+    const queries = vi.mocked(transaction.$queryRaw).mock.calls.map(([query]) => queryText(query));
+    expect(queries).toHaveLength(6);
+    expect(queries).not.toEqual(
+      expect.arrayContaining([
+        expect.stringContaining('UPDATE "booking"'),
+        expect.stringContaining('INSERT INTO "booking_status_history"'),
+      ]),
+    );
+
+    const serviceDatabase = createLifecycleDatabase(duplicateReleaseResults);
+    const query = { getOwned: vi.fn() };
+    const service = new BookingLifecycleService(
+      new BookingLifecycleRepository(serviceDatabase.database),
+      {
+        checkBookingCancellation: vi.fn(() => Promise.resolve()),
+      } as unknown as WriteRateLimitService,
+      { now: () => new Date(NOW) },
+      query as unknown as BookingQueryService,
+    );
+
+    await expect(service.cancel(USER_ID, BOOKING_ID, {})).rejects.toMatchObject({
+      status: 503,
+      code: "BOOKING_LIFECYCLE_UNAVAILABLE",
+    });
+    expect(serviceDatabase.database.rollbackCount).toBe(1);
+    expect(serviceDatabase.transaction.$queryRaw).toHaveBeenCalledTimes(6);
+    expect(query.getOwned).not.toHaveBeenCalled();
+  });
+
   it.each([
     ["getter row", [Object.defineProperty(bookingRow(), "status", { get: () => "CANCELLED" })]],
     ["proxy row", [new Proxy(bookingRow(), { ownKeys: () => ["secret"] })]],
