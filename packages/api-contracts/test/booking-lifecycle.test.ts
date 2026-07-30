@@ -239,4 +239,69 @@ describe("booking lifecycle contracts", () => {
       expect(simulatePaymentRequestSchema.safeParse(hostile).success).toBe(false);
     }
   });
+
+  it("rejects inherited accessors and non-ordinary prototypes without invoking inherited code", () => {
+    let inheritedGetterCalls = 0;
+    const inheritedPrototype = Object.create(Object.prototype) as Record<string, unknown>;
+    Object.defineProperty(inheritedPrototype, "inherited_secret", {
+      get() {
+        inheritedGetterCalls += 1;
+        throw new Error("inherited-getter-secret");
+      },
+    });
+    const inheritedDetail = Object.assign(Object.create(inheritedPrototype) as object, detail);
+
+    expect(() => bookingDetailSchema.safeParse(inheritedDetail)).not.toThrow();
+    expect(bookingDetailSchema.safeParse(inheritedDetail).success).toBe(false);
+    expect(inheritedGetterCalls).toBe(0);
+    expect(cancelBookingRequestSchema.safeParse(new Date(0)).success).toBe(false);
+    expect(cancelBookingRequestSchema.safeParse(new Map()).success).toBe(false);
+    const inheritedArray = [...detail.status_history];
+    Object.setPrototypeOf(inheritedArray, Object.create(Array.prototype) as object);
+    expect(
+      bookingDetailSchema.safeParse({ ...detail, status_history: inheritedArray }).success,
+    ).toBe(false);
+
+    const nullPrototypeDetail = Object.assign(Object.create(null) as object, detail);
+    expect(bookingDetailSchema.safeParse(nullPrototypeDetail).success).toBe(true);
+    expect(cancelBookingRequestSchema.safeParse(Object.create(null)).success).toBe(true);
+  });
+
+  it("fails closed when observable proxy reflection changes without throwing or leaking details", () => {
+    const source = { outcome: "SUCCEED" };
+    let prototypeReads = 0;
+    const changingPrototype = new Proxy(source, {
+      getPrototypeOf() {
+        prototypeReads += 1;
+        return prototypeReads % 2 === 1 ? Object.prototype : null;
+      },
+    });
+    let ownKeyReads = 0;
+    const changingOwnKeys = new Proxy(source, {
+      ownKeys(target) {
+        ownKeyReads += 1;
+        return ownKeyReads === 1 ? Reflect.ownKeys(target) : [];
+      },
+    });
+    let descriptorReads = 0;
+    const changingDescriptor = new Proxy(source, {
+      getOwnPropertyDescriptor(target, property) {
+        const descriptor = Reflect.getOwnPropertyDescriptor(target, property);
+        descriptorReads += 1;
+        if (property === "outcome" && descriptor !== undefined && descriptorReads > 1) {
+          return { ...descriptor, value: "FAIL" };
+        }
+        return descriptor;
+      },
+    });
+
+    for (const hostile of [changingPrototype, changingOwnKeys, changingDescriptor]) {
+      let result: ReturnType<typeof simulatePaymentRequestSchema.safeParse> | undefined;
+      expect(() => {
+        result = simulatePaymentRequestSchema.safeParse(hostile);
+      }).not.toThrow();
+      expect(result?.success).toBe(false);
+      expect(JSON.stringify(result)).not.toContain("secret");
+    }
+  });
 });

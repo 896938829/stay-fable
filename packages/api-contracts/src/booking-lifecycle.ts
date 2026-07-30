@@ -8,6 +8,41 @@ const maximumSnapshotNodes = 1_000;
 const maximumSnapshotKeysPerObject = 100;
 const maximumSnapshotArrayLength = 100;
 
+const samePropertyKeys = (left: readonly PropertyKey[], right: readonly PropertyKey[]) =>
+  left.length === right.length && left.every((key, index) => key === right[index]);
+
+const samePropertyDescriptor = (left: PropertyDescriptor, right: PropertyDescriptor): boolean => {
+  if (!Object.hasOwn(left, "value") || !Object.hasOwn(right, "value")) {
+    return false;
+  }
+  return (
+    left.configurable === right.configurable &&
+    left.enumerable === right.enumerable &&
+    left.writable === right.writable &&
+    Object.is(left.value, right.value)
+  );
+};
+
+const sameDescriptorSnapshots = (
+  left: object,
+  right: object,
+  keys: readonly PropertyKey[],
+): boolean =>
+  keys.every((key) => {
+    const leftEntry = Reflect.getOwnPropertyDescriptor(left, key);
+    const rightEntry = Reflect.getOwnPropertyDescriptor(right, key);
+    return (
+      leftEntry !== undefined &&
+      rightEntry !== undefined &&
+      Object.hasOwn(leftEntry, "value") &&
+      Object.hasOwn(rightEntry, "value") &&
+      samePropertyDescriptor(
+        leftEntry.value as PropertyDescriptor,
+        rightEntry.value as PropertyDescriptor,
+      )
+    );
+  });
+
 const snapshotJsonLikeInput = (input: unknown): unknown => {
   const seen = new WeakSet<object>();
   let nodeCount = 0;
@@ -30,7 +65,35 @@ const snapshotJsonLikeInput = (input: unknown): unknown => {
       return invalidJsonLikeInput;
     }
 
+    const isArray = Array.isArray(value);
+    const expectedPrototype = isArray ? Array.prototype : Object.prototype;
+    const firstPrototype = Reflect.getPrototypeOf(value);
+    const secondPrototype = Reflect.getPrototypeOf(value);
+    if (
+      firstPrototype !== secondPrototype ||
+      (isArray
+        ? firstPrototype !== expectedPrototype
+        : firstPrototype !== expectedPrototype && firstPrototype !== null)
+    ) {
+      return invalidJsonLikeInput;
+    }
+
+    const firstKeys = Reflect.ownKeys(value);
     const descriptors = Object.getOwnPropertyDescriptors(value);
+    const secondKeys = Reflect.ownKeys(value);
+    const repeatedDescriptors = Object.getOwnPropertyDescriptors(value);
+    const thirdKeys = Reflect.ownKeys(value);
+    const descriptorKeys = Reflect.ownKeys(descriptors);
+    if (
+      !samePropertyKeys(firstKeys, secondKeys) ||
+      !samePropertyKeys(firstKeys, thirdKeys) ||
+      !samePropertyKeys(firstKeys, descriptorKeys) ||
+      !samePropertyKeys(descriptorKeys, Reflect.ownKeys(repeatedDescriptors)) ||
+      !sameDescriptorSnapshots(descriptors, repeatedDescriptors, descriptorKeys)
+    ) {
+      return invalidJsonLikeInput;
+    }
+
     const symbolKeys = Object.getOwnPropertySymbols(descriptors);
     const keys = Object.getOwnPropertyNames(descriptors);
     if (
@@ -41,7 +104,7 @@ const snapshotJsonLikeInput = (input: unknown): unknown => {
       return invalidJsonLikeInput;
     }
 
-    if (Array.isArray(value)) {
+    if (isArray) {
       const lengthDescriptor = descriptors.length;
       if (
         lengthDescriptor === undefined ||
