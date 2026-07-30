@@ -122,6 +122,11 @@ candidate commit/tree unchanged
 
 只有 `READY` 能进入写操作。任何 blocker 都必须在交互前停止，或在首个物理失败后立即停止。
 
+预检只调用项目自有的七个只读 adapter；adapter API 使用 exact allowlist，不接受 tap、write、
+exec、文件写入等能力。每次读取都接收 `AbortSignal` 并必须协作取消，验证后的候选与日期窗口
+立即复制为冻结的 allowlist snapshot，禁止跨 `await` 重新读取可变对象。预检证据只声明
+`READ_ONLY_PREFLIGHT` 且尚未启动交互，不把常量 `0` 冒充物理 tap/write 计量。
+
 ## 7. 纯物理 Automator 主流程
 
 Automator 脚本只能使用正式页面的物理导航和元素 tap/input：
