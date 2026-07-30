@@ -243,6 +243,7 @@ Content-Type: application/json
 {
   "data": {
     "booking_id": "40000000-0000-4000-8000-000000000001",
+    "quote_id": "30000000-0000-4000-8000-000000000001",
     "booking_number": "SF20260730A1B2C3D4E5F6",
     "status": "PENDING_PAYMENT",
     "property_name": "西湖云栖酒店",
@@ -606,6 +607,14 @@ wx/pages/booking-confirm/
 - 数组长度最多 30 晚；
 - 不保留内部库存、版本、用户 ID 或状态历史；
 - 响应 ID 必须与请求的 `room_type_id` / `quote_id` 绑定。
+
+订单摘要公开返回 `quote_id`，用于把响应严格绑定到本次订单请求。`createBooking` 的
+`options.expectedQuote` 还必须携带从已校验报价快照取得的 `property_id` 和
+`room_type_id`；该上下文不进入请求体，只用于验证 `QUOTE_CHANGED` 的替代报价仍属于原旅店和
+房型。缺失、畸形或不匹配时客户端必须 fail closed。
+
+报价和订单请求失败后先检查页面 generation/cancel 状态，再处理异常。依赖异常只允许通过自有
+数据描述符读取白名单 code，并以固定安全消息重建；不得读取 accessor、修改或原样重抛任意异常。
 
 页面异步规则沿用 Slice 2：
 

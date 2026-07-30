@@ -192,6 +192,7 @@ describe("booking contracts", () => {
   it("rejects user, inventory, and history fields from booking summaries", () => {
     const booking = {
       booking_id: "40000000-0000-4000-8000-000000000001",
+      quote_id: quote.quote_id,
       booking_number: "SF20260730A1B2C3D4E5F6",
       status: "PENDING_PAYMENT",
       property_name: quote.property.name,
@@ -1303,6 +1304,9 @@ createBooking(input, idempotencyKey, options);
 ```
 
 调用现有 `request` 服务；显式关闭网络重试，禁止记录 header/body。输入在任何 await 前做安全快照。
+`createBooking` 的请求体仍只能包含 `quote_id`；`options.expectedQuote` 以不入网的严格快照携带
+原报价 `property_id` 和 `room_type_id`，用于绑定 `QUOTE_CHANGED` 替代报价。失败路径先检查取消，
+再以描述符快照和白名单固定消息重建依赖错误，不修改或原样重抛任意异常。
 
 - [ ] **Step 5: 运行微信服务测试**
 
