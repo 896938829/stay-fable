@@ -4,6 +4,16 @@ import { describe, expect, it, vi } from "vitest";
 import { createDatabasePool } from "../src/database.js";
 import { createSystemWorker, createWorkerLoggerOptions } from "../src/worker.js";
 
+const createDeferred = <T>() => {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((promiseResolve, promiseReject) => {
+    resolve = promiseResolve;
+    reject = promiseReject;
+  });
+  return { promise, reject, resolve };
+};
+
 describe("createSystemWorker", () => {
   it("creates a namespaced system worker with persistent Redis settings", async () => {
     const connection = {
@@ -45,7 +55,7 @@ describe("createSystemWorker", () => {
       return logger;
     });
 
-    const resources = createSystemWorker(
+    const resources = await createSystemWorker(
       {
         NODE_ENV: "test",
         REDIS_URL: "redis://127.0.0.1:6379",
@@ -108,7 +118,7 @@ describe("createSystemWorker", () => {
     expect(typeof (serializedError as { stack?: unknown }).stack).toBe("string");
   });
 
-  it("uses the configured log level", () => {
+  it("uses the configured log level", async () => {
     const createLogger = vi.fn((options: LoggerOptions) => {
       void options;
       return { error: vi.fn(), info: vi.fn() };
@@ -118,7 +128,7 @@ describe("createSystemWorker", () => {
       on: vi.fn(() => worker),
     };
 
-    createSystemWorker(
+    await createSystemWorker(
       {
         LOG_LEVEL: "debug",
         NODE_ENV: "development",
@@ -146,7 +156,7 @@ describe("createSystemWorker", () => {
     expect(createLogger).toHaveBeenCalledWith(expect.objectContaining({ level: "debug" }));
   });
 
-  it("does not invoke a hostile LOG_LEVEL accessor", () => {
+  it("does not invoke a hostile LOG_LEVEL accessor", async () => {
     const logLevelGetter = vi.fn(() => {
       throw new Error("log-level-secret");
     });
@@ -164,7 +174,7 @@ describe("createSystemWorker", () => {
       on: vi.fn(() => worker),
     };
 
-    createSystemWorker(environment, {
+    await createSystemWorker(environment, {
       createConnection: vi.fn(() => ({
         status: "ready",
         quit: vi.fn(() => Promise.resolve("OK")),
@@ -238,7 +248,7 @@ describe("createSystemWorker", () => {
         stop: vi.fn(() => Promise.resolve()),
       };
 
-      expect(() =>
+      await expect(
         createSystemWorker(
           {
             NODE_ENV: "test",
@@ -268,11 +278,9 @@ describe("createSystemWorker", () => {
             }),
           },
         ),
-      ).toThrow("Job worker resource initialization failed");
+      ).rejects.toThrow("Job worker resource initialization failed");
 
-      await vi.waitFor(() => {
-        expect(pool.end).toHaveBeenCalledOnce();
-      });
+      expect(pool.end).toHaveBeenCalledOnce();
       expect(connection.quit).toHaveBeenCalledTimes(failurePoint === "connection" ? 0 : 1);
       expect(worker.close).toHaveBeenCalledTimes(
         failurePoint === "sweeper" || failurePoint === "start" || failurePoint === "listeners"
@@ -283,4 +291,93 @@ describe("createSystemWorker", () => {
       expect(calls.join(",")).not.toContain("secret");
     },
   );
+
+  it("awaits failed initialization cleanup in strict order and continues after cleanup errors", async () => {
+    const stopGate = createDeferred<void>();
+    const closeGate = createDeferred<void>();
+    const quitGate = createDeferred<string>();
+    const endGate = createDeferred<void>();
+    const calls: string[] = [];
+    const logger = { error: vi.fn(), info: vi.fn() };
+    const pool = {
+      connect: vi.fn(),
+      end: vi.fn(() => {
+        calls.push("pool");
+        return endGate.promise;
+      }),
+    };
+    const connection = {
+      status: "ready",
+      quit: vi.fn(() => {
+        calls.push("connection");
+        return quitGate.promise;
+      }),
+    };
+    const worker = {
+      close: vi.fn(() => {
+        calls.push("worker");
+        return closeGate.promise;
+      }),
+      on: vi.fn(() => worker),
+    };
+    const sweeper = {
+      start: vi.fn(() => {
+        throw new Error("initialization-secret");
+      }),
+      stop: vi.fn(() => {
+        calls.push("sweeper");
+        return stopGate.promise;
+      }),
+    };
+
+    const initialization = Promise.resolve().then(() =>
+      createSystemWorker(
+        {
+          NODE_ENV: "test",
+          REDIS_URL: "redis://127.0.0.1:6379",
+          DATABASE_URL: "postgresql://dbuser:database-secret@127.0.0.1/stay_fable",
+        },
+        {
+          logger,
+          createPool: vi.fn(() => pool),
+          createConnection: vi.fn(() => connection),
+          createWorker: vi.fn(() => worker),
+          createSweeper: vi.fn(() => sweeper),
+        },
+      ),
+    );
+    const outcome = initialization.then(
+      () => undefined,
+      (error: unknown) => error,
+    );
+
+    await vi.waitFor(() => {
+      expect(sweeper.stop).toHaveBeenCalledOnce();
+    });
+    expect(worker.close).not.toHaveBeenCalled();
+
+    stopGate.reject(new Error("cleanup-secret"));
+    await vi.waitFor(() => {
+      expect(worker.close).toHaveBeenCalledOnce();
+    });
+    expect(connection.quit).not.toHaveBeenCalled();
+
+    closeGate.resolve(undefined);
+    await vi.waitFor(() => {
+      expect(connection.quit).toHaveBeenCalledOnce();
+    });
+    expect(pool.end).not.toHaveBeenCalled();
+
+    quitGate.resolve("OK");
+    await vi.waitFor(() => {
+      expect(pool.end).toHaveBeenCalledOnce();
+    });
+    endGate.resolve(undefined);
+
+    const error = await outcome;
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toBe("Job worker resource initialization failed");
+    expect(calls).toEqual(["sweeper", "worker", "connection", "pool"]);
+    expect(JSON.stringify(logger.error.mock.calls)).not.toContain("secret");
+  });
 });

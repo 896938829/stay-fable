@@ -99,45 +99,46 @@ export interface SystemWorkerResources {
   worker: QueueWorkerResource;
 }
 
-const cleanupAfterInitializationFailure = (
+const cleanupAfterInitializationFailure = async (
   resources: Partial<SystemWorkerResources>,
   logger: WorkerLogger,
-): void => {
-  const cleanup = (operation: (() => Promise<unknown>) | undefined, message: string): void => {
+): Promise<void> => {
+  const cleanup = async (
+    operation: (() => Promise<unknown>) | undefined,
+    message: string,
+  ): Promise<void> => {
     if (operation === undefined) {
       return;
     }
     try {
-      void operation().catch(() => {
-        logger.error({}, message);
-      });
+      await operation();
     } catch {
       logger.error({}, message);
     }
   };
 
-  cleanup(
+  await cleanup(
     resources.sweeper === undefined ? undefined : () => resources.sweeper!.stop(),
     "sweeper cleanup failed",
   );
-  cleanup(
+  await cleanup(
     resources.worker === undefined ? undefined : () => resources.worker!.close(),
     "worker cleanup failed",
   );
-  cleanup(
+  await cleanup(
     resources.connection === undefined ? undefined : () => resources.connection!.quit(),
     "redis cleanup failed",
   );
-  cleanup(
+  await cleanup(
     resources.pool === undefined ? undefined : () => resources.pool!.end(),
     "database cleanup failed",
   );
 };
 
-export const createSystemWorker = (
+export const createSystemWorker = async (
   environment: Record<string, unknown> = process.env,
   overrides: WorkerOverrides = {},
-): SystemWorkerResources => {
+): Promise<SystemWorkerResources> => {
   const config = parseWorkerConfig(environment);
   const logger =
     overrides.logger ??
@@ -180,7 +181,7 @@ export const createSystemWorker = (
       logger.error({ error }, "system worker error");
     });
   } catch {
-    cleanupAfterInitializationFailure(resources, logger);
+    await cleanupAfterInitializationFailure(resources, logger);
     throw new Error("Job worker resource initialization failed");
   }
 
