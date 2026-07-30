@@ -247,6 +247,13 @@ run_slice_three_runtime_validation() {
 
 run_slice_three_runtime_validation "$api_container" "$worker_container" "$database_url"
 
+redact_slice_four_diagnostics() {
+  sed -E \
+    -e 's/[[:xdigit:]]{8}-[[:xdigit:]]{4}-[1-5][[:xdigit:]]{3}-[89abAB][[:xdigit:]]{3}-[[:xdigit:]]{12}/[REDACTED_UUID]/g' \
+    -e 's/(\"(authorization|access_token|refresh_token|idempotency-key|idempotency_key|token)\"[[:space:]]*:[[:space:]]*\")[^\"]*/\1[REDACTED_SECRET]/Ig' \
+    -e 's/((authorization|access_token|refresh_token|idempotency-key|idempotency_key|token)[=:])[^,[:space:]]+/\1[REDACTED_SECRET]/Ig'
+}
+
 run_slice_four_runtime_validation() {
   local slice4_api_container="$1"
   local slice4_worker_container="$2"
@@ -266,9 +273,12 @@ run_slice_four_runtime_validation() {
   echo 'SLICE4_RUNTIME_DIAGNOSTICS' >&2
   docker inspect \
     --format 'name={{.Name}} status={{.State.Status}} running={{.State.Running}} exit={{.State.ExitCode}} oom={{.State.OOMKilled}} restarts={{.RestartCount}}' \
-    "$slice4_api_container" "$slice4_worker_container" >&2 || true
-  docker logs --tail 200 "$slice4_api_container" >&2 || true
-  docker logs --tail 200 "$slice4_worker_container" >&2 || true
+    "$slice4_api_container" "$slice4_worker_container" 2>&1 |
+    redact_slice_four_diagnostics >&2 || true
+  docker logs --tail 200 "$slice4_api_container" 2>&1 |
+    redact_slice_four_diagnostics >&2 || true
+  docker logs --tail 200 "$slice4_worker_container" 2>&1 |
+    redact_slice_four_diagnostics >&2 || true
   return "$runtime_exit"
 }
 

@@ -43,13 +43,19 @@ run_slice_three_runtime_validation api-container worker-container database-url
 
 const sliceFourRuntimeHelper = async () => {
   const bash = (await readFile(bashPath, "utf8")).replaceAll("\r\n", "\n");
+  const redactor = bash.match(/redact_slice_four_diagnostics\(\) \{[\s\S]*?\n\}/)?.[0] ?? "";
   const helper = bash.match(/run_slice_four_runtime_validation\(\) \{[\s\S]*?\n\}/)?.[0];
   assert.ok(helper, "Slice 4 runtime helper must be defined");
-  return helper;
+  return `${redactor}\n${helper}`;
 };
 
-const runSliceFourRuntimeHelper = async ({ diagnosticExit = 0, execExit }) => {
+const runSliceFourRuntimeHelper = async ({
+  diagnosticExit = 0,
+  diagnosticPayload = "",
+  execExit,
+}) => {
   const helper = await sliceFourRuntimeHelper();
+  const encodedPayload = Buffer.from(diagnosticPayload).toString("base64");
   const script = `
 set -Eeuo pipefail
 ${helper}
@@ -57,7 +63,11 @@ docker() {
   printf 'DOCKER_CALL:%s\\n' "$*" >&2
   case "$1" in
     exec) return ${execExit} ;;
-    inspect|logs) return ${diagnosticExit} ;;
+    inspect) return ${diagnosticExit} ;;
+    logs)
+      printf '%s' '${encodedPayload}' | base64 --decode
+      return ${diagnosticExit}
+      ;;
     *) return 0 ;;
   esac
 }
@@ -111,6 +121,39 @@ test("prints Slice 4 diagnostics only on failure and preserves the verifier exit
   assert.match(failure.stderr, /DOCKER_CALL:inspect/);
   assert.match(failure.stderr, /DOCKER_CALL:logs --tail 200 api-container/);
   assert.match(failure.stderr, /DOCKER_CALL:logs --tail 200 worker-container/);
+});
+
+test("redacts identifiers and credentials from Slice 4 failure diagnostics", async () => {
+  const secrets = [
+    "11111111-1111-4111-8111-111111111111",
+    "22222222-2222-4222-8222-222222222222",
+    "slice4-secret-idempotency-key-000001",
+    "opaque-access-token-secret",
+  ];
+  const diagnosticPayload = `${JSON.stringify({
+    req: {
+      url: `/api/v1/dev/payments/${secrets[0]}/simulate`,
+      headers: {
+        authorization: `Bearer ${secrets[3]}`,
+        "idempotency-key": secrets[2],
+      },
+    },
+    user_id: secrets[1],
+    payment_id: secrets[0],
+    access_token: secrets[3],
+    message: "database constraint failed",
+  })}\n`;
+  const failure = await runSliceFourRuntimeHelper({
+    diagnosticPayload,
+    execExit: 137,
+  });
+
+  assert.equal(failure.status, 137, failure.stderr);
+  for (const secret of secrets) {
+    assert.doesNotMatch(failure.stderr, new RegExp(secret));
+  }
+  assert.match(failure.stderr, /database constraint failed/);
+  assert.match(failure.stderr, /\[REDACTED_(?:UUID|SECRET)\]/);
 });
 
 test("uses the host Prisma engine and preserves the bounded Slice 2 runtime gates", async () => {

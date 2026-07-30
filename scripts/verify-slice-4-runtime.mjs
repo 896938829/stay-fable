@@ -155,6 +155,37 @@ export function assertMockFailureResponse(result) {
   assert.equal(result.body?.error?.code, "MOCK_PAYMENT_FAILED");
 }
 
+export async function pollForWorkerExpiry(options) {
+  const now = options.now ?? Date.now;
+  const sleep = options.sleep ?? delay;
+  const pollIntervalMs = options.pollIntervalMs ?? 250;
+  assert.ok(Number.isInteger(options.timeoutMs) && options.timeoutMs > 0);
+  assert.ok(Number.isInteger(pollIntervalMs) && pollIntervalMs > 0);
+  const deadline = now() + options.timeoutMs;
+
+  while (true) {
+    const remainingTimeoutMs = deadline - now();
+    if (remainingTimeoutMs <= 0) {
+      throw new Error("runtime worker expiry timed out");
+    }
+    const state = await options.readState(remainingTimeoutMs);
+    if (now() > deadline) {
+      throw new Error("runtime worker expiry timed out");
+    }
+    if (state.status === "CLOSED") {
+      return state;
+    }
+    const remainingSleepMs = deadline - now();
+    if (remainingSleepMs <= 0) {
+      throw new Error("runtime worker expiry timed out");
+    }
+    await sleep(Math.min(pollIntervalMs, remainingSleepMs));
+    if (now() > deadline) {
+      throw new Error("runtime worker expiry timed out");
+    }
+  }
+}
+
 async function loadDatabase(databaseUrl) {
   assert.equal(typeof databaseUrl, "string", "DATABASE_URL is required");
   const requireFromArtifact = createRequire("/app/package.json");
@@ -171,8 +202,8 @@ async function loadDatabase(databaseUrl) {
   let ownerIds = [];
   let closed = false;
 
-  const query = (client, text, values = []) =>
-    client.query({ text, values, query_timeout: sqlTimeoutMilliseconds });
+  const query = (client, text, values = [], queryTimeoutMs = sqlTimeoutMilliseconds) =>
+    client.query({ text, values, query_timeout: queryTimeoutMs });
 
   const transaction = async (operation) => {
     const client = await pool.connect();
@@ -291,11 +322,14 @@ async function loadDatabase(databaseUrl) {
     }
   };
 
-  const readLifecycle = async (bookingId) =>
-    transaction(async (client) => {
-      const result = await query(
-        client,
-        `
+  const readLifecycle = async (bookingId, remainingTimeoutMs = sqlTimeoutMilliseconds) => {
+    const queryTimeoutMs = Math.max(
+      1,
+      Math.min(sqlTimeoutMilliseconds, Math.floor(remainingTimeoutMs)),
+    );
+    const result = await query(
+      pool,
+      `
           SELECT
             booking.status::text,
             (SELECT count(*)::integer FROM payment
@@ -321,17 +355,24 @@ async function loadDatabase(databaseUrl) {
           FROM booking
           WHERE booking.id = $1::uuid AND booking.user_id = ANY($2::uuid[])
         `,
-        [bookingId, ownerIds],
-      );
-      assert.equal(result.rowCount, 1, "runtime booking lifecycle row missing");
-      return result.rows[0];
-    });
+      [bookingId, ownerIds],
+      queryTimeoutMs,
+    );
+    assert.equal(result.rowCount, 1, "runtime booking lifecycle row missing");
+    return result.rows[0];
+  };
 
   return {
+    registerOwner(userId) {
+      assert.match(userId, uuidPattern, "runtime owner user must be a UUID");
+      assert.ok(!ownerIds.includes(userId), "runtime owner users must be distinct");
+      ownerIds.push(userId);
+    },
+
     async prepare(userIds) {
       assert.equal(userIds.length, 2);
       assert.notEqual(userIds[0], userIds[1]);
-      ownerIds = [...userIds];
+      assert.deepEqual(ownerIds, userIds, "runtime owner registration mismatch");
       await transaction(async (client) => {
         const supply = await lockSupply(client);
         assert.equal(supply.rowCount, fixture.dates.length, "runtime fixture supply incomplete");
@@ -456,28 +497,23 @@ async function loadDatabase(databaseUrl) {
     },
 
     async waitForExpiry(bookingId, date, timeoutMs) {
-      const deadline = Date.now() + timeoutMs;
-      while (Date.now() < deadline) {
-        const state = await readLifecycle(bookingId);
-        if (state.status === "CLOSED") {
-          assert.equal(state.held_count, 0);
-          assert.equal(state.released_count, 1);
-          assert.equal(state.closed_history_count, 1);
-          const inventory = await transaction((client) =>
-            query(
-              client,
-              `SELECT held_inventory, sold_inventory FROM daily_inventory
+      const state = await pollForWorkerExpiry({
+        timeoutMs,
+        readState: (remainingTimeoutMs) => readLifecycle(bookingId, remainingTimeoutMs),
+      });
+      assert.equal(state.held_count, 0);
+      assert.equal(state.released_count, 1);
+      assert.equal(state.closed_history_count, 1);
+      const inventory = await transaction((client) =>
+        query(
+          client,
+          `SELECT held_inventory, sold_inventory FROM daily_inventory
                WHERE room_type_id = $1::uuid AND business_date = $2::date`,
-              [fixture.roomTypeId, date],
-            ),
-          );
-          assert.equal(inventory.rows[0]?.held_inventory, 0);
-          assert.equal(inventory.rows[0]?.sold_inventory, 0);
-          return;
-        }
-        await delay(250);
-      }
-      throw new Error("runtime worker expiry timed out");
+          [fixture.roomTypeId, date],
+        ),
+      );
+      assert.equal(inventory.rows[0]?.held_inventory, 0);
+      assert.equal(inventory.rows[0]?.sold_inventory, 0);
     },
 
     async cleanup() {
@@ -510,6 +546,7 @@ async function loadDatabase(databaseUrl) {
 async function createProductionRuntime(options) {
   const baseUrl = options.baseUrl || process.env.API_BASE_URL;
   const fetchImplementation = options.fetch || globalThis.fetch;
+  const loginImplementation = options.login || login;
   const timeoutMs = options.requestTimeoutMs ?? requestTimeoutDefault;
   const workerTimeoutMs = options.workerTimeoutMs ?? workerTimeoutDefault;
   assert.equal(typeof baseUrl, "string", "API_BASE_URL is required");
@@ -528,7 +565,9 @@ async function createProductionRuntime(options) {
   return {
     async initialize() {
       for (const code of loginCodes) {
-        sessions.push(await login(fetchImplementation, baseUrl, code, timeoutMs));
+        const session = await loginImplementation(fetchImplementation, baseUrl, code, timeoutMs);
+        database.registerOwner(session.userId);
+        sessions.push(session);
       }
       await database.prepare(sessions.map(({ userId }) => userId));
     },
