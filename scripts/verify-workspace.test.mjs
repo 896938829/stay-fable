@@ -112,6 +112,29 @@ test("models Prisma generation as an API package Turbo prerequisite", async () =
   }
 });
 
+test("keeps all Prisma packages on one patched exact version", async () => {
+  const apiPackage = JSON.parse(
+    await readFile(new URL("apps/api-server/package.json", rootUrl), "utf8"),
+  );
+  const versions = [
+    apiPackage.dependencies["@prisma/adapter-pg"],
+    apiPackage.dependencies["@prisma/client"],
+    apiPackage.devDependencies.prisma,
+  ];
+
+  assert.equal(
+    new Set(versions).size,
+    1,
+    "@prisma/adapter-pg, @prisma/client, and prisma must use one version",
+  );
+  assert.match(versions[0], /^\d+\.\d+\.\d+$/, "Prisma packages must use an exact stable version");
+  const [major, minor, patch] = versions[0].split(".").map(Number);
+  assert.ok(
+    major > 7 || (major === 7 && (minor > 9 || (minor === 9 && patch >= 1))),
+    "Prisma packages must be at least 7.9.1",
+  );
+});
+
 test("tracks PostgreSQL as the Prisma migration history provider", async () => {
   const migrationLock = await readFile(
     new URL("apps/api-server/prisma/migrations/migration_lock.toml", rootUrl),
