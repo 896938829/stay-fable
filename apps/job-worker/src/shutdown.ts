@@ -25,7 +25,9 @@ const closeResources = async (resources: ShutdownResources): Promise<void> => {
 
   await close(() => resources.sweeper.stop(), "Booking expiry sweeper shutdown failed");
   await close(() => resources.worker.close(), "Queue worker shutdown failed");
-  await close(() => resources.connection.quit(), "Redis shutdown failed");
+  if (resources.connection.status !== "end") {
+    await close(() => resources.connection.quit(), "Redis shutdown failed");
+  }
   await close(() => resources.pool.end(), "Database pool shutdown failed");
 
   if (errors.length === 1) {

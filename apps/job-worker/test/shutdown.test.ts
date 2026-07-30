@@ -38,8 +38,8 @@ describe("createGracefulShutdown", () => {
     expect(calls).toEqual(["sweeper", "worker", "connection", "pool"]);
   });
 
-  it("invokes every shutdown step exactly once even when Redis is already ended", async () => {
-    const quit = vi.fn(() => Promise.resolve("OK"));
+  it("treats an ended Redis connection as already closed without calling quit", async () => {
+    const quit = vi.fn(() => Promise.reject(new Error("Connection is closed.")));
     const shutdown = createGracefulShutdown({
       connection: { status: "end", quit },
       worker: { close: vi.fn(() => Promise.resolve()) },
@@ -49,7 +49,7 @@ describe("createGracefulShutdown", () => {
 
     await shutdown();
 
-    expect(quit).toHaveBeenCalledOnce();
+    expect(quit).not.toHaveBeenCalled();
   });
 
   it.each(["sweeper", "worker", "connection", "pool"] as const)(
@@ -112,7 +112,7 @@ describe("createGracefulShutdown", () => {
       {
         sweeper: { stop },
         connection: {
-          status: "end",
+          status: "ready",
           quit,
         },
         worker: { close },
