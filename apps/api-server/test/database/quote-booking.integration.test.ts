@@ -30,6 +30,12 @@ const suiteName = runDatabaseIntegration
 const targetMigration = fileURLToPath(
   new URL("../../prisma/migrations/202607300001_quote_booking_hold/migration.sql", import.meta.url),
 );
+const lifecyclePaymentMigration = fileURLToPath(
+  new URL(
+    "../../prisma/migrations/202607300002_booking_lifecycle_payment/migration.sql",
+    import.meta.url,
+  ),
+);
 
 const quoteGeneratedTestSchema = (schemaName: string): string => {
   if (!/^quote_booking_test_[0-9a-f]{16}$/.test(schemaName)) {
@@ -655,9 +661,30 @@ describeDatabase(suiteName, () => {
     return migrationSql;
   };
 
+  const readLifecyclePaymentMigration = async (): Promise<string | undefined> => {
+    try {
+      return await readFile(lifecyclePaymentMigration, "utf8");
+    } catch (error) {
+      if (
+        typeof error === "object" &&
+        error !== null &&
+        "code" in error &&
+        error.code === "ENOENT"
+      ) {
+        return undefined;
+      }
+      throw error;
+    }
+  };
+
   const applyTargetMigration = async (): Promise<void> => {
     migrationApplied ??= (async () => {
       await database().query(await readTargetMigration());
+      const lifecycleMigrationSql = await readLifecyclePaymentMigration();
+      if (lifecycleMigrationSql !== undefined) {
+        expect(migrationSqlHasForbiddenStatements(lifecycleMigrationSql)).toBe(false);
+        await database().query(lifecycleMigrationSql);
+      }
     })();
     return migrationApplied;
   };
@@ -675,6 +702,8 @@ describeDatabase(suiteName, () => {
   });
   const nextBookingNumber = (): string =>
     `SF20300101${randomBytes(6).toString("hex").toUpperCase()}`;
+  const nextPaymentNumber = (): string =>
+    `SFP20300101${randomBytes(6).toString("hex").toUpperCase()}`;
   const nextIdempotencyKey = (): string => `key_${randomBytes(20).toString("hex")}`;
 
   interface ScenarioFixture {
@@ -877,6 +906,57 @@ describeDatabase(suiteName, () => {
   ): Promise<CreateBookingResult> =>
     new BookingRepository(bookingDatabase, clock).createFromQuote(input);
 
+  const createPaymentBooking = async (): Promise<{
+    bookingId: string;
+    fixture: ScenarioFixture;
+  }> => {
+    const fixture = await createScenarioFixture({
+      checkout: "2030-11-02",
+      dates: ["2030-11-01"],
+      totals: [2],
+    });
+    const quoteId = await createQuote(fixture, fixture.users[0]!);
+    const result = await createThroughRepository(repositoryInput(fixture.users[0]!, quoteId));
+    if (result.kind !== "CREATED") {
+      throw new Error("Payment fixture booking was not created");
+    }
+    return { bookingId: result.booking.booking_id, fixture };
+  };
+
+  const cleanupPaymentBooking = async (
+    bookingId: string,
+    fixture: ScenarioFixture,
+  ): Promise<void> => {
+    const paymentTable = await database().query<{ payment_table: string | null }>(
+      "SELECT to_regclass('payment')::text AS payment_table",
+    );
+    if (paymentTable.rows[0]?.payment_table !== null) {
+      await database().query("DELETE FROM payment WHERE booking_id = $1::uuid", [bookingId]);
+    }
+    await database().query("DELETE FROM booking_status_history WHERE booking_id = $1::uuid", [
+      bookingId,
+    ]);
+    await database().query("DELETE FROM inventory_hold WHERE booking_id = $1::uuid", [bookingId]);
+    await database().query("DELETE FROM booking WHERE id = $1::uuid", [bookingId]);
+    await database().query("DELETE FROM quote WHERE room_type_id = $1::uuid", [fixture.roomId]);
+    await database().query("DELETE FROM daily_inventory WHERE room_type_id = $1::uuid", [
+      fixture.roomId,
+    ]);
+    await database().query("DELETE FROM daily_price WHERE room_type_id = $1::uuid", [
+      fixture.roomId,
+    ]);
+    await database().query("DELETE FROM room_type WHERE id = $1::uuid", [fixture.roomId]);
+    await database().query("DELETE FROM property WHERE id = $1::uuid", [fixture.propertyId]);
+    await database().query('DELETE FROM "user" WHERE id = ANY($1::uuid[])', [fixture.users]);
+  };
+
+  const insertPaymentSql = `
+    INSERT INTO payment (
+      booking_id, payment_number, status, requested_outcome,
+      amount_cents, idempotency_key, processed_at
+    ) VALUES ($1::uuid, $2, $3, $4, $5, $6, $7)
+  `;
+
   const createConcurrentDatabase = (
     barrier: ReturnType<typeof createBarrier>,
     backendPids: Set<number>,
@@ -968,6 +1048,22 @@ describeDatabase(suiteName, () => {
         ...(constraint === undefined ? {} : { constraint }),
       });
       await database().query("ROLLBACK TO SAVEPOINT contract_violation");
+    } finally {
+      await database().query("ROLLBACK");
+    }
+  };
+
+  const expectDatabaseViolation = async (
+    sql: string,
+    values: unknown[],
+    code: string,
+    constraint: string,
+  ) => {
+    await database().query("BEGIN");
+    try {
+      await database().query("SAVEPOINT database_violation");
+      await expect(database().query(sql, values)).rejects.toMatchObject({ code, constraint });
+      await database().query("ROLLBACK TO SAVEPOINT database_violation");
     } finally {
       await database().query("ROLLBACK");
     }
@@ -1330,6 +1426,381 @@ describeDatabase(suiteName, () => {
       { table_name: "booking", column_names: ["user_id", "idempotency_key"] },
       { table_name: "inventory_hold", column_names: ["booking_id", "business_date"] },
     ]);
+  }, 25_000);
+
+  test("payment migration creates the exact table, enums, keys, and indexes", async () => {
+    await applyTargetMigration();
+    const schema = schemaName;
+    const table = await database().query<{ table_name: string }>(
+      `
+      SELECT table_name
+      FROM information_schema.tables
+      WHERE table_schema = $1 AND table_name = 'payment'
+    `,
+      [schema],
+    );
+    expect(table.rows).toEqual([{ table_name: "payment" }]);
+
+    const enums = await database().query<{ enum_name: string; enumlabel: string }>(
+      `
+      SELECT type_name.typname AS enum_name, enum_value.enumlabel
+      FROM pg_type type_name
+      JOIN pg_namespace type_schema ON type_schema.oid = type_name.typnamespace
+      JOIN pg_enum enum_value ON enum_value.enumtypid = type_name.oid
+      WHERE type_schema.nspname = $1
+        AND type_name.typname IN ('PaymentProvider', 'PaymentStatus', 'MockPaymentOutcome')
+      ORDER BY type_name.typname, enum_value.enumsortorder
+    `,
+      [schema],
+    );
+    expect(enums.rows).toEqual([
+      { enum_name: "MockPaymentOutcome", enumlabel: "SUCCEED" },
+      { enum_name: "MockPaymentOutcome", enumlabel: "FAIL" },
+      { enum_name: "PaymentProvider", enumlabel: "MOCK" },
+      { enum_name: "PaymentStatus", enumlabel: "SUCCEEDED" },
+      { enum_name: "PaymentStatus", enumlabel: "FAILED" },
+    ]);
+
+    const columns = await database().query<{
+      character_maximum_length: number | null;
+      column_default: string | null;
+      column_name: string;
+      data_type: string;
+      datetime_precision: number | null;
+      is_nullable: "NO" | "YES";
+      udt_name: string;
+    }>(
+      `
+      SELECT column_name, data_type, udt_name, is_nullable, column_default,
+             character_maximum_length, datetime_precision
+      FROM information_schema.columns
+      WHERE table_schema = $1 AND table_name = 'payment'
+      ORDER BY ordinal_position
+    `,
+      [schema],
+    );
+    expect(
+      columns.rows.map(({ column_default: columnDefault, ...column }) => ({
+        ...column,
+        column_default: normalizeColumnDefault(columnDefault),
+      })),
+    ).toEqual([
+      {
+        column_name: "id",
+        data_type: "uuid",
+        udt_name: "uuid",
+        is_nullable: "NO",
+        column_default: "gen_random_uuid()",
+        character_maximum_length: null,
+        datetime_precision: null,
+      },
+      {
+        column_name: "booking_id",
+        data_type: "uuid",
+        udt_name: "uuid",
+        is_nullable: "NO",
+        column_default: null,
+        character_maximum_length: null,
+        datetime_precision: null,
+      },
+      {
+        column_name: "payment_number",
+        data_type: "character varying",
+        udt_name: "varchar",
+        is_nullable: "NO",
+        column_default: null,
+        character_maximum_length: 23,
+        datetime_precision: null,
+      },
+      {
+        column_name: "provider",
+        data_type: "USER-DEFINED",
+        udt_name: "PaymentProvider",
+        is_nullable: "NO",
+        column_default: "MOCK",
+        character_maximum_length: null,
+        datetime_precision: null,
+      },
+      {
+        column_name: "status",
+        data_type: "USER-DEFINED",
+        udt_name: "PaymentStatus",
+        is_nullable: "NO",
+        column_default: null,
+        character_maximum_length: null,
+        datetime_precision: null,
+      },
+      {
+        column_name: "requested_outcome",
+        data_type: "USER-DEFINED",
+        udt_name: "MockPaymentOutcome",
+        is_nullable: "NO",
+        column_default: null,
+        character_maximum_length: null,
+        datetime_precision: null,
+      },
+      {
+        column_name: "amount_cents",
+        data_type: "integer",
+        udt_name: "int4",
+        is_nullable: "NO",
+        column_default: null,
+        character_maximum_length: null,
+        datetime_precision: null,
+      },
+      {
+        column_name: "currency",
+        data_type: "character",
+        udt_name: "bpchar",
+        is_nullable: "NO",
+        column_default: "CNY",
+        character_maximum_length: 3,
+        datetime_precision: null,
+      },
+      {
+        column_name: "idempotency_key",
+        data_type: "character varying",
+        udt_name: "varchar",
+        is_nullable: "NO",
+        column_default: null,
+        character_maximum_length: 80,
+        datetime_precision: null,
+      },
+      {
+        column_name: "processed_at",
+        data_type: "timestamp with time zone",
+        udt_name: "timestamptz",
+        is_nullable: "NO",
+        column_default: null,
+        character_maximum_length: null,
+        datetime_precision: 3,
+      },
+      {
+        column_name: "created_at",
+        data_type: "timestamp with time zone",
+        udt_name: "timestamptz",
+        is_nullable: "NO",
+        column_default: "CURRENT_TIMESTAMP",
+        character_maximum_length: null,
+        datetime_precision: 3,
+      },
+    ]);
+
+    const keys = await database().query<{
+      columns: string[];
+      constraint_name: string;
+      constraint_type: "FOREIGN KEY" | "PRIMARY KEY" | "UNIQUE";
+      delete_action: string | null;
+      update_action: string | null;
+    }>(
+      `
+      SELECT con.conname AS constraint_name,
+             CASE con.contype
+               WHEN 'p' THEN 'PRIMARY KEY'
+               WHEN 'u' THEN 'UNIQUE'
+               WHEN 'f' THEN 'FOREIGN KEY'
+             END AS constraint_type,
+             array_agg(attribute.attname::text ORDER BY key_column.ordinality) AS columns,
+             CASE WHEN con.contype = 'f' THEN con.confdeltype::text ELSE NULL END AS delete_action,
+             CASE WHEN con.contype = 'f' THEN con.confupdtype::text ELSE NULL END AS update_action
+      FROM pg_constraint con
+      JOIN pg_class child ON child.oid = con.conrelid
+      JOIN pg_namespace child_schema ON child_schema.oid = child.relnamespace
+      JOIN unnest(con.conkey) WITH ORDINALITY AS key_column(attribute_number, ordinality) ON true
+      JOIN pg_attribute attribute
+        ON attribute.attrelid = child.oid AND attribute.attnum = key_column.attribute_number
+      WHERE child_schema.nspname = $1 AND child.relname = 'payment'
+        AND con.contype IN ('p', 'u', 'f')
+      GROUP BY con.oid
+      ORDER BY con.conname
+    `,
+      [schema],
+    );
+    expect(keys.rows).toEqual([
+      {
+        constraint_name: "payment_booking_id_fkey",
+        constraint_type: "FOREIGN KEY",
+        columns: ["booking_id"],
+        delete_action: "r",
+        update_action: "c",
+      },
+      {
+        constraint_name: "payment_booking_id_idempotency_key_key",
+        constraint_type: "UNIQUE",
+        columns: ["booking_id", "idempotency_key"],
+        delete_action: null,
+        update_action: null,
+      },
+      {
+        constraint_name: "payment_payment_number_key",
+        constraint_type: "UNIQUE",
+        columns: ["payment_number"],
+        delete_action: null,
+        update_action: null,
+      },
+      {
+        constraint_name: "payment_pkey",
+        constraint_type: "PRIMARY KEY",
+        columns: ["id"],
+        delete_action: null,
+        update_action: null,
+      },
+    ]);
+
+    const indexes = await database().query<{ indexdef: string; indexname: string }>(
+      `
+      SELECT indexname, indexdef
+      FROM pg_indexes
+      WHERE schemaname = $1
+        AND indexname IN ('payment_booking_success_key', 'payment_booking_created_id_idx')
+      ORDER BY indexname
+    `,
+      [schema],
+    );
+    expect(indexes.rows.map(({ indexname }) => indexname)).toEqual([
+      "payment_booking_created_id_idx",
+      "payment_booking_success_key",
+    ]);
+    const indexesByName = new Map(
+      indexes.rows.map(({ indexdef, indexname }) => [
+        indexname,
+        indexdef.replaceAll('"', "").replaceAll(/\s+/g, " "),
+      ]),
+    );
+    expect(indexesByName.get("payment_booking_created_id_idx")).toContain(
+      "(booking_id, created_at DESC, id DESC)",
+    );
+    expect(indexesByName.get("payment_booking_success_key")).toMatch(
+      /CREATE UNIQUE INDEX .* \(booking_id\) WHERE \(status = 'SUCCEEDED'/,
+    );
+  }, 25_000);
+
+  test("payment constraints reject duplicate, inconsistent, and unsafe records", async () => {
+    await applyTargetMigration();
+    const { bookingId, fixture } = await createPaymentBooking();
+    const paymentNumber = nextPaymentNumber();
+    const idempotencyKey = nextIdempotencyKey();
+    const processedAt = new Date("2030-01-01T00:01:00.000Z");
+    try {
+      await database().query(insertPaymentSql, [
+        bookingId,
+        paymentNumber,
+        "SUCCEEDED",
+        "SUCCEED",
+        15_000,
+        idempotencyKey,
+        processedAt,
+      ]);
+      const stored = await database().query<{
+        currency: string;
+        provider: string;
+      }>("SELECT currency::text, provider::text FROM payment WHERE payment_number = $1", [
+        paymentNumber,
+      ]);
+      expect(stored.rows).toEqual([{ currency: "CNY", provider: "MOCK" }]);
+
+      await expectDatabaseViolation(
+        insertPaymentSql,
+        [bookingId, nextPaymentNumber(), "FAILED", "FAIL", 15_000, idempotencyKey, processedAt],
+        "23505",
+        "payment_booking_id_idempotency_key_key",
+      );
+      await expectDatabaseViolation(
+        insertPaymentSql,
+        [
+          bookingId,
+          nextPaymentNumber(),
+          "SUCCEEDED",
+          "SUCCEED",
+          15_000,
+          nextIdempotencyKey(),
+          processedAt,
+        ],
+        "23505",
+        "payment_booking_success_key",
+      );
+
+      for (const [status, outcome] of [
+        ["FAILED", "SUCCEED"],
+        ["SUCCEEDED", "FAIL"],
+      ]) {
+        await expectDatabaseViolation(
+          insertPaymentSql,
+          [
+            bookingId,
+            nextPaymentNumber(),
+            status,
+            outcome,
+            15_000,
+            nextIdempotencyKey(),
+            processedAt,
+          ],
+          "23514",
+          "payment_outcome_status_check",
+        );
+      }
+      await expectDatabaseViolation(
+        insertPaymentSql,
+        [bookingId, nextPaymentNumber(), "FAILED", "FAIL", -1, nextIdempotencyKey(), processedAt],
+        "23514",
+        "payment_amount_check",
+      );
+      await expectDatabaseViolation(
+        `
+        INSERT INTO payment (
+          booking_id, payment_number, status, requested_outcome,
+          amount_cents, currency, idempotency_key, processed_at
+        ) VALUES ($1::uuid, $2, 'FAILED', 'FAIL', 15000, 'USD', $3, $4)
+      `,
+        [bookingId, nextPaymentNumber(), nextIdempotencyKey(), processedAt],
+        "23514",
+        "payment_currency_check",
+      );
+      await expectDatabaseViolation(
+        insertPaymentSql,
+        [bookingId, "bad", "FAILED", "FAIL", 15_000, nextIdempotencyKey(), processedAt],
+        "23514",
+        "payment_number_check",
+      );
+      await expectDatabaseViolation(
+        insertPaymentSql,
+        [bookingId, nextPaymentNumber(), "FAILED", "FAIL", 15_000, "short", processedAt],
+        "23514",
+        "payment_idempotency_key_check",
+      );
+      await expectDatabaseViolation(
+        insertPaymentSql,
+        [
+          randomUUID(),
+          nextPaymentNumber(),
+          "FAILED",
+          "FAIL",
+          15_000,
+          nextIdempotencyKey(),
+          processedAt,
+        ],
+        "23503",
+        "payment_booking_id_fkey",
+      );
+
+      const updatedBookingId = randomUUID();
+      await database().query("BEGIN");
+      try {
+        await database().query("UPDATE booking SET id = $2::uuid WHERE id = $1::uuid", [
+          bookingId,
+          updatedBookingId,
+        ]);
+        const cascadedPayment = await database().query<{ booking_id: string }>(
+          "SELECT booking_id::text FROM payment WHERE payment_number = $1",
+          [paymentNumber],
+        );
+        expect(cascadedPayment.rows).toEqual([{ booking_id: updatedBookingId }]);
+      } finally {
+        await database().query("ROLLBACK");
+      }
+    } finally {
+      await cleanupPaymentBooking(bookingId, fixture);
+    }
   }, 25_000);
 
   test("checks and indexes cover quote booking capacity and worker access contracts", async () => {

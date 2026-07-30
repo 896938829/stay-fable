@@ -55,6 +55,20 @@ enum BookingActorType {
   SYSTEM
 }
 
+enum PaymentProvider {
+  MOCK
+}
+
+enum PaymentStatus {
+  SUCCEEDED
+  FAILED
+}
+
+enum MockPaymentOutcome {
+  SUCCEED
+  FAIL
+}
+
 model User {
   id                   String                 @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   status               UserStatus             @default(ACTIVE)
@@ -271,11 +285,31 @@ model Booking {
   roomType              RoomType               @relation(fields: [roomTypeId], references: [id], onDelete: Restrict, onUpdate: Cascade)
   inventoryHolds        InventoryHold[]
   statusHistory         BookingStatusHistory[]
+  payments              Payment[]
 
   @@unique([userId, idempotencyKey], map: "booking_user_id_idempotency_key_key")
   @@index([userId, createdAt, id], map: "booking_user_created_id_idx")
   @@index([status, expiresAt, id], map: "booking_status_expires_id_idx")
   @@map("booking")
+}
+
+model Payment {
+  id               String             @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  bookingId        String             @map("booking_id") @db.Uuid
+  paymentNumber    String             @unique(map: "payment_payment_number_key") @map("payment_number") @db.VarChar(23)
+  provider         PaymentProvider    @default(MOCK)
+  status           PaymentStatus
+  requestedOutcome MockPaymentOutcome @map("requested_outcome")
+  amountCents      Int                @map("amount_cents")
+  currency         String             @default("CNY") @db.Char(3)
+  idempotencyKey   String             @map("idempotency_key") @db.VarChar(80)
+  processedAt      DateTime           @map("processed_at") @db.Timestamptz(3)
+  createdAt        DateTime           @default(now()) @map("created_at") @db.Timestamptz(3)
+  booking          Booking            @relation(fields: [bookingId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+
+  @@unique([bookingId, idempotencyKey], map: "payment_booking_id_idempotency_key_key")
+  @@index([bookingId, createdAt(sort: Desc), id(sort: Desc)], map: "payment_booking_created_id_idx")
+  @@map("payment")
 }
 
 model InventoryHold {
