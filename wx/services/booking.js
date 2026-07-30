@@ -10,6 +10,38 @@ const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 const IDEMPOTENCY_KEY_PATTERN = /^[A-Za-z0-9._~-]{32,80}$/;
+const REQUEST_ID_PATTERN = /^[A-Za-z0-9._:-]{1,128}$/;
+const SAFE_ERROR_MESSAGES = Object.freeze({
+  AUTH_REAUTHENTICATION_FAILED: "Authentication failed",
+  AUTH_SESSION_CHANGED: "Authentication session changed",
+  AUTH_SESSION_EXPIRED: "Authentication session expired",
+  AUTH_SESSION_OPERATION_CANCELLED: "Authentication operation cancelled",
+  AUTH_SESSION_SERVICE_UNAVAILABLE: "Authentication service unavailable",
+  AUTH_USER_DISABLED: "Authentication account unavailable",
+  BOOKING_REQUEST_INVALID: "Booking request invalid",
+  BOOKING_SERVICE_UNAVAILABLE: "Booking service unavailable",
+  IDEMPOTENCY_KEY_INVALID: "Idempotency key invalid",
+  INVALID_API_RESPONSE: "Invalid API response",
+  INVALID_REQUEST_PATH: "Invalid request path",
+  INVENTORY_UNAVAILABLE: "Inventory unavailable",
+  NETWORK_REQUEST_FAILED: "Network request failed",
+  QUOTE_ALREADY_USED: "Quote already used",
+  QUOTE_CHANGED: "Quote changed",
+  QUOTE_EXPIRED: "Quote expired",
+  QUOTE_REQUEST_INVALID: "Quote request invalid",
+  RATE_LIMITED: "Rate limited",
+  ROOM_CAPACITY_EXCEEDED: "Room capacity exceeded",
+  ROOM_NOT_AVAILABLE: "Room not available",
+});
+const SAFE_ERROR_KEYS = [
+  "stack",
+  "message",
+  "name",
+  "code",
+  "statusCode",
+  "requestId",
+  "details",
+];
 
 function bookingError(code, message) {
   const error = new Error(message);
@@ -36,6 +68,17 @@ function cancelled() {
   return bookingError(
     "BOOKING_OPERATION_CANCELLED",
     "Booking operation cancelled",
+  );
+}
+
+function invalidApiResponse() {
+  return bookingError("INVALID_API_RESPONSE", "Invalid API response");
+}
+
+function unavailable() {
+  return bookingError(
+    "BOOKING_SERVICE_UNAVAILABLE",
+    "Booking service unavailable",
   );
 }
 
@@ -143,26 +186,88 @@ function snapshotBookingInput(value) {
   return snapshot;
 }
 
-function snapshotOptions(value) {
+function snapshotExpectedQuote(value) {
+  try {
+    if (!plainOrNullPrototype(value)) {
+      throw invalidOptions();
+    }
+    const descriptors = Object.getOwnPropertyDescriptors(value);
+    const keys = Object.keys(descriptors);
+    if (
+      Object.getOwnPropertySymbols(value).length !== 0 ||
+      keys.some(
+        (key) => key !== "property_id" && key !== "room_type_id",
+      )
+    ) {
+      throw invalidOptions();
+    }
+    const property = descriptors.property_id;
+    const room = descriptors.room_type_id;
+    if (
+      (property &&
+        !Object.prototype.hasOwnProperty.call(property, "value")) ||
+      (room && !Object.prototype.hasOwnProperty.call(room, "value"))
+    ) {
+      throw invalidOptions();
+    }
+    if (
+      !property ||
+      !room ||
+      typeof property.value !== "string" ||
+      !UUID_PATTERN.test(property.value) ||
+      typeof room.value !== "string" ||
+      !UUID_PATTERN.test(room.value)
+    ) {
+      return undefined;
+    }
+    return Object.freeze({
+      property_id: property.value,
+      room_type_id: room.value,
+    });
+  } catch {
+    throw invalidOptions();
+  }
+}
+
+function snapshotOptions(value, allowExpectedQuote) {
   if (value === undefined) {
-    return Object.freeze({ isActive: () => true });
+    return Object.freeze({
+      isActive: () => true,
+      expectedQuote: undefined,
+    });
   }
   try {
     if (!plainOrNullPrototype(value)) {
       throw invalidOptions();
     }
     const descriptors = Object.getOwnPropertyDescriptors(value);
-    const descriptor = descriptors.isActive;
+    const keys = Object.keys(descriptors);
+    const allowed = allowExpectedQuote
+      ? ["isActive", "expectedQuote"]
+      : ["isActive"];
     if (
       Object.getOwnPropertySymbols(value).length !== 0 ||
-      Object.keys(descriptors).length !== 1 ||
-      !descriptor ||
-      !Object.prototype.hasOwnProperty.call(descriptor, "value") ||
-      typeof descriptor.value !== "function"
+      keys.some((key) => !allowed.includes(key))
     ) {
       throw invalidOptions();
     }
-    return Object.freeze({ isActive: descriptor.value });
+    const active = descriptors.isActive;
+    const expected = descriptors.expectedQuote;
+    if (
+      (active &&
+        (!Object.prototype.hasOwnProperty.call(active, "value") ||
+          typeof active.value !== "function")) ||
+      (expected &&
+        !Object.prototype.hasOwnProperty.call(expected, "value"))
+    ) {
+      throw invalidOptions();
+    }
+    return Object.freeze({
+      isActive: active ? active.value : () => true,
+      expectedQuote: expected
+        ? snapshotExpectedQuote(expected.value)
+        : undefined,
+    });
   } catch {
     throw invalidOptions();
   }
@@ -199,15 +304,143 @@ function snapshotPost(environment) {
   }
 }
 
+function snapshotDependencyError(value) {
+  try {
+    if (
+      value === null ||
+      typeof value !== "object" ||
+      Array.isArray(value)
+    ) {
+      return undefined;
+    }
+    const prototype = Object.getPrototypeOf(value);
+    if (
+      prototype !== Error.prototype &&
+      prototype !== Object.prototype &&
+      prototype !== null
+    ) {
+      return undefined;
+    }
+    const descriptors = Object.getOwnPropertyDescriptors(value);
+    const keys = Object.keys(descriptors);
+    if (
+      Object.getOwnPropertySymbols(value).length !== 0 ||
+      keys.some((key) => !SAFE_ERROR_KEYS.includes(key))
+    ) {
+      return undefined;
+    }
+    const code = descriptors.code;
+    if (
+      !code ||
+      !Object.prototype.hasOwnProperty.call(code, "value") ||
+      typeof code.value !== "string" ||
+      !Object.prototype.hasOwnProperty.call(SAFE_ERROR_MESSAGES, code.value)
+    ) {
+      return undefined;
+    }
+    const status = descriptors.statusCode;
+    const request = descriptors.requestId;
+    if (
+      (status &&
+        (!Object.prototype.hasOwnProperty.call(status, "value") ||
+          !Number.isInteger(status.value) ||
+          status.value < 400 ||
+          status.value > 599)) ||
+      (request &&
+        (!Object.prototype.hasOwnProperty.call(request, "value") ||
+          typeof request.value !== "string" ||
+          !REQUEST_ID_PATTERN.test(request.value)))
+    ) {
+      return undefined;
+    }
+    const details = descriptors.details;
+    return {
+      code: code.value,
+      statusCode: status ? status.value : undefined,
+      requestId: request ? request.value : undefined,
+      details:
+        details && Object.prototype.hasOwnProperty.call(details, "value")
+          ? details.value
+          : undefined,
+      detailsValid:
+        !details || Object.prototype.hasOwnProperty.call(details, "value"),
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+function assertRateLimitDetails(value) {
+  try {
+    if (!plainOrNullPrototype(value)) {
+      throw invalidApiResponse();
+    }
+    const descriptors = Object.getOwnPropertyDescriptors(value);
+    const retry = descriptors.retry_after_seconds;
+    if (
+      Object.getOwnPropertySymbols(value).length !== 0 ||
+      Object.keys(descriptors).length !== 1 ||
+      !retry ||
+      !Object.prototype.hasOwnProperty.call(retry, "value") ||
+      !Number.isInteger(retry.value) ||
+      retry.value < 1 ||
+      retry.value > 60
+    ) {
+      throw invalidApiResponse();
+    }
+    return { retry_after_seconds: retry.value };
+  } catch {
+    throw invalidApiResponse();
+  }
+}
+
+function normalizeDependencyError(value, expectedQuote) {
+  const snapshot = snapshotDependencyError(value);
+  if (!snapshot) {
+    return unavailable();
+  }
+  const error = bookingError(
+    snapshot.code,
+    SAFE_ERROR_MESSAGES[snapshot.code],
+  );
+  if (snapshot.statusCode !== undefined) {
+    error.statusCode = snapshot.statusCode;
+  }
+  if (snapshot.requestId !== undefined) {
+    error.requestId = snapshot.requestId;
+  }
+  if (snapshot.code === "QUOTE_CHANGED") {
+    if (!snapshot.detailsValid) {
+      throw invalidApiResponse();
+    }
+    error.details = assertQuoteChangedDetails(
+      snapshot.details,
+      expectedQuote,
+    );
+  } else if (snapshot.code === "RATE_LIMITED") {
+    if (!snapshot.detailsValid) {
+      throw invalidApiResponse();
+    }
+    error.details = assertRateLimitDetails(snapshot.details);
+  }
+  return error;
+}
+
 function createBookingService(requestClient) {
   const post = snapshotPost(requestClient);
 
   return {
     async createQuote(input, options) {
       const body = snapshotQuoteInput(input);
-      const { isActive } = snapshotOptions(options);
+      const { isActive } = snapshotOptions(options, false);
       assertActive(isActive);
-      const data = await post("/quotes", body, Object.freeze({ retry: false }));
+      let data;
+      try {
+        data = await post("/quotes", body, Object.freeze({ retry: false }));
+      } catch (error) {
+        assertActive(isActive);
+        throw normalizeDependencyError(error);
+      }
       assertActive(isActive);
       return assertQuoteResponse(data, body.room_type_id);
     },
@@ -220,10 +453,11 @@ function createBookingService(requestClient) {
       ) {
         throw invalidInput();
       }
-      const operation = snapshotOptions(options);
+      const operation = snapshotOptions(options, true);
       assertActive(operation.isActive);
+      let data;
       try {
-        const data = await post(
+        data = await post(
           "/bookings",
           body,
           Object.freeze({
@@ -231,15 +465,12 @@ function createBookingService(requestClient) {
             retry: false,
           }),
         );
-        assertActive(operation.isActive);
-        return assertBookingResponse(data, body.quote_id);
       } catch (error) {
         assertActive(operation.isActive);
-        if (error?.code === "QUOTE_CHANGED") {
-          error.details = assertQuoteChangedDetails(error.details);
-        }
-        throw error;
+        throw normalizeDependencyError(error, operation.expectedQuote);
       }
+      assertActive(operation.isActive);
+      return assertBookingResponse(data, body.quote_id);
     },
   };
 }

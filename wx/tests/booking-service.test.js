@@ -66,13 +66,19 @@ const booking = {
   expires_at: "2026-07-30T02:15:00.000Z",
   created_at: "2026-07-30T02:00:00.000Z",
 };
+const expectedQuote = {
+  property_id: IDS.property,
+  room_type_id: IDS.roomType,
+};
 
 function deferred() {
   let resolve;
-  const promise = new Promise((resolvePromise) => {
+  let reject;
+  const promise = new Promise((resolvePromise, rejectPromise) => {
     resolve = resolvePromise;
+    reject = rejectPromise;
   });
-  return { promise, resolve };
+  return { promise, reject, resolve };
 }
 
 function serviceWith(postImplementation) {
@@ -191,6 +197,34 @@ describe("booking service", () => {
     expect(requestClient.post).not.toHaveBeenCalled();
   });
 
+  it("rejects hostile nested expected quote contexts without invoking getters", async () => {
+    let reads = 0;
+    const getterContext = { room_type_id: IDS.roomType };
+    Object.defineProperty(getterContext, "property_id", {
+      enumerable: true,
+      get() {
+        reads += 1;
+        throw new Error("private expected quote getter");
+      },
+    });
+    const { requestClient, service } = serviceWith(async () => booking);
+    for (const expectedQuoteContext of [
+      getterContext,
+      Object.assign(Object.create({ version: 1 }), expectedQuote),
+      { ...expectedQuote, [Symbol("secret")]: true },
+    ]) {
+      await expect(
+        service.createBooking(
+          { quote_id: IDS.quote },
+          idempotencyKey,
+          { expectedQuote: expectedQuoteContext },
+        ),
+      ).rejects.toMatchObject({ code: "INVALID_BOOKING_OPTIONS" });
+    }
+    expect(reads).toBe(0);
+    expect(requestClient.post).not.toHaveBeenCalled();
+  });
+
   it("rejects unknown request fields and invalid idempotency keys before requesting", async () => {
     const { requestClient, service } = serviceWith(async () => booking);
 
@@ -266,5 +300,221 @@ describe("booking service", () => {
       code: "BOOKING_OPERATION_CANCELLED",
       message: "Booking operation cancelled",
     });
+  });
+
+  it.each(["quote", "booking"])(
+    "turns a late %s rejection into cancellation before inspecting the error",
+    async (operationName) => {
+      const pending = deferred();
+      let active = true;
+      let getterReads = 0;
+      const hostile = {};
+      Object.defineProperty(hostile, "code", {
+        enumerable: true,
+        get() {
+          getterReads += 1;
+          throw new Error("private error getter");
+        },
+      });
+      const { service } = serviceWith(() => pending.promise);
+      const operation =
+        operationName === "quote"
+          ? service.createQuote(quoteInput, { isActive: () => active })
+          : service.createBooking(
+              { quote_id: IDS.quote },
+              idempotencyKey,
+              { isActive: () => active, expectedQuote },
+            );
+      active = false;
+      pending.reject(hostile);
+
+      await expect(operation).rejects.toMatchObject({
+        code: "BOOKING_OPERATION_CANCELLED",
+        message: "Booking operation cancelled",
+      });
+      expect(getterReads).toBe(0);
+    },
+  );
+
+  it("reconstructs whitelisted failures without propagating dependency messages", async () => {
+    for (const { dependencyError, expectedCode } of [
+      {
+        dependencyError: Object.freeze(
+          Object.assign(new Error("frozen secret"), {
+            code: "NETWORK_REQUEST_FAILED",
+            statusCode: 503,
+            requestId: "request_safe",
+          }),
+        ),
+        expectedCode: "NETWORK_REQUEST_FAILED",
+      },
+      {
+        dependencyError: new Proxy(
+          Object.assign(new Error("proxy secret"), {
+            code: "AUTH_SESSION_EXPIRED",
+            statusCode: 401,
+            requestId: "request_proxy",
+          }),
+          {
+            get() {
+              throw new Error("get trap must not run");
+            },
+          },
+        ),
+        expectedCode: "AUTH_SESSION_EXPIRED",
+      },
+    ]) {
+      const { service } = serviceWith(async () => {
+        throw dependencyError;
+      });
+      const error = await service.createQuote(quoteInput).catch((value) => value);
+      expect(error).toMatchObject({
+        code: expectedCode,
+        statusCode: expect.any(Number),
+        requestId: expect.stringMatching(/^request_/),
+      });
+      expect(error.message).not.toMatch(/secret|get trap/);
+      expect(Object.is(error, dependencyError)).toBe(false);
+    }
+  });
+
+  it("maps unknown and accessor dependency errors to one fixed safe failure", async () => {
+    let getterReads = 0;
+    const accessorError = {};
+    for (const key of ["code", "details", "message"]) {
+      Object.defineProperty(accessorError, key, {
+        enumerable: true,
+        get() {
+          getterReads += 1;
+          throw new Error("private getter");
+        },
+      });
+    }
+    for (const dependencyError of [
+      new Error("database password is hunter2"),
+      Object.freeze({ code: "UNKNOWN_SECRET", message: "token=secret" }),
+      accessorError,
+    ]) {
+      const { service } = serviceWith(async () => {
+        throw dependencyError;
+      });
+      await expect(service.createQuote(quoteInput)).rejects.toMatchObject({
+        code: "BOOKING_SERVICE_UNAVAILABLE",
+        message: "Booking service unavailable",
+      });
+    }
+    expect(getterReads).toBe(0);
+  });
+
+  it("accepts QUOTE_CHANGED only when replacement IDs match the trusted context", async () => {
+    const details = {
+      previous_total_price_cents: quote.total_price_cents,
+      replacement_quote: quote,
+    };
+    const dependencyError = Object.freeze(
+      Object.assign(new Error("untrusted server message"), {
+        code: "QUOTE_CHANGED",
+        statusCode: 409,
+        requestId: "request_changed",
+        details,
+      }),
+    );
+    const { service } = serviceWith(async () => {
+      throw dependencyError;
+    });
+
+    const error = await service
+      .createBooking(
+        { quote_id: IDS.quote },
+        idempotencyKey,
+        { expectedQuote },
+      )
+      .catch((value) => value);
+    expect(error).toMatchObject({
+      code: "QUOTE_CHANGED",
+      message: "Quote changed",
+      statusCode: 409,
+      requestId: "request_changed",
+      details,
+    });
+    expect(error).not.toBe(dependencyError);
+  });
+
+  it("rejects missing, malformed, or mismatched QUOTE_CHANGED context safely", async () => {
+    const changed = (replacementQuote = quote) =>
+      Object.freeze(
+        Object.assign(new Error("secret"), {
+          code: "QUOTE_CHANGED",
+          details: {
+            previous_total_price_cents: quote.total_price_cents,
+            replacement_quote: replacementQuote,
+          },
+        }),
+      );
+    const cases = [
+      { options: undefined, error: changed() },
+      { options: { expectedQuote: {} }, error: changed() },
+      {
+        options: { expectedQuote },
+        error: changed({
+          ...quote,
+          property: {
+            ...quote.property,
+            id: "10000000-0000-4000-8000-000000000002",
+          },
+        }),
+      },
+      {
+        options: { expectedQuote },
+        error: changed({
+          ...quote,
+          room_type: {
+            ...quote.room_type,
+            id: "20000000-0000-4000-8000-000000000002",
+          },
+        }),
+      },
+    ];
+    for (const entry of cases) {
+      const { service } = serviceWith(async () => {
+        throw entry.error;
+      });
+      await expect(
+        service.createBooking(
+          { quote_id: IDS.quote },
+          idempotencyKey,
+          entry.options,
+        ),
+      ).rejects.toMatchObject({
+        code: "INVALID_API_RESPONSE",
+        message: "Invalid API response",
+      });
+    }
+  });
+
+  it("rejects accessor QUOTE_CHANGED details without invoking them", async () => {
+    let reads = 0;
+    const dependencyError = Object.assign(new Error("secret"), {
+      code: "QUOTE_CHANGED",
+    });
+    Object.defineProperty(dependencyError, "details", {
+      enumerable: true,
+      get() {
+        reads += 1;
+        throw new Error("private details getter");
+      },
+    });
+    const { service } = serviceWith(async () => {
+      throw dependencyError;
+    });
+
+    await expect(
+      service.createBooking(
+        { quote_id: IDS.quote },
+        idempotencyKey,
+        { expectedQuote },
+      ),
+    ).rejects.toMatchObject({ code: "INVALID_API_RESPONSE" });
+    expect(reads).toBe(0);
   });
 });

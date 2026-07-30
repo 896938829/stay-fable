@@ -808,8 +808,14 @@ function assertBookingResponse(value, requestedQuoteId) {
   }
 }
 
-function assertQuoteChangedDetails(value) {
+function assertQuoteChangedDetails(value, expectedQuote) {
   try {
+    const context = readExactRecord(expectedQuote, [
+      "property_id",
+      "room_type_id",
+    ]);
+    assertUuid(context.property_id);
+    assertUuid(context.room_type_id);
     const snapshot = readExactRecord(value, [
       "previous_total_price_cents",
       "replacement_quote",
@@ -833,6 +839,13 @@ function assertQuoteChangedDetails(value) {
       "name",
       "cover_url",
     ]);
+    const property = readExactRecord(replacementRoom.property, ["id", "name"]);
+    if (
+      property.id !== context.property_id ||
+      room.id !== context.room_type_id
+    ) {
+      throw invalidResponse();
+    }
     return {
       previous_total_price_cents: assertMoneyCents(
         snapshot.previous_total_price_cents,

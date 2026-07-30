@@ -59,6 +59,10 @@ const booking = {
   expires_at: "2026-07-30T02:15:00.000Z",
   created_at: "2026-07-30T02:00:00.000Z",
 };
+const expectedQuote = {
+  property_id: IDS.property,
+  room_type_id: IDS.roomType,
+};
 
 function expectInvalid(callback) {
   expect(callback).toThrow(
@@ -90,7 +94,7 @@ describe("booking response contracts", () => {
     const details = assertQuoteChangedDetails({
       previous_total_price_cents: quote.total_price_cents,
       replacement_quote: quote,
-    });
+    }, expectedQuote);
 
     expect(parsedQuote).toEqual(quote);
     expect(parsedBooking).toEqual(booking);
@@ -145,7 +149,7 @@ describe("booking response contracts", () => {
         previous_total_price_cents: quote.total_price_cents,
         replacement_quote: quote,
         version: 1,
-      }),
+      }, expectedQuote),
     );
   });
 
@@ -274,9 +278,60 @@ describe("booking response contracts", () => {
         assertQuoteChangedDetails({
           previous_total_price_cents: quote.total_price_cents,
           replacement_quote: hostileQuote,
-        }),
+        }, expectedQuote),
       );
     }
+    expect(reads).toBe(0);
+  });
+
+  it("binds replacement quotes to a strict trusted property and room context", () => {
+    const details = {
+      previous_total_price_cents: quote.total_price_cents,
+      replacement_quote: quote,
+    };
+    expect(assertQuoteChangedDetails(details, expectedQuote)).toEqual(details);
+    for (const context of [
+      undefined,
+      {},
+      { ...expectedQuote, unknown: true },
+      Object.assign(Object.create({ property_id: IDS.property }), expectedQuote),
+      { ...expectedQuote, [Symbol("secret")]: true },
+    ]) {
+      expectInvalid(() => assertQuoteChangedDetails(details, context));
+    }
+    expectInvalid(() =>
+      assertQuoteChangedDetails(details, {
+        ...expectedQuote,
+        property_id: "10000000-0000-4000-8000-000000000002",
+      }),
+    );
+    expectInvalid(() =>
+      assertQuoteChangedDetails(details, {
+        ...expectedQuote,
+        room_type_id: "20000000-0000-4000-8000-000000000002",
+      }),
+    );
+  });
+
+  it("rejects expected quote accessors without invoking them", () => {
+    let reads = 0;
+    const context = { room_type_id: IDS.roomType };
+    Object.defineProperty(context, "property_id", {
+      enumerable: true,
+      get() {
+        reads += 1;
+        throw new Error("private context getter");
+      },
+    });
+    expectInvalid(() =>
+      assertQuoteChangedDetails(
+        {
+          previous_total_price_cents: quote.total_price_cents,
+          replacement_quote: quote,
+        },
+        context,
+      ),
+    );
     expect(reads).toBe(0);
   });
 });
