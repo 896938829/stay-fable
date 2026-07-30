@@ -439,6 +439,62 @@ describe("booking confirmation page state machine", () => {
     expect(harness.page.data.status).toBe("booking_created");
   });
 
+  it.each([
+    [
+      "network",
+      async (harness) => {
+        await harness.page.confirmBooking.call(harness.page);
+        expect(harness.page.data.errorCode).toBe("NETWORK_REQUEST_FAILED");
+      },
+    ],
+    [
+      "generic service",
+      async (harness) => {
+        await harness.page.confirmBooking.call(harness.page);
+        expect(harness.page.data.errorCode).toBe(
+          "BOOKING_SERVICE_UNAVAILABLE",
+        );
+      },
+    ],
+    [
+      "hidden uncertain result",
+      async (harness) => {
+        harness.page.data.status = "submitting";
+        harness.page.onHide.call(harness.page);
+        harness.page.onShow.call(harness.page);
+        expect(harness.page.data.errorCode).toBe(
+          "BOOKING_RESULT_UNCERTAIN",
+        );
+      },
+    ],
+  ])(
+    "does not retire or requote a %s booking error through retryQuote",
+    async (_label, enterError) => {
+      const createQuote = vi.fn(async () => quote);
+      const createBooking = vi.fn(async () => {
+        throw {
+          code:
+            _label === "network"
+              ? "NETWORK_REQUEST_FAILED"
+              : "BOOKING_SERVICE_UNAVAILABLE",
+        };
+      });
+      const harness = createHarness({ createBooking, createQuote });
+      await harness.page.onLoad.call(harness.page, {
+        room_type_id: IDS.room,
+      });
+      await enterError(harness);
+      const quoteCalls = createQuote.mock.calls.length;
+      harness.idempotency.clear.mockClear();
+
+      await harness.page.retryQuote.call(harness.page);
+
+      expect(harness.idempotency.clear).not.toHaveBeenCalled();
+      expect(createQuote).toHaveBeenCalledTimes(quoteCalls);
+      expect(harness.page.data.status).toBe("booking_error");
+    },
+  );
+
   it("requires explicit acceptance of QUOTE_CHANGED and then uses a new scope", async () => {
     const changedError = {
       code: "QUOTE_CHANGED",
@@ -494,6 +550,7 @@ describe("booking confirmation page state machine", () => {
   it.each([
     ["QUOTE_EXPIRED", "当前报价已失效，请重新获取报价"],
     ["INVENTORY_UNAVAILABLE", "所选日期库存不足，请重新选择"],
+    ["QUOTE_ALREADY_USED", "该报价已被使用，请重新获取报价"],
   ])("shows an explicit %s state and retires its scope", async (code, message) => {
     const createBooking = vi.fn(async () => {
       throw { code };
@@ -513,6 +570,14 @@ describe("booking confirmation page state machine", () => {
     });
     expect(harness.idempotency.clear).toHaveBeenCalledWith(
       `quote:${IDS.quote}`,
+    );
+
+    const clearCount = harness.idempotency.clear.mock.calls.length;
+    const quoteCalls = harness.bookingApi.createQuote.mock.calls.length;
+    await harness.page.retryQuote.call(harness.page);
+    expect(harness.idempotency.clear.mock.calls.length).toBe(clearCount + 1);
+    expect(harness.bookingApi.createQuote).toHaveBeenCalledTimes(
+      quoteCalls + 1,
     );
   });
 
@@ -657,6 +722,41 @@ describe("booking confirmation page state machine", () => {
     expect(wxApi.showToast).toHaveBeenCalledTimes(2);
     expect(toastHarness.page.data.submitPressed).toBe(false);
   });
+
+  it("keeps invalid link and search errors actionable after native navigation failures", async () => {
+    const backCalls = [];
+    const homeCalls = [];
+    const wxApi = {
+      navigateBack: vi.fn((options) => backCalls.push(options)),
+      reLaunch: vi.fn((options) => homeCalls.push(options)),
+      showModal: vi.fn(({ fail }) => fail()),
+      showToast: vi.fn(),
+    };
+    const invalidLink = createHarness({ wxApi });
+    invalidLink.page.onLoad.call(invalidLink.page, {
+      room_type_id: "bad",
+    });
+    expect(backCalls).toHaveLength(1);
+    invalidLink.page.returnBack.call(invalidLink.page);
+    expect(backCalls).toHaveLength(1);
+    backCalls[0].fail();
+    expect(homeCalls).toHaveLength(1);
+    homeCalls[0].fail();
+    invalidLink.page.returnBack.call(invalidLink.page);
+    expect(backCalls).toHaveLength(2);
+
+    const invalidSearch = createHarness({
+      searchValue: () => {
+        throw new Error("private search failure");
+      },
+      wxApi,
+    });
+    await invalidSearch.page.onLoad.call(invalidSearch.page, {
+      room_type_id: IDS.room,
+    });
+    invalidSearch.page.returnHome.call(invalidSearch.page);
+    expect(homeCalls).toHaveLength(2);
+  });
 });
 
 describe("booking confirmation native files", () => {
@@ -729,6 +829,14 @@ describe("booking confirmation native files", () => {
     expect(wxml).toContain('aria-pressed="{{submitPressed}}"');
     expect(wxml).toContain('loading="{{status === \'submitting\'}}"');
     expect(wxml).toContain("支付与订单详情将在下一开发切片开放");
+    expect(wxml).toContain(
+      "errorCode === 'INVALID_ROOM_LINK'",
+    );
+    expect(wxml).toContain('bind:retry="returnBack"');
+    expect(wxml).toContain(
+      "errorCode === 'INVALID_SEARCH_CONTEXT'",
+    );
+    expect(wxml).toContain('bind:retry="returnHome"');
     expect(wxss).toContain("env(safe-area-inset-bottom)");
     expect(wxss).toContain("var(--color-brand)");
     expect(wxss).toContain("var(--radius-medium)");

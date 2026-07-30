@@ -19,8 +19,12 @@ const SAFE_QUOTE_ERRORS = Object.freeze({
 });
 const SAFE_BOOKING_ERRORS = Object.freeze({
   NETWORK_REQUEST_FAILED: "网络连接不稳定，请使用同一订单请求重试",
-  QUOTE_ALREADY_USED: "该报价已被使用，请重新获取报价",
   RATE_LIMITED: "操作过于频繁，请稍后重试",
+});
+const RETIRABLE_QUOTE_ERRORS = Object.freeze({
+  INVENTORY_UNAVAILABLE: "所选日期库存不足，请重新选择",
+  QUOTE_ALREADY_USED: "该报价已被使用，请重新获取报价",
+  QUOTE_EXPIRED: "当前报价已失效，请重新获取报价",
 });
 const INVALID_LINK_MESSAGE = "房型链接无效，请返回重新选择";
 const INVALID_SEARCH_MESSAGE = "搜索条件已失效，请返回首页重新选择";
@@ -154,6 +158,13 @@ function quoteErrorMessage(value) {
     Object.prototype.hasOwnProperty.call(SAFE_QUOTE_ERRORS, snapshot.code)
     ? SAFE_QUOTE_ERRORS[snapshot.code]
     : UNAVAILABLE_QUOTE_MESSAGE;
+}
+
+function canRetireQuote(code) {
+  return (
+    typeof code === "string" &&
+    Object.prototype.hasOwnProperty.call(RETIRABLE_QUOTE_ERRORS, code)
+  );
 }
 
 function observeNativeResult(result, success, failure) {
@@ -293,6 +304,10 @@ function createBookingConfirmPage(dependencies) {
   }
 
   function navigateBackSafely(page, token) {
+    if (!active || navigationLocked || nativeToken !== token) {
+      return;
+    }
+    navigationLocked = true;
     invokeNative(wxApi && wxApi.navigateBack, { delta: 1 }, (successful) => {
       if (nativeToken !== token) {
         return;
@@ -511,12 +526,16 @@ function createBookingConfirmPage(dependencies) {
     },
 
     retryQuote() {
-      if (
-        !active ||
-        requestInput === null ||
-        (this.data.status !== "quote_error" &&
-          this.data.status !== "booking_error")
-      ) {
+      if (!active || requestInput === null) {
+        return;
+      }
+      const quoteLoadFailed =
+        this.data.status === "quote_error" &&
+        this.data.errorCode === "QUOTE_LOAD_FAILED";
+      const terminalBookingFailure =
+        this.data.status === "booking_error" &&
+        canRetireQuote(this.data.errorCode);
+      if (!quoteLoadFailed && !terminalBookingFailure) {
         return;
       }
       if (currentQuote !== null) {
@@ -631,19 +650,13 @@ function createBookingConfirmPage(dependencies) {
               false,
             );
           }
-        } else if (
-          snapshot &&
-          (snapshot.code === "QUOTE_EXPIRED" ||
-            snapshot.code === "INVENTORY_UNAVAILABLE")
-        ) {
+        } else if (snapshot && canRetireQuote(snapshot.code)) {
           idempotency.clear(scope);
           stopTimer();
           setBookingFailure(
             this,
             snapshot.code,
-            snapshot.code === "QUOTE_EXPIRED"
-              ? "当前报价已失效，请重新获取报价"
-              : "所选日期库存不足，请重新选择",
+            RETIRABLE_QUOTE_ERRORS[snapshot.code],
             true,
           );
         } else {
@@ -723,6 +736,10 @@ function createBookingConfirmPage(dependencies) {
           }
         },
       );
+    },
+
+    returnBack() {
+      navigateBackSafely(this, nativeToken);
     },
   };
 }

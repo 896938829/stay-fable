@@ -13,6 +13,22 @@
   ></loading-state>
 
   <error-state
+    wx:elif="{{status === 'quote_error' && errorCode === 'INVALID_ROOM_LINK'}}"
+    title="房型链接无效"
+    message="{{errorMessage}}"
+    action-text="返回重新选择"
+    bind:retry="returnBack"
+  ></error-state>
+
+  <error-state
+    wx:elif="{{status === 'quote_error' && errorCode === 'INVALID_SEARCH_CONTEXT'}}"
+    title="搜索条件已失效"
+    message="{{errorMessage}}"
+    action-text="返回首页"
+    bind:retry="returnHome"
+  ></error-state>
+
+  <error-state
     wx:elif="{{status === 'quote_error'}}"
     title="暂时无法获取报价"
     message="{{errorMessage}}"
