@@ -1,9 +1,10 @@
 import { randomBytes, randomUUID } from "node:crypto";
 
 import { Pool } from "pg";
-import { afterAll, beforeAll, describe, expect, test } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, test, vi } from "vitest";
 
 import { BookingExpiryRepository } from "../src/booking-expiry.repository.js";
+import { BookingExpirySweeper } from "../src/booking-expiry.sweeper.js";
 
 const runDatabaseIntegration = process.env.RUN_DATABASE_INTEGRATION === "true";
 const describeDatabase = runDatabaseIntegration ? describe : describe.skip;
@@ -47,14 +48,19 @@ const boundedPool = (connectionString: string, maximum = 4): Pool =>
     max: maximum,
   });
 
-const scopedDatabaseUrl = (connectionString: string, schemaName: string): string => {
+const scopedDatabaseUrl = (
+  connectionString: string,
+  schemaName: string,
+  lockTimeoutMs = 10_000,
+  statementTimeoutMs = 15_000,
+): string => {
   const scoped = new URL(connectionString);
   scoped.searchParams.set(
     "options",
     [
       `-c search_path=${schemaName},public`,
-      "-c statement_timeout=15000",
-      "-c lock_timeout=10000",
+      `-c statement_timeout=${statementTimeoutMs}`,
+      `-c lock_timeout=${lockTimeoutMs}`,
       "-c idle_in_transaction_session_timeout=20000",
     ].join(" "),
   );
@@ -81,6 +87,7 @@ describeDatabase("booking expiry PostgreSQL workers", () => {
   let schemaName: string | undefined;
   let workerPoolA: Pool | undefined;
   let workerPoolB: Pool | undefined;
+  let workerProbePool: Pool | undefined;
 
   const activeWorkerA = (): Pool => {
     if (workerPoolA === undefined) {
@@ -96,7 +103,14 @@ describeDatabase("booking expiry PostgreSQL workers", () => {
     return workerPoolB;
   };
 
-  const seedExpiredBooking = async (): Promise<BookingFixture> => {
+  const activeWorkerProbe = (): Pool => {
+    if (workerProbePool === undefined) {
+      throw new Error("Booking expiry probe pool was not initialized");
+    }
+    return workerProbePool;
+  };
+
+  const seedExpiredBooking = async (expiredMinutesAgo = 5): Promise<BookingFixture> => {
     const bookingId = randomUUID();
     const roomTypeId = randomUUID();
     const bookingNumber = `SF20300101${randomBytes(6).toString("hex").toUpperCase()}`;
@@ -127,7 +141,7 @@ describeDatabase("booking expiry PostgreSQL workers", () => {
         dates[0],
         "2030-02-03",
         `key_${randomBytes(20).toString("hex")}`,
-        new Date(NOW.getTime() - 5 * 60_000),
+        new Date(NOW.getTime() - expiredMinutesAgo * 60_000),
         new Date(NOW.getTime() - 30 * 60_000),
       ],
     );
@@ -155,7 +169,7 @@ describeDatabase("booking expiry PostgreSQL workers", () => {
           bookingId,
           roomTypeId,
           date,
-          new Date(NOW.getTime() - 5 * 60_000),
+          new Date(NOW.getTime() - expiredMinutesAgo * 60_000),
           new Date(NOW.getTime() - 30 * 60_000),
         ],
       );
@@ -227,18 +241,33 @@ describeDatabase("booking expiry PostgreSQL workers", () => {
     const scoped = scopedDatabaseUrl(connectionString, schemaName);
     workerPoolA = boundedPool(scoped);
     workerPoolB = boundedPool(scoped);
-    await Promise.all([workerPoolA.query("SELECT 1"), workerPoolB.query("SELECT 1")]);
+    workerProbePool = boundedPool(scopedDatabaseUrl(connectionString, schemaName, 250, 1_000), 1);
+    await Promise.all([
+      workerPoolA.query("SELECT 1"),
+      workerPoolB.query("SELECT 1"),
+      workerProbePool.query("SELECT 1"),
+    ]);
   }, 25_000);
+
+  afterEach(async () => {
+    if (workerPoolA !== undefined) {
+      await workerPoolA.query(
+        `TRUNCATE "booking_status_history", "inventory_hold", "booking", "daily_inventory"`,
+      );
+    }
+  });
 
   afterAll(async () => {
     const cleanupWorkerA = workerPoolA;
     const cleanupWorkerB = workerPoolB;
     const cleanupAdmin = adminPool;
+    const cleanupWorkerProbe = workerProbePool;
     const cleanupSchemaName = schemaName;
     const cleanupSchemaCreated = schemaCreated;
     workerPoolA = undefined;
     workerPoolB = undefined;
     adminPool = undefined;
+    workerProbePool = undefined;
     schemaName = undefined;
     schemaCreated = false;
 
@@ -246,6 +275,7 @@ describeDatabase("booking expiry PostgreSQL workers", () => {
     for (const cleanup of [
       async () => cleanupWorkerA?.end(),
       async () => cleanupWorkerB?.end(),
+      async () => cleanupWorkerProbe?.end(),
       async () => {
         if (cleanupSchemaCreated) {
           if (cleanupAdmin === undefined || cleanupSchemaName === undefined) {
@@ -306,5 +336,77 @@ describeDatabase("booking expiry PostgreSQL workers", () => {
       historyCount: 1,
       holdStatuses: ["RELEASED", "RELEASED"],
     });
+  }, 25_000);
+
+  test("one poisoned booking does not starve the next healthy booking in the same tick", async () => {
+    const poisoned = await seedExpiredBooking(15);
+    await activeWorkerA().query(
+      `
+        DELETE FROM "inventory_hold"
+        WHERE "booking_id" = $1::uuid
+          AND "business_date" = $2::date
+      `,
+      [poisoned.bookingId, poisoned.dates[1]],
+    );
+    const healthy = await seedExpiredBooking(10);
+    const logger = { error: vi.fn(), info: vi.fn() };
+    const sweeper = new BookingExpirySweeper(
+      new BookingExpiryRepository(activeWorkerA()),
+      { now: () => new Date(NOW) },
+      { setInterval: vi.fn(), clearInterval: vi.fn() },
+      5_000,
+      logger,
+    );
+
+    await sweeper.tick();
+
+    expect(await readState(poisoned)).toEqual({
+      bookingStatus: "PENDING_PAYMENT",
+      heldInventory: [1, 1],
+      historyCount: 0,
+      holdStatuses: ["HELD"],
+    });
+    expect(await readState(healthy)).toEqual({
+      bookingStatus: "CLOSED",
+      heldInventory: [0, 0],
+      historyCount: 1,
+      holdStatuses: ["RELEASED", "RELEASED"],
+    });
+    expect(logger.error).toHaveBeenCalledOnce();
+    expect(logger.info).toHaveBeenCalledWith(
+      { failedCount: 1, processedCount: 1 },
+      "booking expiry sweep completed",
+    );
+    expect(JSON.stringify(logger.error.mock.calls)).not.toContain(poisoned.bookingId);
+  }, 25_000);
+
+  test("SKIP LOCKED selects the next booking while the earliest row is externally locked", async () => {
+    const locked = await seedExpiredBooking(15);
+    const available = await seedExpiredBooking(10);
+    const locker = await activeWorkerA().connect();
+    try {
+      await locker.query("BEGIN");
+      await locker.query(`SELECT "id" FROM "booking" WHERE "id" = $1::uuid FOR UPDATE`, [
+        locked.bookingId,
+      ]);
+
+      await expect(
+        new BookingExpiryRepository(activeWorkerProbe()).closeNextExpired(NOW),
+      ).resolves.toEqual({
+        kind: "CLOSED",
+        bookingNumber: available.bookingNumber,
+      });
+
+      expect(await readState(locked)).toEqual({
+        bookingStatus: "PENDING_PAYMENT",
+        heldInventory: [1, 1],
+        historyCount: 0,
+        holdStatuses: ["HELD", "HELD"],
+      });
+      expect((await readState(available)).bookingStatus).toBe("CLOSED");
+    } finally {
+      await locker.query("ROLLBACK");
+      locker.release();
+    }
   }, 25_000);
 });

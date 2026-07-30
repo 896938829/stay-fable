@@ -1,4 +1,8 @@
-import { BookingExpiryRepository } from "./booking-expiry.repository.js";
+import {
+  bookingExpiryExclusionFrom,
+  BookingExpiryRepository,
+  type BookingExpiryExclusion,
+} from "./booking-expiry.repository.js";
 import type { DatabasePool } from "./database.js";
 
 export interface WorkerClock {
@@ -85,18 +89,23 @@ export class BookingExpirySweeper {
 
   private async runTick(): Promise<void> {
     const now = this.clock.now();
+    const exclusions: BookingExpiryExclusion[] = [];
     let failedCount = 0;
     let processedCount = 0;
 
     for (let attempt = 0; attempt < MAX_BOOKINGS_PER_TICK; attempt += 1) {
       try {
-        const result = await this.repository.closeNextExpired(now);
+        const result = await this.repository.closeNextExpired(now, [...exclusions]);
         if (result.kind === "NONE") {
           break;
         }
         processedCount += 1;
-      } catch {
+      } catch (error) {
         failedCount += 1;
+        const exclusion = bookingExpiryExclusionFrom(error);
+        if (exclusion !== undefined && !exclusions.includes(exclusion)) {
+          exclusions.push(exclusion);
+        }
         this.logger.error({}, "booking expiry close failed");
       }
     }

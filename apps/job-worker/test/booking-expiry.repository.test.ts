@@ -82,9 +82,25 @@ describe("BookingExpiryRepository.closeNextExpired", () => {
       throw new Error("Expected a parameterized booking selection");
     }
     expect(selection.text).toMatch(/FOR UPDATE SKIP LOCKED/);
-    expect(selection.values).toEqual([NOW]);
+    expect(selection.values).toEqual([NOW, []]);
     expect(queries[2]).toBe("COMMIT");
     expect(release).toHaveBeenCalledOnce();
+  });
+
+  it("parameterizes booking exclusions when selecting the next expired booking", async () => {
+    const { pool, queries } = createHarness([[]]);
+    const repository = new BookingExpiryRepository(pool);
+
+    await expect(repository.closeNextExpired(NOW, [BOOKING_ID])).resolves.toEqual({
+      kind: "NONE",
+    });
+
+    const selection = queries[1];
+    if (selection === undefined || typeof selection === "string") {
+      throw new Error("Expected a parameterized booking selection");
+    }
+    expect(selection.text).toMatch(/NOT.+ANY/s);
+    expect(selection.values).toEqual([NOW, [BOOKING_ID]]);
   });
 
   it("releases every night and records one system timeout transition atomically", async () => {
@@ -115,7 +131,7 @@ describe("BookingExpiryRepository.closeNextExpired", () => {
       expect(text).not.toContain(ROOM_TYPE_ID);
       expect(text).not.toContain(BOOKING_NUMBER);
     }
-    expect(parameterized[0]).toMatchObject({ values: [NOW] });
+    expect(parameterized[0]).toMatchObject({ values: [NOW, []] });
     expect(parameterized[1]?.text).toMatch(/inventory_hold[\s\S]*FOR UPDATE/);
     expect(parameterized[2]?.text).toMatch(/daily_inventory[\s\S]*FOR UPDATE/);
     expect(parameterized[3]).toMatchObject({
@@ -179,7 +195,7 @@ describe("BookingExpiryRepository.closeNextExpired", () => {
     expect(JSON.stringify(thrown)).not.toMatch(/dbuser|secret|10000000/);
     expect(query.mock.calls.map(([value]) => value)).toEqual([
       "BEGIN",
-      expect.objectContaining({ values: [NOW] }),
+      expect.objectContaining({ values: [NOW, []] }),
       "ROLLBACK",
     ]);
     expect(release).toHaveBeenCalledOnce();

@@ -32,8 +32,24 @@ const UUID_PATTERN =
 const BOOKING_NUMBER_PATTERN = /^SF[0-9]{8}[A-F0-9]{12}$/;
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 const UNAVAILABLE_MESSAGE = "Booking expiry repository unavailable";
+const bookingFailureIds = new WeakMap<BookingExpiryBookingFailure, BookingExpiryExclusion>();
+declare const bookingExpiryExclusionBrand: unique symbol;
 
 const unavailable = (): Error => new Error(UNAVAILABLE_MESSAGE);
+
+export type BookingExpiryExclusion = string & {
+  readonly [bookingExpiryExclusionBrand]: true;
+};
+
+class BookingExpiryBookingFailure extends Error {
+  constructor(bookingId: string) {
+    super(UNAVAILABLE_MESSAGE);
+    bookingFailureIds.set(this, bookingId as BookingExpiryExclusion);
+  }
+}
+
+export const bookingExpiryExclusionFrom = (error: unknown): BookingExpiryExclusion | undefined =>
+  error instanceof BookingExpiryBookingFailure ? bookingFailureIds.get(error) : undefined;
 
 const readDate = (value: unknown): string => {
   if (typeof value !== "string" || !DATE_PATTERN.test(value)) {
@@ -91,13 +107,24 @@ const sameIds = (rows: IdRow[], expectedIds: Set<string>): boolean => {
 export class BookingExpiryRepository {
   constructor(private readonly pool: DatabasePool) {}
 
-  async closeNextExpired(now: Date): Promise<BookingExpiryResult> {
+  async closeNextExpired(
+    now: Date,
+    excludedBookingIds: readonly string[] = [],
+  ): Promise<BookingExpiryResult> {
     if (!(now instanceof Date) || !Number.isFinite(now.getTime())) {
       throw unavailable();
     }
+    if (
+      excludedBookingIds.length > 25 ||
+      excludedBookingIds.some((bookingId) => !UUID_PATTERN.test(bookingId))
+    ) {
+      throw unavailable();
+    }
+    const exclusions = [...new Set(excludedBookingIds)];
 
     let client: DatabaseClient | undefined;
     let began = false;
+    let lockedBookingId: string | undefined;
     try {
       client = await this.pool.connect();
       await client.query("BEGIN");
@@ -113,11 +140,12 @@ export class BookingExpiryRepository {
           FROM "booking" booking
           WHERE booking."status" = 'PENDING_PAYMENT'
             AND booking."expires_at" <= $1
+            AND NOT (booking."id" = ANY($2::uuid[]))
           ORDER BY booking."expires_at" ASC, booking."id" ASC
           LIMIT 1
           FOR UPDATE SKIP LOCKED
         `,
-        values: [now],
+        values: [now, exclusions],
       });
       if (bookingResult.rows.length === 0) {
         await client.query("COMMIT");
@@ -127,6 +155,7 @@ export class BookingExpiryRepository {
 
       const booking = oneRow(bookingResult);
       const bookingId = readUuid(booking.bookingId);
+      lockedBookingId = bookingId;
       const bookingNumber = readBookingNumber(booking.bookingNumber);
       const roomTypeId = readUuid(booking.roomTypeId);
       const checkin = readDate(booking.checkin);
@@ -280,7 +309,9 @@ export class BookingExpiryRepository {
           // The public error remains sanitized even if rollback also fails.
         }
       }
-      throw unavailable();
+      throw lockedBookingId === undefined
+        ? unavailable()
+        : new BookingExpiryBookingFailure(lockedBookingId);
     } finally {
       if (client !== undefined) {
         try {

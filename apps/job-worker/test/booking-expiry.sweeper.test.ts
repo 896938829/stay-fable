@@ -203,7 +203,7 @@ describe("BookingExpirySweeper", () => {
     await resources.sweeper.stop();
     expect(query.mock.calls.map(([value]) => value)).toEqual([
       "BEGIN",
-      expect.objectContaining({ values: [expect.any(Date)] }),
+      expect.objectContaining({ values: [expect.any(Date), []] }),
       "COMMIT",
     ]);
   });
