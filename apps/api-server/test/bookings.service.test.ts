@@ -699,6 +699,23 @@ describe("BookingRepository", () => {
     expect(transaction.$queryRaw).toHaveBeenCalledTimes(calls);
   });
 
+  it("projects the quote ID used by strict same-quote materialization", async () => {
+    const { database, transaction } = createBookingDatabase([
+      [{ locked: null }],
+      [],
+      [quoteRow],
+      [{ ...bookingRecord, idempotencyKey: `${IDEMPOTENCY_KEY}x` }],
+    ]);
+    const repository = repositoryFor(database as unknown as BookingDatabase);
+
+    await expect(repository.createFromQuote(repositoryInput)).resolves.toEqual({
+      kind: "QUOTE_ALREADY_USED",
+    });
+    const usedBookingSql = queryText(transaction.$queryRaw.mock.calls[3]);
+    expect(usedBookingSql).toContain('booking."quote_id"::text AS "quoteId"');
+    expect(usedBookingSql).toContain('WHERE booking."quote_id" =');
+  });
+
   it("treats a missing current price night as an expired quote without writes", async () => {
     const { database, transaction } = createBookingDatabase([
       [{ locked: null }],

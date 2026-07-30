@@ -732,6 +732,7 @@ export class BookingRepository {
       await transaction.$queryRaw<unknown[]>(Prisma.sql`
         SELECT
           booking."id"::text AS "id",
+          booking."quote_id"::text AS "quoteId",
           booking."booking_number" AS "bookingNumber",
           booking."status"::text AS "status",
           (booking."property_snapshot" ->> 'name') AS "propertyName",
