@@ -19,6 +19,9 @@
     "verify:phase-0": "node scripts/verify-phase-0.mjs",
     "verify:slice5:candidate": "node scripts/verify-slice-5-candidate.mjs",
     "prisma:generate": "pnpm --filter @stay-fable/api-server prisma:generate",
+    "demo:up": "pwsh -NoProfile -File scripts/demo-runtime.ps1 -Action Up",
+    "demo:status": "pwsh -NoProfile -File scripts/demo-runtime.ps1 -Action Status",
+    "demo:down": "pwsh -NoProfile -File scripts/demo-runtime.ps1 -Action Down",
     "wx:check": "node scripts/check-wx-project.mjs",
     "check": "pnpm verify && pnpm wx:check && pnpm format:check && pnpm lint && pnpm typecheck && pnpm test && pnpm build"
   },
