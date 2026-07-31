@@ -55,3 +55,27 @@ test("demo lifecycle remains owner-scoped and simulator reachable", async () => 
     "pwsh -NoProfile -File scripts/demo-runtime.ps1 -Action Down",
   );
 });
+
+test("demo deployment guide is complete", async () => {
+  const guide = await read("docs/operations/demo-v0.1-deployment.md");
+  for (const required of [
+    "Node.js 24",
+    "pnpm 11",
+    "Ubuntu-22.04",
+    "Docker Engine",
+    "pnpm demo:up",
+    "pnpm demo:status",
+    "pnpm demo:down",
+    "/health/live",
+    "/health/ready",
+    "/wx",
+    "127.0.0.1:3000",
+    "不校验合法域名",
+    "酒店列表",
+    "模拟支付",
+    "数据卷",
+    "High",
+  ]) {
+    assert.match(guide, new RegExp(required.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+  }
+});
