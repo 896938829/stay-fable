@@ -17,8 +17,6 @@ function canonicalId(options) {
       options === null ||
       typeof options !== "object" ||
       Array.isArray(options) ||
-      (Object.getPrototypeOf(options) !== Object.prototype &&
-        Object.getPrototypeOf(options) !== null) ||
       Object.keys(options).length !== 1
     ) {
       return null;
@@ -47,11 +45,7 @@ function ownData(event) {
     ) {
       return null;
     }
-    const dataset = event.currentTarget.dataset;
-    const prototype = Object.getPrototypeOf(dataset);
-    return prototype === Object.prototype || prototype === null
-      ? dataset
-      : null;
+    return event.currentTarget.dataset;
   } catch {
     return null;
   }

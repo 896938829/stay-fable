@@ -5,11 +5,12 @@ import test from "node:test";
 const read = (path) => readFile(new URL(`../${path}`, import.meta.url), "utf8");
 
 test("demo lifecycle remains owner-scoped and simulator reachable", async () => {
-  const [powershell, shell, compose, manifestText] = await Promise.all([
+  const [powershell, shell, compose, manifestText, gitignore] = await Promise.all([
     read("scripts/demo-runtime.ps1"),
     read("scripts/demo-runtime.sh"),
     read("infrastructure/demo.compose.yaml"),
     read("package.json"),
+    read(".gitignore"),
   ]);
   const manifest = JSON.parse(manifestText);
 
@@ -42,6 +43,7 @@ test("demo lifecycle remains owner-scoped and simulator reachable", async () => 
   assert.match(powershell, /pnpm deploy --filter @stay-fable\/api-server --prod/);
   assert.match(powershell, /pnpm deploy --filter @stay-fable\/job-worker --prod/);
   assert.match(powershell, /\.stay-fable-demo-owner/);
+  assert.match(gitignore, /^\.demo-runtime\/$/m);
   assert.equal(
     manifest.scripts["demo:up"],
     "pwsh -NoProfile -File scripts/demo-runtime.ps1 -Action Up",

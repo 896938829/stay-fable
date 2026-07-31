@@ -23,8 +23,7 @@ function canonicalBookingId(options) {
     if (
       options === null ||
       Array.isArray(options) ||
-      typeof options !== "object" ||
-      Object.getPrototypeOf(options) !== Object.prototype
+      typeof options !== "object"
     ) {
       return null;
     }

@@ -7,6 +7,7 @@ coverage/
 .taro/
 .swc/
 .wsl-runtime/
+.demo-runtime/
 
 .env
 .env.*

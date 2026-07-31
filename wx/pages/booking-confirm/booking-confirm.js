@@ -41,8 +41,13 @@ function plainOrNullPrototype(value) {
   return prototype === Object.prototype || prototype === null;
 }
 
-function ownRecord(value, expectedKeys) {
-  if (!plainOrNullPrototype(value)) {
+function ownRecord(value, expectedKeys, allowPlatformPrototype = false) {
+  if (
+    value === null ||
+    Array.isArray(value) ||
+    typeof value !== "object" ||
+    (!allowPlatformPrototype && !plainOrNullPrototype(value))
+  ) {
     throw new Error("Invalid record");
   }
   const descriptors = Object.getOwnPropertyDescriptors(value);
@@ -68,7 +73,7 @@ function ownRecord(value, expectedKeys) {
 
 function canonicalRoomId(options) {
   try {
-    const snapshot = ownRecord(options, ["room_type_id"]);
+    const snapshot = ownRecord(options, ["room_type_id"], true);
     return typeof snapshot.room_type_id === "string" &&
       UUID_V4_PATTERN.test(snapshot.room_type_id)
       ? snapshot.room_type_id

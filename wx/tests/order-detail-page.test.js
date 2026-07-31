@@ -316,6 +316,18 @@ describe("order detail page state machine", () => {
     });
     expect(valid.page.data.booking.bookingId).toBe(BOOKING_ID);
 
+    const platform = createHarness();
+    const platformOptions = Object.assign(
+      Object.create({ platform: true }),
+      { id: BOOKING_ID },
+    );
+    await platform.page.onLoad.call(platform.page, platformOptions);
+    expect(platform.ordersService.getBooking).toHaveBeenCalledWith(
+      BOOKING_ID,
+      expect.objectContaining({ retry: true }),
+    );
+    expect(platform.page.data.status).toBe("ready");
+
     for (const options of [
       undefined,
       {},

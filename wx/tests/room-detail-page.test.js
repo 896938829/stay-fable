@@ -278,6 +278,21 @@ describe("room detail page state machine", () => {
     );
   });
 
+  it("accepts a WeChat platform options object with one own canonical id", async () => {
+    const { catalogService, page } = createPage();
+    const options = Object.assign(Object.create({ platform: true }), {
+      id: IDS.room,
+    });
+
+    await page.onLoad.call(page, options);
+
+    expect(catalogService.getRoomType).toHaveBeenCalledWith(
+      IDS.room,
+      expect.any(Object),
+    );
+    expect(page.data.status).toBe("success");
+  });
+
   it.each([
     undefined,
     {},

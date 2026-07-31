@@ -769,11 +769,12 @@ export class BookingLifecycleRepository {
       input.userId,
       input.now,
     );
+    const confirmationTime = new Date(input.now.getTime() + 1);
     await this.updateBookingStatus(
       transaction,
       booking.bookingId,
       input.userId,
-      input.now,
+      confirmationTime,
       "PAID",
       "CONFIRMED",
     );
@@ -785,7 +786,7 @@ export class BookingLifecycleRepository {
       "PAYMENT_CONFIRMED",
       "SYSTEM",
       null,
-      input.now,
+      confirmationTime,
     );
     return { kind: "SUCCEEDED", replayed: false, bookingId: booking.bookingId };
   }

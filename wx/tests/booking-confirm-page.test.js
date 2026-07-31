@@ -300,6 +300,21 @@ describe("booking confirmation page state machine", () => {
     expect(timerApi.setInterval).toHaveBeenCalledOnce();
   });
 
+  it("accepts a WeChat platform route object with one own room id", async () => {
+    const { bookingApi, page } = createHarness();
+    const options = Object.assign(Object.create({ platform: true }), {
+      room_type_id: IDS.room,
+    });
+
+    await page.onLoad.call(page, options);
+
+    expect(bookingApi.createQuote).toHaveBeenCalledWith(
+      expect.objectContaining({ room_type_id: IDS.room }),
+      expect.any(Object),
+    );
+    expect(page.data.status).toBe("quote_ready");
+  });
+
   it.each([
     undefined,
     {},

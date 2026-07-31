@@ -227,6 +227,15 @@ describe("BookingLifecycleRepository.simulateMockPayment", () => {
     expect((calls[11]?.[0] as Prisma.Sql).values).toEqual(
       expect.arrayContaining(["PAID", "CONFIRMED"]),
     );
+    const paidHistoryAt = (calls[10]?.[0] as Prisma.Sql).values.find(
+      (value): value is Date => value instanceof Date,
+    );
+    const confirmedHistoryAt = (calls[12]?.[0] as Prisma.Sql).values.find(
+      (value): value is Date => value instanceof Date,
+    );
+    expect(paidHistoryAt).toBeInstanceOf(Date);
+    expect(confirmedHistoryAt).toBeInstanceOf(Date);
+    expect(confirmedHistoryAt!.getTime()).toBeGreaterThan(paidHistoryAt!.getTime());
     for (const [query] of calls) {
       expect(query.sql).not.toContain(USER_ID);
       expect(query.sql).not.toContain(IDEMPOTENCY_KEY);

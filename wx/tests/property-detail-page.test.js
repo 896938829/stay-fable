@@ -316,6 +316,21 @@ describe("property detail page state machine", () => {
     });
   });
 
+  it("accepts a WeChat platform options object with one own canonical id", async () => {
+    const { catalogService, page } = createPage();
+    const options = Object.assign(Object.create({ platform: true }), {
+      id: IDS.property,
+    });
+
+    await page.onLoad.call(page, options);
+
+    expect(catalogService.getProperty).toHaveBeenCalledWith(
+      IDS.property,
+      expect.any(Object),
+    );
+    expect(page.data.status).toBe("success");
+  });
+
   it.each([
     undefined,
     {},
@@ -558,6 +573,22 @@ describe("property detail page state machine", () => {
     expect(wxApi.navigateTo).toHaveBeenCalledTimes(2);
     expect(wxApi.navigateTo.mock.calls[0][0].url).toBe(
       `/pages/room-detail/room-detail?id=${encodeURIComponent(IDS.room)}`,
+    );
+  });
+
+  it("accepts an own room id from a WeChat platform event dataset", async () => {
+    const { page, wxApi } = createPage();
+    await page.onLoad.call(page, { id: IDS.property });
+    const dataset = Object.assign(Object.create({ platform: true }), {
+      id: IDS.room,
+    });
+
+    page.openRoom.call(page, { currentTarget: { dataset } });
+
+    expect(wxApi.navigateTo).toHaveBeenCalledWith(
+      expect.objectContaining({
+        url: `/pages/room-detail/room-detail?id=${encodeURIComponent(IDS.room)}`,
+      }),
     );
   });
 
