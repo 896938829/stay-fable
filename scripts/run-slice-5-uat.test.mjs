@@ -747,17 +747,27 @@ if (Test-Path -LiteralPath ${quoted(lockPath)}) { throw 'lock leaked' }
   }
 });
 
-test("streams safe markers and cleans the lock when a dirty candidate is blocked", () => {
+test("streams safe markers and cleans the lock when a dirty candidate is blocked", async () => {
   const executable = process.platform === "win32" ? "powershell.exe" : "pwsh";
-  const execution = spawnSync(
-    executable,
-    ["-NoProfile", "-File", scriptPath, "-ExecutionDate", "2026-07-31"],
-    {
-      cwd: repoRoot,
-      encoding: "utf8",
-      timeout: 30_000,
-    },
+  const dirtyMarker = path.join(
+    repoRoot,
+    `.slice5-dirty-candidate-${process.pid}-${Date.now()}.test`,
   );
+  await writeFile(dirtyMarker, "owned test marker\n", { flag: "wx" });
+  let execution;
+  try {
+    execution = spawnSync(
+      executable,
+      ["-NoProfile", "-File", scriptPath, "-ExecutionDate", "2026-07-31"],
+      {
+        cwd: repoRoot,
+        encoding: "utf8",
+        timeout: 30_000,
+      },
+    );
+  } finally {
+    await rm(dirtyMarker, { force: true });
+  }
 
   assert.equal(execution.status, 1);
   assert.equal(execution.stderr.trim(), "");
