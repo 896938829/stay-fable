@@ -1,0 +1,8 @@
+services:
+  postgres:
+    labels:
+      stay-fable.demo-owner: ${DEMO_OWNER_TOKEN:?DEMO_OWNER_TOKEN is required}
+
+  redis:
+    labels:
+      stay-fable.demo-owner: ${DEMO_OWNER_TOKEN:?DEMO_OWNER_TOKEN is required}
