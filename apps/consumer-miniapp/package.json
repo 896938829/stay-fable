@@ -33,13 +33,13 @@
     "@tarojs/taro-loader": "4.2.1",
     "@tarojs/webpack5-runner": "4.2.1",
     "@types/react": "18.3.31",
-    "@types/semver": "7.7.1",
+    "@types/semver": "7.8.0",
     "babel-preset-taro": "4.2.1",
-    "less": "4.4.2",
-    "sass": "1.102.0",
+    "less": "4.9.0",
+    "sass": "1.103.1",
     "semver": "7.8.5",
     "stylus": "0.64.0",
     "webpack": "5.91.0",
-    "vitest": "4.1.10"
+    "vitest": "4.1.11"
   }
 }
